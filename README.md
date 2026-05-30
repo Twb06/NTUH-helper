@@ -18,7 +18,7 @@
 | `lab-summary` | 框選「清單」檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期 | Portal 報告頁面的清單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-summary.js) |
 | `goto-nursing-handover` | 新開分頁跳轉到該病人的「護理交班」頁面 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-handover.js) |
 | `goto-nursing-notes` | 新開分頁跳轉到該病人的「護理紀錄」頁面 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-notes.js) |
-| `goto-emergency` | 新開分頁跳轉到「急診頁面」 | Portal 任一網域 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-emergency.js) |
+| `goto-emergency` | 新開分頁跳轉到「急診」頁面 | Portal 任一網域 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-emergency.js) |
 
 ### 安裝方式
 
