@@ -14,8 +14,8 @@
 
 | 書籤 | 說明 | 使用頁面 |
 |------|------|----------|
-| `lab-trend` | 框選橫式檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組） | Portal 報告頁面的綠單 |
-| `lab-summary` | 框選檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期 | Portal 報告頁面的清單 |
+| `lab-trend` | 框選「綠單」檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組） | Portal 報告頁面的綠單 |
+| `lab-summary` | 框選「清單」檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期 | Portal 報告頁面的清單 |
 
 ### 安裝方式
 
