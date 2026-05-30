@@ -7,6 +7,7 @@
 | 腳本 | 說明 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|
 | `NTUH-diagcertificate-filler` | 自動填入診斷書，利用背景分頁與跨網域沙盒（GM_setValue）自動擷取手術同意書回傳 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js) |
+| `chart-antibiotic` | 讀取藥歷圖（Chart.aspx），整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數 | 開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/chart-antibiotic.user.js) |
 
 ## 環境需求
 
