@@ -1,0 +1,36 @@
+{
+  "env": {
+    "browser": true,
+    "es2021": true,
+    "greasemonkey": true
+  },
+  "parserOptions": {
+    "ecmaVersion": "latest"
+  },
+  "globals": {
+    "GM_openInTab": "readonly",
+    "GM_setValue": "readonly",
+    "GM_getValue": "readonly",
+    "GM_addValueChangeListener": "readonly",
+    "GM_removeValueChangeListener": "readonly",
+    "GM_xmlhttpRequest": "readonly",
+    "GM_log": "readonly",
+    "GM_info": "readonly",
+    "GM_notification": "readonly",
+    "GM_setClipboard": "readonly",
+    "GM_getResourceText": "readonly",
+    "GM_getResourceURL": "readonly",
+    "GM_registerMenuCommand": "readonly",
+    "GM_unregisterMenuCommand": "readonly",
+    "unsafeWindow": "readonly"
+  },
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-undef": "error",
+    "no-console": "off",
+    "semi": ["warn", "always"],
+    "eqeqeq": ["warn", "always"],
+    "no-eval": "error",
+    "no-implied-eval": "error"
+  }
+}
