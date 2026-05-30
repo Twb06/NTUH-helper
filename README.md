@@ -4,16 +4,17 @@
 
 ## 專案內容
 
-| 子專案 | 說明 |
-|--------|------|
-| `NTUH/NTUH-diagcertificate-filler` | 診斷書自動填寫工具 |
+| 腳本 | 說明 | 使用方式 | 安裝連結 |
+|------|------|----------|----------|
+| `NTUH-diagcertificate-filler` | 自動填入診斷書，利用背景分頁與跨網域沙盒（GM_setValue）自動擷取手術同意書回傳 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://raw.githubusercontent.com/Twb06/NTUH-helper/main/NTUH/NTUH-diagcertificate-filler.user.js) |
 
 ## 環境需求
 
-- Windows 作業系統
 - 支援 Tampermonkey 的瀏覽器（Chrome / Firefox / Edge / Safari）
 
 ## 安裝指南
+
+> 以下步驟適用於本 repo 所有腳本，安裝時請使用上方表格各腳本對應的「安裝連結」URL。
 
 ### 步驟一：安裝 Tampermonkey 擴充功能
 
@@ -42,21 +43,11 @@ Tampermonkey 是一款瀏覽器擴充功能，讓你能執行 Userscript 以自�
 
 ### 步驟五：從 URL 匯入腳本
 
-在 Utilities 頁面底部找到「**Import from URL**」欄位，貼上以下腳本 URL：
-
-```
-https://raw.githubusercontent.com/Twb06/NTUH-helper/main/NTUH/NTUH-diagcertificate-filler.user.js
-```
-
-貼上後點擊「**Install**」按鈕，接著在彈出的確認頁面再次點擊「**Install**」完成安裝。
+在 Utilities 頁面底部找到「**Import from URL**」欄位，貼上上方表格中對應腳本的「安裝連結」URL，再點擊「**Install**」按鈕。接著在彈出的確認頁面再次點擊「**Install**」完成安裝。
 
 ### 步驟六：確認安裝成功
 
-回到儀表板的「**Installed Userscripts**」頁籤，確認清單中出現 **NTUH DiagCertificate & Consent Integrated Filler**，且啟用切換鈕顯示為綠色即表示安裝成功。
-
-## 使用方式
-
-請參考各子專案目錄內的說明文件。
+回到儀表板的「**Installed Userscripts**」頁籤，確認腳本出現在清單中，且啟用切換鈕顯示為綠色即表示安裝成功。
 
 ## 授權
 
