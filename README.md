@@ -49,6 +49,69 @@ Tampermonkey 是一款瀏覽器擴充功能，讓你能執行 Userscript 以自�
 
 回到儀表板的「**Installed Userscripts**」頁籤，確認腳本出現在清單中，且啟用切換鈕顯示為綠色即表示安裝成功。
 
+## 貢獻指南
+
+歡迎提交新腳本或修正，請遵循以下開發流程：
+
+### 1. Fork 本 Repo
+
+點擊右上角「**Fork**」，將本 repo 複製至你的 GitHub 帳號。
+
+### 2. Clone 至本地
+
+將 Fork 後的 repo clone 到本機進行開發：
+
+```bash
+git clone https://github.com/<你的帳號>/NTUH-helper.git
+cd NTUH-helper
+```
+
+加入原始 repo 為 upstream，方便日後同步最新變更：
+
+```bash
+git remote add upstream https://github.com/Twb06/NTUH-helper.git
+```
+
+開始開發前，先同步 upstream 最新狀態：
+
+```bash
+git fetch upstream
+git merge upstream/main
+```
+
+### 3. 建立功能分支
+
+```bash
+git checkout -b feature/your-script-name
+```
+
+分支命名規則：
+
+| 類型 | 前綴 | 範例 |
+|------|------|------|
+| 新腳本 | `feature/` | `feature/opd-autofill` |
+| 修正錯誤 | `fix/` | `fix/diagcert-date-parse` |
+| 文件更新 | `docs/` | `docs/update-readme` |
+
+### 4. 開發與提交
+
+- 腳本檔案統一放置於對應科別目錄下，例如 `NTUH/`
+- 檔名格式：`{script-name}.user.js`
+- Commit 訊息採用 [Conventional Commits](https://www.conventionalcommits.org/) 格式：
+  ```
+  feat: 新增門診自動填表腳本
+  fix: 修正診斷書日期格式錯誤
+  docs: 更新安裝說明
+  ```
+
+### 5. 發送 Pull Request
+
+推送分支後，至原始 repo 發起 Pull Request，說明腳本用途、適用頁面與測試方式。
+
+### 6. 更新 README 專案內容表格
+
+PR 中請同步更新 `README.md` 的「專案內容」表格，補上新腳本的說明、使用方式與安裝連結。
+
 ## 授權
 
 © NTUH 內部使用
