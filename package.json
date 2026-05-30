@@ -1,0 +1,31 @@
+{
+  "name": "ntuh-helper",
+  "version": "1.0.0",
+  "description": "台大醫院（NTUH）自動化助手工具集，協助醫療行政作業自動化。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint scripts/**/*.js",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.js": "eslint"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Twb06/NTUH-helper.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Twb06/NTUH-helper/issues"
+  },
+  "homepage": "https://github.com/Twb06/NTUH-helper#readme",
+  "devDependencies": {
+    "eslint": "^8.57.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.6"
+  }
+}
