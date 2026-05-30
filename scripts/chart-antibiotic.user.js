@@ -18,6 +18,7 @@
     // 我們輪詢等它出現，再啟用按鈕。
     let capturedData = null;
 
+    // eslint-disable-next-line no-unused-vars
     const poll = setInterval(() => {
         const d = window.TradeNameGroupsOfEachDrug;
         if (Array.isArray(d) && d.length > 0) {

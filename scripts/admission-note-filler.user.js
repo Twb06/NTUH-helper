@@ -118,8 +118,9 @@
         });
 
         setTimeout(() => {
+            // eslint-disable-next-line no-undef
             if (typeof OnClientClick_GetSelectedLabData === 'function') {
-                OnClientClick_GetSelectedLabData();
+                OnClientClick_GetSelectedLabData(); // eslint-disable-line no-undef
             }
             setTimeout(() => window.close(), 500);
         }, 1000);
