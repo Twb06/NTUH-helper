@@ -1,0 +1,1 @@
+javascript:a=location.href.match(/[?&](SESSION=[^=&]+)&?/i);if(!a){a=document.documentElement.innerHTML.match(/(SESSION=[a-zA-Z0-9]{32})/i);}b=location.href.match(/[?&](AccountIDSE=[^=&]+)&?/i);if(a&&b){open((location.href.match(/\/\/yl/i)?'http://yli':'http://i')+'hisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx?'+a[1]+'&'+b[1]);}void 0;
