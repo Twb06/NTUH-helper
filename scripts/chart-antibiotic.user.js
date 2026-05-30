@@ -4,8 +4,8 @@
 // @version      1.2.5
 // @description  讀取藥歷圖 (Chart.aspx) 的 TradeNameGroupsOfEachDrug，整理成「商品名 起日-迄日」，迄日為今天或未來則留破折號
 // @match        *://*/*Chart.aspx*
-// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/chart-antibiotic.user.js
-// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/chart-antibiotic.user.js
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-antibiotic.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-antibiotic.user.js
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==

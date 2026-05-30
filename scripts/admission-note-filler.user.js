@@ -5,8 +5,8 @@
 // @description  自動填入入院紀錄各欄位，並自動帶入檢驗結果
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/*
-// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/admission-note-filler.user.js
-// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/admission-note-filler.user.js
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js
 // @grant        none
 // ==/UserScript==
 
