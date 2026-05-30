@@ -4,6 +4,8 @@
 // @version      4.2
 // @description  自動填入診斷書，利用背景分頁與跨網域沙盒 (GM_setValue) 自動擷取手術同意書回傳
 // @author       潘岳彤 / Twb06
+// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
+// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js

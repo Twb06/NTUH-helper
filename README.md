@@ -97,8 +97,13 @@ git checkout -b feature/your-script-name
 
 ### 4. 開發與提交
 
-- 腳本檔案統一放置於對應科別目錄下，例如 `NTUH/`
+- 腳本檔案統一放置於 `scripts/` 目錄下
 - 檔名格式：`{script-name}.user.js`
+- 每支腳本的 UserScript metadata 區塊須加入以下兩行，讓 Tampermonkey 能自動追蹤更新：
+  ```js
+  // @updateURL   https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/{script-name}.user.js
+  // @downloadURL https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/{script-name}.user.js
+  ```
 - Commit 訊息採用 [Conventional Commits](https://www.conventionalcommits.org/) 格式：
   ```
   feat: 新增門診自動填表腳本
