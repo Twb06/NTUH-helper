@@ -6,7 +6,7 @@
 
 | 腳本 | 說明 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|
-| `NTUH-diagcertificate-filler` | 自動填入診斷書，利用背景分頁與跨網域沙盒（GM_setValue）自動擷取手術同意書回傳 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://raw.githubusercontent.com/Twb06/NTUH-helper/main/NTUH/NTUH-diagcertificate-filler.user.js) |
+| `NTUH-diagcertificate-filler` | 自動填入診斷書，利用背景分頁與跨網域沙盒（GM_setValue）自動擷取手術同意書回傳 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js) |
 
 ## 環境需求
 
