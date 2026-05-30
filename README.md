@@ -19,6 +19,7 @@
 | `goto-nursing-handover` | 新開分頁跳轉到該病人的「護理交班」頁面 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-handover.js) |
 | `goto-nursing-notes` | 新開分頁跳轉到該病人的「護理紀錄」頁面 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-notes.js) |
 | `goto-emergency` | 新開分頁跳轉到「急診」頁面 | Portal 任一網域 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-emergency.js) |
+| `renew-orders` | 勾選目前全部 orders，隔離部分自動選擇繼續隔離 | Portal renew 頁面 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/renew-orders.js) |
 
 ### 安裝方式
 

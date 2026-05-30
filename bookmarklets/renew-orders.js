@@ -1,0 +1,1 @@
+javascript:(function(){javascript:a=document.getElementsByTagName('input');for(i=0;i<a.length;i++){if(a[i].type.toUpperCase()=='CHECKBOX'){a[i].checked=!a[i].checked;}};b=document.querySelectorAll('[type="radio"][value="Continue"]');for(i=0;i<b.length;i++){if(b[i].type.toUpperCase()=='RADIO'){b[i].checked=!b[i].checked;}};void 0;IDList=HotKey=0})()
