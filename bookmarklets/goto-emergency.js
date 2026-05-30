@@ -1,0 +1,1 @@
+javascript:a=location.href.match(/[\?&](SESSION=[^=&]+)&?/i);if(!a){a=document.documentElement.innerHTML.match(/(SESSION=[a-zA-Z0-9]{32})/i);}if(a){open((location.href.match(/\/\/yl/i)?'http://yle':'http://e')+'hisaw.ntuh.gov.tw/WebApplication/Emergency/EmergencyConfirmDiagnosisOrder.aspx?'+a[1]);}else{open('http://portal.ntuh.gov.tw/General/Login.aspx');}void 0;
