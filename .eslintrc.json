@@ -22,7 +22,8 @@
     "GM_getResourceURL": "readonly",
     "GM_registerMenuCommand": "readonly",
     "GM_unregisterMenuCommand": "readonly",
-    "unsafeWindow": "readonly"
+    "unsafeWindow": "readonly",
+    "OnClientClick_GetSelectedLabData": "readonly"
   },
   "rules": {
     "no-unused-vars": "warn",
