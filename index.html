@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NTUH Helper</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      min-height: 100vh;
+      padding: 48px 24px;
+    }
+
+    .container { max-width: 760px; margin: 0 auto; }
+
+    header { margin-bottom: 48px; }
+    header h1 { font-size: 28px; font-weight: 700; color: #f0f6fc; }
+    header p  { margin-top: 8px; color: #8b949e; font-size: 14px; }
+
+    section { margin-bottom: 40px; }
+    section h2 {
+      font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .08em; color: #8b949e;
+      border-bottom: 1px solid #21262d;
+      padding-bottom: 8px; margin-bottom: 16px;
+    }
+
+    /* ── 腳本卡片 ── */
+    .card {
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .card-body { flex: 1; min-width: 0; }
+    .card-name  { font-size: 15px; font-weight: 600; color: #f0f6fc; }
+    .card-desc  { font-size: 13px; color: #8b949e; margin-top: 4px; line-height: 1.5; }
+    .card-meta  { font-size: 12px; color: #6e7681; margin-top: 6px; }
+    .badge {
+      display: inline-block;
+      font-size: 11px; padding: 2px 8px;
+      border-radius: 20px; font-weight: 500;
+      margin-right: 6px;
+    }
+    .badge-tm   { background: #1f3d2b; color: #3fb950; border: 1px solid #238636; }
+    .badge-bm   { background: #1a2d4a; color: #79b8ff; border: 1px solid #1f6feb; }
+
+    .btn-install {
+      display: inline-block;
+      padding: 6px 16px;
+      border-radius: 6px;
+      font-size: 13px; font-weight: 500;
+      text-decoration: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+      align-self: center;
+    }
+    .btn-tm {
+      background: #238636; color: #fff;
+      border: 1px solid #2ea043;
+    }
+    .btn-tm:hover { background: #2ea043; }
+
+    /* ── Bookmarklet 拖曳按鈕 ── */
+    .btn-bm {
+      background: #1f6feb; color: #fff;
+      border: 1px solid #388bfd;
+      cursor: grab;
+      user-select: none;
+    }
+    .btn-bm:active { cursor: grabbing; }
+    .btn-bm:hover  { background: #388bfd; }
+
+    .drag-hint {
+      font-size: 12px; color: #6e7681;
+      margin-top: 6px; text-align: right;
+    }
+
+    footer {
+      margin-top: 56px;
+      border-top: 1px solid #21262d;
+      padding-top: 20px;
+      font-size: 12px; color: #6e7681;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    footer a { color: #58a6ff; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>🏥 NTUH Helper</h1>
+    <p>台大醫院自動化助手工具集 — Tampermonkey 腳本與 Bookmarklet</p>
+  </header>
+
+  <!-- Tampermonkey 腳本 -->
+  <section>
+    <h2>Tampermonkey 腳本</h2>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="card-name">NTUH DiagCertificate Filler</div>
+        <div class="card-desc">自動填入診斷書，利用背景分頁與跨網域沙盒自動擷取手術同意書回傳</div>
+        <div class="card-meta">
+          <span class="badge badge-tm">Tampermonkey</span>
+          開啟診斷書頁面，點擊右下角 📋 浮動按鈕
+        </div>
+      </div>
+      <a class="btn-install btn-tm"
+         href="https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js">
+        安裝
+      </a>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="card-name">藥歷圖抗生素整理器</div>
+        <div class="card-desc">讀取藥歷圖（Chart.aspx），整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數</div>
+        <div class="card-meta">
+          <span class="badge badge-tm">Tampermonkey</span>
+          開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕
+        </div>
+      </div>
+      <a class="btn-install btn-tm"
+         href="https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-antibiotic.user.js">
+        安裝
+      </a>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="card-name">Admission Note Filler</div>
+        <div class="card-desc">自動填入入院紀錄各欄位（主訴、病史、身體診察等），並自動帶入檢驗結果</div>
+        <div class="card-meta">
+          <span class="badge badge-tm">Tampermonkey</span>
+          開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」
+        </div>
+      </div>
+      <a class="btn-install btn-tm"
+         href="https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js">
+        安裝
+      </a>
+    </div>
+  </section>
+
+  <!-- Bookmarklets -->
+  <section>
+    <h2>Bookmarklets</h2>
+    <p style="font-size:13px;color:#8b949e;margin-bottom:16px;">
+      將下方按鈕直接拖曳到瀏覽器書籤列即可安裝。
+    </p>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="card-name">檢驗趨勢（綠單）</div>
+        <div class="card-desc">框選「綠單」檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組）</div>
+        <div class="card-meta">
+          <span class="badge badge-bm">Bookmarklet</span>
+          Portal 報告頁面的綠單
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;">
+        <a class="btn-install btn-bm" id="bm-trend">📌 拖到書籤列</a>
+        <div class="drag-hint">← 拖曳此按鈕</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="card-name">檢驗整理（清單）</div>
+        <div class="card-desc">框選「清單」檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期</div>
+        <div class="card-meta">
+          <span class="badge badge-bm">Bookmarklet</span>
+          Portal 報告頁面的清單
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;">
+        <a class="btn-install btn-bm" id="bm-summary">📌 拖到書籤列</a>
+        <div class="drag-hint">← 拖曳此按鈕</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>© NTUH 內部使用</span>
+    <a href="https://github.com/Twb06/NTUH-helper" target="_blank">GitHub →</a>
+  </footer>
+
+</div>
+
+<script>
+  // 動態從 .js 檔讀取 bookmarklet 內容並填入 href
+  async function loadBookmarklet(id, url) {
+    try {
+      const res = await fetch(url);
+      const code = await res.text();
+      document.getElementById(id).href = code.trim();
+    } catch(e) {
+      console.warn('無法載入 bookmarklet:', url);
+    }
+  }
+
+  loadBookmarklet('bm-trend',   'bookmarklets/lab-trend.js');
+  loadBookmarklet('bm-summary', 'bookmarklets/lab-summary.js');
+</script>
+</body>
+</html>
