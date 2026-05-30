@@ -119,6 +119,13 @@ git checkout -b feature/your-script-name
 
 PR 中請同步更新 `README.md` 的「專案內容」表格，補上新腳本的說明、使用方式與安裝連結。
 
+## CI/CD（雲端自動檢查）
+
+本專案已在 GitHub Actions 上實作 CI/CD，於 push / pull request 自動執行：
+
+- `Lint JS`：檢查 `scripts/**/*.js` 的 ESLint 規範
+- `Policy Checks`：檢查每支 `scripts/*.user.js` 是否包含正確的 `@updateURL` 與 `@downloadURL`
+
 ## 授權
 
 © NTUH 內部使用

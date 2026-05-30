@@ -1,0 +1,43 @@
+name: Policy Checks
+
+on:
+  push:
+    paths:
+      - "scripts/*.user.js"
+      - ".github/workflows/policy-check.yml"
+  pull_request:
+    paths:
+      - "scripts/*.user.js"
+      - ".github/workflows/policy-check.yml"
+
+jobs:
+  userscript-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate userscript update URLs
+        run: |
+          set -euo pipefail
+
+          status=0
+          for file in scripts/*.user.js; do
+            if [ ! -f "$file" ]; then
+              continue
+            fi
+
+            script_name="$(basename "$file")"
+            expected_url="https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/${script_name}"
+
+            if ! grep -Eq "^// @updateURL[[:space:]]+${expected_url}$" "$file"; then
+              echo "::error file=${file}::Missing or invalid @updateURL. Expected: ${expected_url}"
+              status=1
+            fi
+
+            if ! grep -Eq "^// @downloadURL[[:space:]]+${expected_url}$" "$file"; then
+              echo "::error file=${file}::Missing or invalid @downloadURL. Expected: ${expected_url}"
+              status=1
+            fi
+          done
+
+          exit "$status"
