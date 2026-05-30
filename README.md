@@ -10,6 +10,23 @@
 | `chart-antibiotic` | 讀取藥歷圖（Chart.aspx），整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數 | 開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-antibiotic.user.js) |
 | `admission-note-filler` | 自動填入入院紀錄各欄位（主訴、病史、身體診察等），並自動帶入檢驗結果 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
 
+## Bookmarklets
+
+| 書籤 | 說明 | 使用頁面 |
+|------|------|----------|
+| `lab-trend` | 框選橫式檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組） | Portal 報告頁面的綠單 |
+
+### 安裝方式
+
+1. 開啟 [`bookmarklets/lab-trend.js`](bookmarklets/lab-trend.js)，複製全部內容
+2. 在瀏覽器書籤列上按右鍵 → 新增書籤
+3. 名稱填「檢驗趨勢」，網址欄貼上複製的內容
+4. 儲存後即可使用
+
+### 使用方式
+
+切換到橫式或直式檢驗介面，框選整個表格區塊，點擊書籤後跳出趨勢整理結果，可直接複製。
+
 ## 環境需求
 
 - 支援 Tampermonkey 的瀏覽器（Chrome / Firefox / Edge / Safari）
