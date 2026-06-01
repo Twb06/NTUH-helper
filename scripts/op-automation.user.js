@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 手術排程自動化
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.1.0
+// @version      1.1.1
 // @description  批次執行術前評估、當日評估、同意書綁定
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/SimpleQueryOpSchedule_New.aspx*
@@ -28,10 +28,13 @@
         catch (e) { return false; }
     })();
 
-    // 只有 URL 帶有 ntuh_token 參數才視為 orchestrator 開啟的視窗
-    // 這樣手動開啟的頁面就不會被自動執行或關閉
+    // 只有 URL 帶有 ntuh_token 參數，且 opener 確實是 orchestrator 頁面，才視為 orchestrator 開啟的視窗
+    // 這樣手動開啟或 Portal 自己開的 popup 都不會被自動執行
     const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
-    const isOrchestratorWindow = hasOpener && !!ntuhToken;
+    const isOrchestratorWindow = hasOpener && !!ntuhToken && (() => {
+        try { return window.opener.location.href.includes('SimpleQueryOpSchedule_New'); }
+        catch (e) { return false; }
+    })();
 
     function clickRadio(el) {
         if (!el) return;
