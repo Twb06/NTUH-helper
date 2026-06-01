@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         NTUH DiagCertificate & Consent Integrated Filler
 // @namespace    http://tampermonkey.net/
-// @version      4.2
-// @description  自動填入診斷書，利用背景分頁與跨網域沙盒 (GM_setValue) 自動擷取手術同意書回傳
+// @version      1.4.3
+// @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
 // @author       YT / Twb06
 // @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
@@ -11,16 +11,13 @@
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @grant        GM_openInTab
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_addValueChangeListener
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // 跨分頁沙盒鍵值
-    const TM_STORAGE_KEY = 'ntuh_consent_cross_domain_data';
+    // 記錄目前觸發背景掃描的唯一 token，用於比對 postMessage 回傳
+    let currentScanToken = null;
 
     // =========================================================================
     // 路由分流控制中心
@@ -31,28 +28,34 @@
         if (currentUrl.includes('DiagCertificate')) {
             console.log("[DiagFiller] 偵測到診斷書頁面，啟動填入與連動模組...");
 
-            // 初始化接收端：監聽 Tampermonkey 沙盒的跨網域資料變動
-            if (typeof GM_addValueChangeListener !== 'undefined') {
-                GM_addValueChangeListener(TM_STORAGE_KEY, function(key, oldValue, newValue, remote) {
-                    // remote 代表是「其他分頁」寫入的變更
-                    if (remote && newValue) {
-                        try {
-                            const parsed = JSON.parse(newValue);
-                            // 確保是剛出爐的新資料才處理
-                            if (parsed && parsed.data) {
-                                handleReceivedConsent(parsed.data);
-                            }
-                        } catch(e) {
-                            console.error('[DiagFiller] 資料解析失敗', e);
-                        }
-                    }
-                });
-            }
+            // 初始化接收端：監聽子視窗以 postMessage 回傳的同意書資料
+            window.addEventListener('message', function(event) {
+                // 安全性：只接受來自 ihisaw.ntuh.gov.tw 的訊息
+                if (!event.origin.includes('ihisaw.ntuh.gov.tw')) return;
+                const msg = event.data;
+                if (!msg || msg.ntuh !== true) return;
+                // 比對 token，確保是本次觸發的掃描結果，防止多分頁或多次觸發混淆
+                if (!currentScanToken || msg.token !== currentScanToken) {
+                    console.warn('[DiagFiller] 忽略 token 不符的 postMessage', msg.token, '≠', currentScanToken);
+                    return;
+                }
+                if (msg.data !== undefined) {
+                    handleReceivedConsent(msg.data);
+                    currentScanToken = null; // 使用後清除，避免重複接收
+                }
+            });
             setTimeout(createDiagUI, 1500);
         }
         else if (currentUrl.includes('ConfirmDiagnosisOrder')) {
-            console.log("[DiagFiller] 偵測到病人主畫面，啟動背景同意書擷取並準備回傳...");
-            runConsentExtractorAndReturn();
+            const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
+            const isOrchestratorWindow = !!window.opener && !!ntuhToken;
+            if (isOrchestratorWindow) {
+                // 儲存 token 至 sessionStorage，避免頁面內部跳轉後遺失
+                sessionStorage.setItem('ntuh_window_token', ntuhToken);
+                console.log("[DiagFiller] 偵測到背景掃描分頁，啟動同意書擷取並準備回傳...");
+                runConsentExtractorAndReturn();
+            }
+            // 一般主畫面瀏覽：window.opener 為 null 或無 token，不執行任何動作
         }
     }
 
@@ -419,13 +422,12 @@
                 }
                 if (!personId) { alert('無法取得病人 ID'); return; }
 
-                // 強制清空舊的沙盒資料，避免顯示上一次病人的結果
-                if (typeof GM_setValue !== 'undefined') {
-                    GM_setValue(TM_STORAGE_KEY, '');
-                }
+                // 產生唯一 token：時間戳 + 隨機字串，確保每次掃描獨立，防止多分頁混淆
+                const token = 'ntuh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+                currentScanToken = token;
 
                 const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder.aspx` +
-                                  `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0&EMRPop=Y`;
+                                  `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0&EMRPop=Y&ntuh_token=${token}`;
 
                 setDiagStatus('⏳ 正在跨網域背景開啟並撈取資料...', 'warn');
 
@@ -445,6 +447,9 @@
     // 模組二：新頁面自動擷取，並使用沙盒寫入進行跨網域傳輸
     // =========================================================================
     async function runConsentExtractorAndReturn() {
+        // 從 URL 讀取 token（或 sessionStorage 作為備援）
+        const token = new URLSearchParams(window.location.search).get('ntuh_token') ||
+                      sessionStorage.getItem('ntuh_window_token') || '';
         try {
             const tabSelector = 'a[href="#divPatConsent"][data-toggle="tab"]';
             await waitForEl(tabSelector, 8000);
@@ -474,14 +479,15 @@
                 }
             });
 
-            // 將資料包裝並附帶 Timestamp 寫入篡改猴跨域沙盒資料庫
-            if (typeof GM_setValue !== 'undefined') {
-                const payload = JSON.stringify({
-                    timestamp: Date.now(),
-                    data: consentList
-                });
-                GM_setValue(TM_STORAGE_KEY, payload);
-                console.log('[ConsentHelper] 資料已寫入跨網域沙盒', payload);
+            // 透過 postMessage 將資料回傳給主視窗（opener）
+            if (window.opener) {
+                window.opener.postMessage(
+                    { ntuh: true, token, data: consentList },
+                    'https://hisaw.ntuh.gov.tw'
+                );
+                console.log('[ConsentHelper] 資料已透過 postMessage 回傳，共', consentList.length, '筆');
+            } else {
+                console.warn('[ConsentHelper] 無法取得 opener，資料無法回傳');
             }
 
             await sleep(100);
