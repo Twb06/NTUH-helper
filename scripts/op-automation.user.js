@@ -17,6 +17,8 @@
 (function () {
     'use strict';
 
+    /* global Sys, $ */
+
     const PATH = window.location.pathname;
 
     // ═══════════════════════════════════════════════════════════
@@ -45,9 +47,7 @@
     }
 
     function waitForPostback(fn) {
-        // eslint-disable-next-line no-undef
         if (window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
-            // eslint-disable-next-line no-undef
             const prm = Sys.WebForms.PageRequestManager.getInstance();
             const handler = function () {
                 prm.remove_endRequest(handler);
@@ -156,7 +156,6 @@
                     RoleName:       (document.querySelector('input[name=rdoRoleGroupName]:checked') || {}).value || '',
                     OpScheduleIdse: opScheduleIdse
                 };
-                // eslint-disable-next-line no-undef
                 $.ajax({
                     url: 'handler/OpCommonHandler.ashx?Mode=GetNewPageUrl',
                     data: encodeURIComponent(JSON.stringify(QueryObj)),
