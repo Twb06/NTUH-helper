@@ -171,14 +171,53 @@
     // 模組一：診斷書畫面核心邏輯與資料抓取
     // =========================================================================
     // 抓取門診日期
-    function fetchOpdDates() {
+    function fetchOpdDates(currentDept) {
         // 從門診參考資料的區塊內搜尋所有的列
         const rows = Array.from(document.querySelectorAll('#NTUHWeb1_fieldsetOutHistory tr.tableText, #NTUHWeb1_fieldsetOutHistory tr.tableText2'));
         const dates = [];
         for (const tr of rows) {
-            const matches = tr.textContent.match(/\d{4}\/\d{2}\/\d{2}/g);
-            if (matches) {
-                dates.push(...matches);
+            // 讀取該列對應的科部名稱 (多層 fallback 確保相容性)
+            let recordDept = '';
+            const deptSpan = tr.querySelector('span[id*="lblHfDeptName"]');
+            if (deptSpan && deptSpan.textContent.trim()) {
+                recordDept = deptSpan.textContent.trim();
+            } else {
+                // Fallback 1: 從 lblDeptName 的 title 屬性中提取 (例如 "科別：家庭醫學部")
+                const lblDept = tr.querySelector('span[id*="lblDeptName"]');
+                if (lblDept) {
+                    const title = lblDept.getAttribute('title') || '';
+                    const match = title.match(/科別：\s*([^\s\n]+)/);
+                    if (match) {
+                        recordDept = match[1].trim();
+                    } else if (lblDept.textContent.trim()) {
+                        recordDept = lblDept.textContent.trim();
+                    }
+                }
+            }
+
+            // 比對是否與開立診斷書的科部相符
+            let isMatch = false;
+            const clean = s => s.replace(/(部|科|門診)$/, '').trim();
+            const cleanCurrent = (currentDept && currentDept !== '[科別]' && currentDept !== '[請選擇]') ? clean(currentDept) : '';
+            const cleanRecord = recordDept ? clean(recordDept) : '';
+
+            if (!cleanCurrent) {
+                // 若當前診斷書科別無效/空白，預設不過濾（相容舊邏輯，防止抓不到資料）
+                isMatch = true;
+            } else if (!cleanRecord) {
+                // 若此列門診紀錄無法辨識科別，預設不過濾
+                isMatch = true;
+            } else {
+                isMatch = cleanCurrent.includes(cleanRecord) || cleanRecord.includes(cleanCurrent);
+            }
+
+            console.log(`[DiagFiller] 門診科別比對: 診斷書科別="${currentDept}" (簡化: "${cleanCurrent}"), 此列科別="${recordDept}" (簡化: "${cleanRecord}") -> 結果: ${isMatch ? '符合' : '不符'}`);
+
+            if (isMatch) {
+                const matches = tr.textContent.match(/\d{4}\/\d{2}\/\d{2}/g);
+                if (matches) {
+                    dates.push(...matches);
+                }
             }
         }
         const uniqueDates = [...new Set(dates)];
@@ -453,7 +492,7 @@
             if (hasOpdUI) {
                 setDiagStatus('展開門診資料…', 'warn');
                 await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText, #NTUHWeb1_divOutHistoryInfo', 5000);
-                opdDates = fetchOpdDates();
+                opdDates = fetchOpdDates(dept);
                 opdStartDate = document.getElementById('ntuh-diag-opd-start-date').value.trim();
             }
 
@@ -626,8 +665,8 @@
                 <div style="display:flex;align-items:center;gap:6px;">
                     <label><input type="checkbox" id="ntuh-diag-has-opd" /> <span>有門診</span></label>
                 </div>
-                <div id="ntuh-diag-opd-detail" style="display:none;flex-direction:column;gap:6px;margin-bottom:4px;">
-                    <input id="ntuh-diag-opd-start-date" type="text" placeholder="起始門診 YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
+                <div id="ntuh-diag-opd-detail" style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span>起始日期</span>
+                    <input id="ntuh-diag-opd-start-date" type="text" placeholder="YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
                 </div>
 
                 <div style="display:flex;align-items:center;gap:6px;"><label><input type="checkbox" id="ntuh-diag-has-op" /> <span>有手術</span></label></div>
