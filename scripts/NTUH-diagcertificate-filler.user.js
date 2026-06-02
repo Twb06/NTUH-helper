@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate & Consent Integrated Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.7.1
+// @version      1.7.2
 // @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
 // @author       YT / Twb06
 // @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @grant        GM_openInTab
@@ -46,13 +46,13 @@
             });
             setTimeout(createDiagUI, 1500);
         }
-        else if (currentUrl.includes('ConfirmDiagnosisOrder')) {
+        else if (currentUrl.includes('PatientConsentOrderEntry')) {
             const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
             const isOrchestratorWindow = !!window.opener && !!ntuhToken;
             if (isOrchestratorWindow) {
                 // 儲存 token 至 sessionStorage，避免頁面內部跳轉後遺失
                 sessionStorage.setItem('ntuh_window_token', ntuhToken);
-                console.log("[DiagFiller] 偵測到背景掃描分頁，啟動同意書擷取並準備回傳...");
+                console.log("[DiagFiller] 偵測到背景掃描分頁(PatientConsentOrderEntry)，啟動同意書擷取並準備回傳...");
                 runConsentExtractorAndReturn();
             }
             // 一般主畫面瀏覽：window.opener 為 null 或無 token，不執行任何動作
@@ -657,7 +657,7 @@
                 <div style="font-size:11px;color:#7a8aaa;">自動讀取病歷，填入囑言與日期。<span style="color:#f0a030;">病名請自行填寫。</span></div>
 
                 <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-                    <label><input type="checkbox" id="ntuh-diag-has-inpat" checked /> <span>有住院</span></label>
+                    <label><input type="checkbox" id="ntuh-diag-has-inpat" checked /> <span>住院</span></label>
                 </div>
 
                 <div id="ntuh-diag-discharge-row" style="display:flex;align-items:center;gap:8px;"><span>出院日期</span><input id="ntuh-diag-discharge" type="text" /></div>
@@ -669,7 +669,7 @@
                     <input id="ntuh-diag-opd-start-date" type="text" placeholder="YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
                 </div>
 
-                <div style="display:flex;align-items:center;gap:6px;"><label><input type="checkbox" id="ntuh-diag-has-op" /> <span>有手術</span></label></div>
+                <div style="display:flex;align-items:center;gap:6px;"><label><input type="checkbox" id="ntuh-diag-has-op" /> <span>手術</span></label></div>
                 <div id="ntuh-diag-op-detail" style="display:none;flex-direction:column;gap:6px;">
                     <input id="ntuh-diag-op-date" type="text" placeholder="手術日期 YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
                     <input id="ntuh-diag-op-name" type="text" placeholder="手術名稱" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
@@ -763,8 +763,8 @@
                 const token = 'ntuh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
                 currentScanToken = token;
 
-                const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder.aspx` +
-                                  `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0&EMRPop=Y&ntuh_token=${token}`;
+                const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx` +
+                                  `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0&ntuh_token=${token}`;
 
                 setDiagStatus('⏳ 正在跨網域背景開啟並撈取資料...', 'warn');
 
@@ -788,31 +788,66 @@
         const token = new URLSearchParams(window.location.search).get('ntuh_token') ||
                       sessionStorage.getItem('ntuh_window_token') || '';
         try {
-            const tabSelector = 'a[href="#divPatConsent"][data-toggle="tab"]';
-            await waitForEl(tabSelector, 8000);
-            const tabBtn = document.querySelector(tabSelector);
-            if (tabBtn) { simulateClick(tabBtn); }
-
-            await waitForEl('#divTablePatConsent table', 8000);
+            await waitForEl('a[id*="ClickConsentShowList"]', 8000);
             await sleep(600);
 
-            const container = document.getElementById('divTablePatConsent');
-            if (!container) return;
-
-            const rows = Array.from(container.querySelectorAll('table tbody tr'));
+            const links = Array.from(document.querySelectorAll('a[id*="ClickConsentShowList"]'));
             const consentList = [];
+            const session = new URLSearchParams(window.location.search).get('SESSION') || '';
 
-            rows.forEach(tr => {
-                const url = tr.getAttribute('strurl');
-                const pElements = tr.querySelectorAll('p');
-                if (pElements.length >= 2) {
-                    const dateStr = pElements[0].textContent.trim();
-                    const titleStr = pElements[1].textContent.trim();
-                    const statusStr = pElements[2] ? pElements[2].textContent.trim() : '';
+            links.forEach(link => {
+                const id = link.id;
+                const matchCtrl = id.match(/PatientConsentDataList_(ctl\d+)_ClickConsentShowList/);
+                if (!matchCtrl) return;
+                const controlName = matchCtrl[1];
 
-                    if (titleStr.includes('術') && titleStr.includes('同意書') && url) {
-                        consentList.push({ date: dateStr, title: titleStr, status: statusStr, url: url });
+                const emrCodeEl = document.getElementById(`PatientConsentDataList_${controlName}_EMRCode`);
+                const emrIdseEl = document.getElementById(`PatientConsentDataList_${controlName}_EMRIDSE`);
+
+                const emrCode = emrCodeEl ? emrCodeEl.value.trim() : '';
+                const emrIdse = emrIdseEl ? emrIdseEl.value.trim() : '';
+
+                if (!emrCode || !emrIdse) return;
+
+                const fullTitle = link.textContent.trim();
+                let title = fullTitle;
+                let dateStr = '';
+                let statusStr = '未簽';
+
+                const bracketMatch = fullTitle.match(/^([\s\S]+?)\s*\(\s*(\d{2}\/\d{2}\/\d{2})\s+(\d{2}:\d{2})\s*(.*?)\s*\)$/);
+                if (bracketMatch) {
+                    title = bracketMatch[1].trim();
+                    const rawDate = bracketMatch[2];
+                    const rawTime = bracketMatch[3];
+                    const extra = bracketMatch[4] || '';
+
+                    const dateParts = rawDate.split('/');
+                    if (dateParts[0].length === 2) {
+                        dateParts[0] = '20' + dateParts[0];
                     }
+                    dateStr = `${dateParts.join('/')} ${rawTime}`;
+
+                    if (extra.includes('已簽') || extra.includes('已簽署')) {
+                        statusStr = '已簽署';
+                    }
+                } else {
+                    const simpleMatch = fullTitle.match(/^([\s\S]+?)\s*\(\s*(已簽署|已簽)\s*\)$/);
+                    if (simpleMatch) {
+                        title = simpleMatch[1].trim();
+                        statusStr = '已簽署';
+                    }
+                }
+
+                if (title.includes('同意書') && (title.includes('術') || title.includes('檢查'))) {
+                    const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder.aspx` +
+                                      `?SESSION=${session}&Func=EMRRecordSeries&EMRIDSE=${emrIdse}&EMRRecord=${emrCode}&AllowPrint=Y`;
+
+                    consentList.push({
+                        date: dateStr || todayStr(),
+                        title: title,
+                        status: statusStr,
+                        url: targetUrl
+                    });
                 }
             });
 
@@ -832,7 +867,7 @@
             window.close();
 
         } catch (e) {
-            console.error('[ConsentHelper] 背景讀取失敗或逾時：', e.message);
+            console.error('[ConsentHelper] 背景讀取新網頁失敗或逾時：', e.message);
         }
     }
 
