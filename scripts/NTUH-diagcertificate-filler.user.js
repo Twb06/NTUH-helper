@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         NTUH DiagCertificate & Consent Integrated Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.4.3
+// @version      1.5.0
 // @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
 // @author       YT / Twb06
 // @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
