@@ -124,6 +124,8 @@ git checkout -b feature/your-script-name
   // @updateURL   https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/{script-name}.user.js
   // @downloadURL https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/{script-name}.user.js
   ```
+- **Tampermonkey 腳本開發模板**：開發新腳本時，請直接複製並修改以下模板檔案，以確保 Tampermonkey 能自動追蹤更新：
+  [**點此查看最新版本的開發模板 (template.user.js)**](./scripts/template.user.js)
 - Commit 訊息採用 [Conventional Commits](https://www.conventionalcommits.org/) 格式：
   ```
   feat: 新增門診自動填表腳本
