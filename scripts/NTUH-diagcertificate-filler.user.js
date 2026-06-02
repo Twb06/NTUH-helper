@@ -133,6 +133,23 @@
     // =========================================================================
     // 模組一：診斷書畫面核心邏輯與資料抓取
     // =========================================================================
+    // 抓取門診日期
+    function fetchOpdDates() {
+        // 從門診參考資料的區塊內搜尋所有的列
+        const rows = Array.from(document.querySelectorAll('#NTUHWeb1_fieldsetOutHistory tr.tableText, #NTUHWeb1_fieldsetOutHistory tr.tableText2'));
+        const dates = [];
+        for (const tr of rows) {
+            const matches = tr.textContent.match(/\d{4}\/\d{2}\/\d{2}/g);
+            if (matches) {
+                dates.push(...matches);
+            }
+        }
+        const uniqueDates = [...new Set(dates)];
+        // 由舊到新排序
+        uniqueDates.sort((a, b) => new Date(a) - new Date(b));
+        return uniqueDates;
+    }
+
     function fetchInpatData() {
         const rows = [];
         const trs = Array.from(document.querySelectorAll('#NTUHWeb1_gvwLogPatTransferBed tr.tableText, #NTUHWeb1_gvwLogPatTransferBed tr.tableText2'));
@@ -207,8 +224,39 @@
         return { arrivalDT, leaveDT, leaveDate };
     }
 
-    function buildText({ fromEmg, arrivalDT, leaveDT, inpatStartDate, dept, opDate, opName, hasICU, icuStart, wardAfterICU, dischargeDate }) {
-        let txt = '';
+        // 依照模板組合門診文字
+    function buildOpdText(dates, startDateStr, dept) {
+        if (!dates || dates.length === 0) return '';
+        let filtered = dates;
+        if (startDateStr && startDateStr.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
+            const start = new Date(startDateStr.replace(/-/g, '/'));
+            filtered = dates.filter(d => new Date(d) >= start);
+        }
+        if (filtered.length === 0) return '';
+
+        let dateStr = '';
+        let currentYear = null;
+
+        filtered.forEach((d, idx) => {
+            const [y, m, day] = d.split('/');
+            const mNum = parseInt(m, 10);
+            const dNum = parseInt(day, 10);
+
+            if (y !== currentYear) {
+                if (idx !== 0) dateStr += '、';
+                dateStr += `西元${y}年${mNum}月${dNum}日`;
+                currentYear = y;
+            } else {
+                dateStr += `、${mNum}月${dNum}日`;
+            }
+        });
+
+        const deptName = (dept.endsWith('科') || dept.endsWith('部')) ? dept : dept + '科';
+        return `於${dateStr}至本院${deptName}門診追蹤，`;
+    }
+
+    function buildText({ opdText, fromEmg, arrivalDT, leaveDT, inpatStartDate, dept, opDate, opName, hasICU, icuStart, wardAfterICU, dischargeDate }) {
+        let txt = opdText || '';
         if (fromEmg) {
             const aStr = arrivalDT ? fmtDateTime(arrivalDT) : fmtDate(inpatStartDate);
             const lStr = leaveDT ? fmtDateTime(leaveDT) : fmtDate(inpatStartDate);
@@ -233,6 +281,17 @@
             const dischargeDate = document.getElementById('ntuh-diag-discharge').value.trim();
             if (!dischargeDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) { setDiagStatus('⚠ 請輸入正確出院日期（YYYY/MM/DD）', 'err'); if (runBtn) runBtn.disabled = false; return; }
             const dept = (() => { const el = document.getElementById('NTUHWeb1_ddlDeptListForPatChiCertificate'); return el ? el.options[el.selectedIndex].text.trim() : '[科別]'; })();
+
+            // OPD field
+            const hasOpdUI = document.getElementById('ntuh-diag-has-opd')?.checked;
+            let opdText = '';
+            if (hasOpdUI) {
+                setDiagStatus('展開門診資料…', 'warn');
+                await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText', 5000);
+                const opdDates = fetchOpdDates();
+                const opdStartDate = document.getElementById('ntuh-diag-opd-start-date').value.trim();
+                opdText = buildOpdText(opdDates, opdStartDate, dept);
+            }
 
             setDiagStatus('展開住院資料…', 'warn');
             await expandOne('NTUHWeb1_btnLogPatTransferBedShowHide', '#NTUHWeb1_gvwLogPatTransferBed tr.tableText');
@@ -262,7 +321,7 @@
             const fromEmg = !!(emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
 
             const txt = buildText({
-                fromEmg, arrivalDT: emg.arrivalDT, leaveDT: emg.leaveDT, inpatStartDate: inpat.inpatStartDate,
+                opdText, fromEmg, arrivalDT: emg.arrivalDT, leaveDT: emg.leaveDT, inpatStartDate: inpat.inpatStartDate,
                 dept, opDate, opName, hasICU: inpat.hasICU, icuStart: inpat.icuStart, wardAfterICU: inpat.wardAfterICU, dischargeDate
             });
 
