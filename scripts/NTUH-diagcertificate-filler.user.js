@@ -420,11 +420,20 @@
             <div id="ntuh-diag-body">
                 <div style="font-size:11px;color:#7a8aaa;">自動讀取病歷，填入囑言與日期。<span style="color:#f0a030;">病名請自行填寫。</span></div>
                 <div id="ntuh-diag-discharge-row"><span>出院日期</span><input id="ntuh-diag-discharge" type="text" /></div>
+
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <label><input type="checkbox" id="ntuh-diag-has-opd" /> <span>有門診</span></label>
+                </div>
+                <div id="ntuh-diag-opd-detail" style="display:none;flex-direction:column;gap:6px;margin-bottom:4px;">
+                    <input id="ntuh-diag-opd-start-date" type="text" placeholder="起始門診 YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
+                </div>
+
                 <div style="display:flex;align-items:center;gap:6px;"><label><input type="checkbox" id="ntuh-diag-has-op" /> <span>有手術</span></label></div>
                 <div id="ntuh-diag-op-detail" style="display:none;flex-direction:column;gap:6px;">
                     <input id="ntuh-diag-op-date" type="text" placeholder="手術日期 YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
                     <input id="ntuh-diag-op-name" type="text" placeholder="手術名稱" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
                 </div>
+
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
                 <button id="ntuh-diag-open-consent" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 背景檢查電子同意書項目</button>
                 <div id="ntuh-diag-status"></div>
@@ -434,6 +443,25 @@
         `;
         document.body.appendChild(panel);
         document.getElementById('ntuh-diag-discharge').value = todayStr();
+
+        // 門診區塊：打勾後自動展開、讀取最早日期
+        document.getElementById('ntuh-diag-has-opd').addEventListener('change', async function() {
+            const detailEl = document.getElementById('ntuh-diag-opd-detail');
+            if (this.checked) {
+                detailEl.style.display = 'flex';
+                setDiagStatus('展開門診資料…', 'warn');
+                await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText', 5000);
+                const opdDates = fetchOpdDates();
+                if (opdDates.length > 0) {
+                    document.getElementById('ntuh-diag-opd-start-date').value = opdDates[0];
+                    setDiagStatus('已讀取門診日期', 'ok');
+                } else {
+                    setDiagStatus('未找到門診紀錄', 'warn');
+                }
+            } else {
+                detailEl.style.display = 'none';
+            }
+        });
 
         // 初始化自動抓取並預填手術資料
         try {
