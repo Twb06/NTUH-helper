@@ -1,7 +1,7 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         NTUH DiagCertificate & Consent Integrated Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.5.0
+// @version      1.7.1
 // @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
 // @author       YT / Twb06
 // @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/NTUH-diagcertificate-filler.user.js
@@ -83,6 +83,13 @@
         return `西元${d.getFullYear()}年${String(d.getMonth()+1).padStart(2,'0')}月${String(d.getDate()).padStart(2,'0')}日${String(d.getHours()).padStart(2,'0')}時${String(d.getMinutes()).padStart(2,'0')}分`;
     }
 
+    function parseDate(dateStr) {
+        if (!dateStr) return null;
+        const clean = dateStr.substring(0, 10).trim().replace(/-/g, '/');
+        const d = new Date(clean);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
     function todayStr() {
         const d = new Date();
         return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
@@ -90,10 +97,26 @@
 
     function waitForEl(selector, timeout = 10000) {
         return new Promise((resolve, reject) => {
-            const el = document.querySelector(selector);
+            const check = () => {
+                const selectors = selector.split(',');
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel.trim());
+                    if (el) {
+                        if ((el.id && el.id.includes('Msg')) || el.className.includes('errorMsgText')) {
+                            if (el.textContent.trim()) return el;
+                        } else {
+                            return el;
+                        }
+                    }
+                }
+                return null;
+            };
+
+            const el = check();
             if (el) return resolve(el);
+
             const obs = new MutationObserver(() => {
-                const el = document.querySelector(selector);
+                const el = check();
                 if (el) { obs.disconnect(); resolve(el); }
             });
             obs.observe(document.body, { childList: true, subtree: true });
@@ -115,7 +138,21 @@
     }
 
     async function expandOne(btnId, waitSelector, timeoutMs = 8000) {
-        if (document.querySelector(waitSelector)) return;
+        const checkExist = () => {
+            const selectors = waitSelector.split(',');
+            for (const sel of selectors) {
+                const el = document.querySelector(sel.trim());
+                if (el) {
+                    if ((el.id && el.id.includes('Msg')) || el.className.includes('errorMsgText')) {
+                        if (el.textContent.trim()) return el;
+                    } else {
+                        return el;
+                    }
+                }
+            }
+            return null;
+        };
+        if (checkExist()) return;
         const btn = document.getElementById(btnId);
         if (!btn) { console.warn('[DiagFiller] 找不到按鈕：', btnId); return; }
         simulateClick(btn);
@@ -252,20 +289,144 @@
         });
 
         const deptName = (dept.endsWith('科') || dept.endsWith('部')) ? dept : dept + '科';
-        return `於${dateStr}至本院${deptName}門診追蹤，`;
+        return `於${dateStr}至本院${deptName}門診追蹤`;
     }
 
-    function buildText({ opdText, fromEmg, arrivalDT, leaveDT, inpatStartDate, dept, opDate, opName, hasICU, icuStart, wardAfterICU, dischargeDate }) {
-        let txt = opdText || '';
-        if (fromEmg) {
-            const aStr = arrivalDT ? fmtDateTime(arrivalDT) : fmtDate(inpatStartDate);
-            const lStr = leaveDT ? fmtDateTime(leaveDT) : fmtDate(inpatStartDate);
-            txt += `病人因上述原因，於${aStr}至本院急診就醫，於${lStr}轉至本院${dept}一般病房住院，`;
-        } else { txt += `病人因上述原因，於${fmtDate(inpatStartDate)}於本院${dept}一般病房住院，`; }
-        if (opDate) txt += `於${fmtDate(opDate)}接受${opName ? opName + '手術' : '手術'}，`;
-        if (hasICU) { txt += `於${fmtDate(icuStart)}轉入本院加護病房治療，`; if (wardAfterICU) txt += `於${fmtDate(wardAfterICU)}轉入本院${dept}一般病房，`; }
-        const dp = dischargeDate.split('/'); const dFmt = `西元${dp[0]}年${String(dp[1]).padStart(2,'0')}月${String(dp[2]).padStart(2,'0')}日`;
-        txt += `於${dFmt}出院，出院後宜於門診持續追蹤治療。`;
+    function buildText({
+        hasInpat, hasOpd, hasOp,
+        opdDates, opdStartDate,
+        inpat, emg, dept,
+        opDate, opName, dischargeDate
+    }) {
+        const events = [];
+
+        // 1. 門診事件
+        if (hasOpd && opdDates && opdDates.length > 0) {
+            let filtered = opdDates;
+            if (opdStartDate && opdStartDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
+                const start = parseDate(opdStartDate);
+                if (start) filtered = opdDates.filter(d => parseDate(d) >= start);
+            }
+            if (filtered.length > 0) {
+                const opdMinDateObj = parseDate(filtered[0]);
+                const opdText = buildOpdText(opdDates, opdStartDate, dept);
+                if (opdText) {
+                    events.push({
+                        type: 'opd',
+                        date: opdMinDateObj,
+                        text: opdText
+                    });
+                }
+            }
+        }
+
+        // 2. 住院與手術事件合併判定
+        const cleanInpatStart = inpat && inpat.inpatStartDate ? inpat.inpatStartDate.substring(0, 10).trim().replace(/-/g, '/') : '';
+        const fromEmg = !!(emg && emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
+        const inpatStart = fromEmg && emg && emg.arrivalDT ? emg.arrivalDT : (inpat ? inpat.inpatStartDate : '');
+        const inpatStartDateObj = parseDate(inpatStart);
+
+        const opDateObj = parseDate(opDate);
+        const dischargeDateObj = parseDate(dischargeDate);
+
+        // 判斷手術是否在住院期間 (若是，則合併至住院事件中)
+        let isOpMerged = false;
+        if (hasInpat && hasOp && opDateObj && inpatStartDateObj && dischargeDateObj) {
+            if (opDateObj >= inpatStartDateObj && opDateObj <= dischargeDateObj) {
+                isOpMerged = true;
+            }
+        }
+
+        // 3. 住院事件
+        if (hasInpat && inpatStartDateObj && inpat) {
+            let inpatText = '';
+            if (fromEmg) {
+                const aStr = emg.arrivalDT ? fmtDateTime(emg.arrivalDT) : fmtDate(inpat.inpatStartDate);
+                const lStr = emg.leaveDT ? fmtDateTime(emg.leaveDT) : fmtDate(inpat.inpatStartDate);
+                inpatText = `於${aStr}至本院急診就醫，於${lStr}轉至本院${dept}一般病房住院`;
+            } else {
+                inpatText = `於${fmtDate(inpat.inpatStartDate)}於本院${dept}一般病房住院`;
+            }
+
+            // 合併手術描述
+            if (isOpMerged) {
+                inpatText += `，於${fmtDate(opDate)}接受${opName ? opName + '手術' : '手術'}`;
+            }
+
+            // ICU 描述
+            if (inpat.hasICU) {
+                inpatText += `，於${fmtDate(inpat.icuStart)}轉入本院加護病房治療`;
+                if (inpat.wardAfterICU) {
+                    inpatText += `，於${fmtDate(inpat.wardAfterICU)}轉入本院${dept}一般病房`;
+                }
+            }
+
+            // 出院描述
+            if (dischargeDate) {
+                const dp = dischargeDate.split('/');
+                const dFmt = `西元${dp[0]}年${String(dp[1]).padStart(2,'0')}月${String(dp[2]).padStart(2,'0')}日`;
+                inpatText += `，於${dFmt}出院`;
+            }
+
+            events.push({
+                type: 'inpat',
+                date: inpatStartDateObj,
+                text: inpatText
+            });
+        }
+
+        // 4. 獨立手術事件 (未被合併時)
+        if (hasOp && opDateObj && !isOpMerged) {
+            events.push({
+                type: 'op',
+                date: opDateObj,
+                text: `於${fmtDate(opDate)}接受${opName ? opName + '手術' : '手術'}`
+            });
+        }
+
+        // 5. 排序事件 (依據 date 由舊到新)
+        events.sort((a, b) => a.date - b.date);
+
+        if (events.length === 0) return '';
+
+        // 6. 拼接文字
+        if (events.length === 1) {
+            const ev = events[0];
+            let txt = `病人因上述原因，${ev.text}`;
+            if (ev.type === 'inpat') {
+                txt += `，出院後宜於門診持續追蹤治療。`;
+            } else {
+                txt += `。`;
+            }
+            return txt;
+        }
+
+        // 多個勾選
+        let txt = '病人因上述原因，';
+        events.forEach((ev, idx) => {
+            if (idx > 0) txt += '，';
+            txt += ev.text;
+        });
+
+        // 檢查住院事件後方是否有實質門診事件 (門診日期大於出院日期)
+        const inpatIdx = events.findIndex(ev => ev.type === 'inpat');
+        let hasOpdAfterInpat = false;
+        if (inpatIdx !== -1 && hasOpd && opdDates && opdDates.length > 0) {
+            const disDate = parseDate(dischargeDate);
+            if (disDate) {
+                hasOpdAfterInpat = opdDates.some(d => {
+                    const parsedD = parseDate(d);
+                    return parsedD && parsedD > disDate;
+                });
+            }
+        }
+
+        if (inpatIdx !== -1 && !hasOpdAfterInpat) {
+            txt += `，出院後宜於門診持續追蹤治療。`;
+        } else {
+            txt += `。`;
+        }
+
         return txt;
     }
 
@@ -278,60 +439,96 @@
     async function runDiagFiller() {
         try {
             const runBtn = document.getElementById('ntuh-diag-run'); if (runBtn) runBtn.disabled = true;
+            const hasInpatUI = document.getElementById('ntuh-diag-has-inpat')?.checked;
+            const hasOpdUI = document.getElementById('ntuh-diag-has-opd')?.checked;
+            const hasOpUI = document.getElementById('ntuh-diag-has-op')?.checked;
+
             const dischargeDate = document.getElementById('ntuh-diag-discharge').value.trim();
-            if (!dischargeDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) { setDiagStatus('⚠ 請輸入正確出院日期（YYYY/MM/DD）', 'err'); if (runBtn) runBtn.disabled = false; return; }
+            if (hasInpatUI && !dischargeDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) { setDiagStatus('⚠ 請輸入正確出院日期（YYYY/MM/DD）', 'err'); if (runBtn) runBtn.disabled = false; return; }
             const dept = (() => { const el = document.getElementById('NTUHWeb1_ddlDeptListForPatChiCertificate'); return el ? el.options[el.selectedIndex].text.trim() : '[科別]'; })();
 
-            // OPD field
-            const hasOpdUI = document.getElementById('ntuh-diag-has-opd')?.checked;
-            let opdText = '';
+            // 1. 展開門診資料 (有勾選門診才展開)
+            let opdDates = [];
+            let opdStartDate = '';
             if (hasOpdUI) {
                 setDiagStatus('展開門診資料…', 'warn');
-                await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText', 5000);
-                const opdDates = fetchOpdDates();
-                const opdStartDate = document.getElementById('ntuh-diag-opd-start-date').value.trim();
-                opdText = buildOpdText(opdDates, opdStartDate, dept);
+                await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText, #NTUHWeb1_divOutHistoryInfo', 5000);
+                opdDates = fetchOpdDates();
+                opdStartDate = document.getElementById('ntuh-diag-opd-start-date').value.trim();
             }
 
-            setDiagStatus('展開住院資料…', 'warn');
-            await expandOne('NTUHWeb1_btnLogPatTransferBedShowHide', '#NTUHWeb1_gvwLogPatTransferBed tr.tableText');
-            setDiagStatus('展開急診資料…', 'warn');
-            await expandOne('NTUHWeb1_btnEmgHistoryShowHide', '#NTUHWeb1_gvwEmgHistory tr.tableText');
-            setDiagStatus('展開手術資料…', 'warn');
-            await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText');
-
+            // 2. 住院與急診資料 (有勾選住院才展開)
+            let inpat = { inpatStartDate: '', hasICU: false, icuStart: '', wardAfterICU: '' };
             let emg = { arrivalDT: '', leaveDT: '', leaveDate: '' };
-            try { setDiagStatus('讀取急診動向資料…', 'warn'); await sleep(200); emg = fetchEmgData(); } catch (e) { console.warn(e.message); }
+            if (hasInpatUI) {
+                setDiagStatus('展開住院資料…', 'warn');
+                await expandOne('NTUHWeb1_btnLogPatTransferBedShowHide', '#NTUHWeb1_gvwLogPatTransferBed tr.tableText, #NTUHWeb1_divLogPatTransferBedInfo');
+                inpat = fetchInpatData();
 
-            const inpat = fetchInpatData();
-            const autoOp = fetchOpData();
-            const hasOpUI = document.getElementById('ntuh-diag-has-op')?.checked;
+                setDiagStatus('展開急診資料…', 'warn');
+                await expandOne('NTUHWeb1_btnEmgHistoryShowHide', '#NTUHWeb1_gvwEmgHistory tr.tableText, #NTUHWeb1_divEmgHistoryInfo');
+                try { emg = fetchEmgData(); } catch (e) { console.warn(e.message); }
+            }
+
+            // 3. 手術資料 (有勾選手術才展開)
             let opDate = '', opName = '';
-
             if (hasOpUI) {
+                setDiagStatus('展開手術資料…', 'warn');
+                await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_divOpScheduleInfo');
+                const autoOp = fetchOpData();
                 opDate = document.getElementById('ntuh-diag-op-date')?.value.trim() || autoOp.opDate;
                 opName = document.getElementById('ntuh-diag-op-name')?.value.trim() || autoOp.opName;
-            } else if (autoOp.opDate) {
-                document.getElementById('ntuh-diag-has-op').checked = true; document.getElementById('ntuh-diag-op-detail').style.display = 'flex';
-                document.getElementById('ntuh-diag-op-date').value = autoOp.opDate; document.getElementById('ntuh-diag-op-name').value = autoOp.opName;
-                opDate = autoOp.opDate; opName = autoOp.opName;
             }
 
             const cleanInpatStart = inpat.inpatStartDate ? inpat.inpatStartDate.substring(0, 10).trim().replace(/-/g, '/') : '';
             const fromEmg = !!(emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
 
             const txt = buildText({
-                opdText, fromEmg, arrivalDT: emg.arrivalDT, leaveDT: emg.leaveDT, inpatStartDate: inpat.inpatStartDate,
-                dept, opDate, opName, hasICU: inpat.hasICU, icuStart: inpat.icuStart, wardAfterICU: inpat.wardAfterICU, dischargeDate
+                hasInpat: hasInpatUI, hasOpd: hasOpdUI, hasOp: hasOpUI,
+                opdDates, opdStartDate,
+                inpat, emg, dept,
+                opDate, opName, dischargeDate
             });
 
             fillField('NTUHWeb1_InstructionSetItem', txt);
-            const sdEl = document.getElementById('NTUHWeb1_tbxStartDate'); const edEl = document.getElementById('NTUHWeb1_tbxEndDate');
-            const startDate = fromEmg && emg.arrivalDT ? emg.arrivalDT.substring(0, 10).trim().replace(/-/g, '/') : (cleanInpatStart || todayStr());
-            if (sdEl) sdEl.value = startDate; if (edEl) edEl.value = dischargeDate;
 
-            const cbxI = document.getElementById('NTUHWeb1_cbxI'); if (cbxI && !cbxI.checked) { cbxI.checked = true; cbxI.dispatchEvent(new Event('change', { bubbles: true })); }
-            if (fromEmg) { const cbxE = document.getElementById('NTUHWeb1_cbxE'); if (cbxE && !cbxE.checked) { cbxE.checked = true; cbxE.dispatchEvent(new Event('change', { bubbles: true })); } }
+            const sdEl = document.getElementById('NTUHWeb1_tbxStartDate');
+            const edEl = document.getElementById('NTUHWeb1_tbxEndDate');
+            const cbxI = document.getElementById('NTUHWeb1_cbxI');
+            const cbxE = document.getElementById('NTUHWeb1_cbxE');
+
+            let webStartDate = todayStr();
+            let webEndDate = todayStr();
+
+            if (hasInpatUI) {
+                webStartDate = fromEmg && emg.arrivalDT ? emg.arrivalDT.substring(0, 10).trim().replace(/-/g, '/') : (cleanInpatStart || todayStr());
+                webEndDate = dischargeDate;
+
+                if (cbxI && !cbxI.checked) { cbxI.checked = true; cbxI.dispatchEvent(new Event('change', { bubbles: true })); }
+                if (fromEmg && cbxE && !cbxE.checked) { cbxE.checked = true; cbxE.dispatchEvent(new Event('change', { bubbles: true })); }
+            } else {
+                if (cbxI && cbxI.checked) { cbxI.checked = false; cbxI.dispatchEvent(new Event('change', { bubbles: true })); }
+                if (cbxE && cbxE.checked) { cbxE.checked = false; cbxE.dispatchEvent(new Event('change', { bubbles: true })); }
+
+                if (hasOpdUI && opdDates.length > 0) {
+                    let filtered = opdDates;
+                    if (opdStartDate && opdStartDate.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
+                        const start = parseDate(opdStartDate);
+                        if (start) filtered = opdDates.filter(d => parseDate(d) >= start);
+                    }
+                    if (filtered.length > 0) {
+                        webStartDate = filtered[0];
+                        webEndDate = filtered[filtered.length - 1];
+                    }
+                } else if (hasOpUI && opDate) {
+                    webStartDate = opDate;
+                    webEndDate = opDate;
+                }
+            }
+
+            if (sdEl) sdEl.value = webStartDate;
+            if (edEl) edEl.value = webEndDate;
+
             const rbnNotOri = document.getElementById('NTUHWeb1_rbnIsNotOriDoctor'); if (rbnNotOri && !rbnNotOri.checked) { rbnNotOri.checked = true; rbnNotOri.dispatchEvent(new Event('change', { bubbles: true })); }
 
             await sleep(300); const btnQueryDr = document.getElementById('NTUHWeb1_btnQueryDr'); if (btnQueryDr) simulateClick(btnQueryDr);
@@ -419,7 +616,12 @@
             <div id="ntuh-diag-header"><span>📋 診斷書囑言填入</span><button id="ntuh-diag-close">✕</button></div>
             <div id="ntuh-diag-body">
                 <div style="font-size:11px;color:#7a8aaa;">自動讀取病歷，填入囑言與日期。<span style="color:#f0a030;">病名請自行填寫。</span></div>
-                <div id="ntuh-diag-discharge-row"><span>出院日期</span><input id="ntuh-diag-discharge" type="text" /></div>
+
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                    <label><input type="checkbox" id="ntuh-diag-has-inpat" checked /> <span>有住院</span></label>
+                </div>
+
+                <div id="ntuh-diag-discharge-row" style="display:flex;align-items:center;gap:8px;"><span>出院日期</span><input id="ntuh-diag-discharge" type="text" /></div>
 
                 <div style="display:flex;align-items:center;gap:6px;">
                     <label><input type="checkbox" id="ntuh-diag-has-opd" /> <span>有門診</span></label>
@@ -441,8 +643,17 @@
                 <div id="ntuh-diag-preview"></div>
             </div>
         `;
+
         document.body.appendChild(panel);
         document.getElementById('ntuh-diag-discharge').value = todayStr();
+
+        // 住院區塊打勾與隱藏出院日期
+        document.getElementById('ntuh-diag-has-inpat').addEventListener('change', function() {
+            const dischargeRow = document.getElementById('ntuh-diag-discharge-row');
+            if (dischargeRow) {
+                dischargeRow.style.display = this.checked ? 'flex' : 'none';
+            }
+        });
 
         // 門診區塊：打勾後自動展開、讀取最早日期
         document.getElementById('ntuh-diag-has-opd').addEventListener('change', async function() {
@@ -450,7 +661,7 @@
             if (this.checked) {
                 detailEl.style.display = 'flex';
                 setDiagStatus('展開門診資料…', 'warn');
-                await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText', 5000);
+                await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText, #NTUHWeb1_fieldsetOutHistory [id*="Msg"], #NTUHWeb1_fieldsetOutHistory .errorMsgText', 5000);
                 const opdDates = fetchOpdDates();
                 if (opdDates.length > 0) {
                     document.getElementById('ntuh-diag-opd-start-date').value = opdDates[0];
@@ -466,7 +677,7 @@
         // 初始化自動抓取並預填手術資料
         try {
             setDiagStatus('展開手術資料…', 'warn');
-            await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText');
+            await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_lblOpScheduleMsg');
 
             const initialOpData = fetchOpData();
             if (initialOpData.opDate || initialOpData.opName) {
