@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 手術排程自動化
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.1.1
+// @version      1.1.2
 // @description  批次執行術前評估、當日評估、同意書綁定
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/SimpleQueryOpSchedule_New.aspx*
@@ -272,6 +272,7 @@
                 `${r.name}　估（${r.preop}）、當（${r.day}）、同（${r.consent}）`
             );
             alert('═══ 批次執行結果 ═══\n\n' + lines.join('\n'));
+            location.reload();
         }
 
         const statusEl = document.createElement('div');
