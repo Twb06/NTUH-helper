@@ -93,6 +93,12 @@
         return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
     }
 
+    function tomorrowStr() {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+    }
+
     function waitForEl(selector, timeout = 10000) {
         return new Promise((resolve, reject) => {
             const check = () => {
@@ -682,7 +688,7 @@
         `;
 
         document.body.appendChild(panel);
-        document.getElementById('ntuh-diag-discharge').value = todayStr();
+        document.getElementById('ntuh-diag-discharge').value = tomorrowStr();
 
         // 住院區塊打勾與隱藏出院日期
         document.getElementById('ntuh-diag-has-inpat').addEventListener('change', function() {
