@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate & Consent Integrated Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.8.0
+// @version      1.9.0
 // @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -21,7 +21,8 @@
 
     // 記錄目前觸發背景掃描的唯一 token，用於比對 postMessage 回傳
     let currentScanToken = null;
-    let currentOpScanToken = null;
+    let activeOpScanTokens = {};
+    let detectedOpList = []; // 儲存所有偵測到的手術資料列表
 
     // =========================================================================
     // 路由分流控制中心
@@ -283,6 +284,12 @@
             const deptSpan = tds[0].querySelector('span[id*="lblDeptName"]');
             if (!deptSpan) continue;
             const fullTitle = deptSpan.getAttribute('title') || '';
+            const deptMatch = fullTitle.match(/科別：\s*([^\s\n]+)/);
+            let dept = deptMatch ? deptMatch[1].trim() : '';
+            if (!dept) {
+                const hfDept = tds[0].querySelector('span[id*="lblHfDeptName"]');
+                if (hfDept && hfDept.textContent.trim()) dept = hfDept.textContent.trim();
+            }
             const wardMatch = fullTitle.match(/病房：\s*([^\s\n]+)/);
             const startMatch = fullTitle.match(/起日：\s*([^\s\n]+)/);
             const endMatch = fullTitle.match(/迄日：\s*([^\s\n]*)/);
@@ -290,11 +297,10 @@
             const sd = startMatch ? startMatch[1].trim() : '';
             let ed = endMatch ? endMatch[1].trim() : '';
             if (ed === '0001/01/01') ed = '';
-            if (sd) rows.push({ bed, start: sd, end: ed });
+            if (sd) rows.push({ bed, start: sd, end: ed, dept });
         }
-        if (rows.length === 0) return { inpatStartDate: '', hasICU: false, icuStart: '', wardAfterICU: '' };
+        if (rows.length === 0) return { inpatStartDate: '', timeline: [] };
         let inpatStartDate = rows[0].start;
-        let hasICU = false; let icuStart = ''; let wardAfterICU = '';
         const validTimeline = [rows[0]];
         for (let i = 1; i < rows.length; i++) {
             const currentEvent = rows[i - 1]; const historicalEvent = rows[i];
@@ -302,20 +308,16 @@
                 inpatStartDate = historicalEvent.start; validTimeline.unshift(historicalEvent);
             } else { break; }
         }
-        for (const r of validTimeline) {
-            const ward = r.bed;
-            if (ICU_SET.has(ward)) { hasICU = true; if (!icuStart) icuStart = r.start; }
-            else { if (hasICU && !wardAfterICU) wardAfterICU = r.start; }
-        }
-        return { inpatStartDate, hasICU, icuStart, wardAfterICU };
+        return { inpatStartDate, timeline: validTimeline };
     }
 
-    function fetchOpData() {
-        let opDate = '', opName = '', bestDate = null;
+    function fetchOpDataList() {
+        const opList = [];
         const rows = Array.from(document.querySelectorAll('#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_dgOpScheduleData tr.tableText2'));
         for (const tr of rows) {
             const tds = tr.querySelectorAll('td'); if (tds.length < 5) continue;
             const classSpan = tds[0].querySelector('span[id*="PatClassCode"]'); if (!classSpan) continue;
+            if (classSpan.hasAttribute('disabled')) continue; // 排除未執行/已取消的手術
             const fullTitle = classSpan.getAttribute('title') || '';
             const catMatch = fullTitle.match(/類別：\s*([^\s\n]+)/);
             const catStr = catMatch ? catMatch[1].trim() : classSpan.textContent.trim();
@@ -327,10 +329,69 @@
             if (hfOpSpan && hfOpSpan.textContent.trim()) { currentOpName = hfOpSpan.textContent.trim(); }
             else { const opModeMatch = fullTitle.match(/術式：\s*([\s\S]+)$/); currentOpName = opModeMatch ? opModeMatch[1].trim() : tds[3].textContent.trim(); }
             if (currentOpName.includes('\n')) { currentOpName = currentOpName.split('\n')[0].replace(/^\d+\.\s*/, '').trim(); }
-            const d = new Date(dateStr.replace(/-/g, '/'));
-            if (!bestDate || d > bestDate) { bestDate = d; opDate = dateStr; opName = currentOpName; }
+
+            const opBtn = tds[0].querySelector('[id*="btnSetOpDateInfo_"]');
+            let opScheduleIdse = '';
+            if (opBtn) {
+                const match = opBtn.id.match(/btnSetOpDateInfo_([\s\S]+)$/);
+                opScheduleIdse = match ? match[1].trim() : '';
+            }
+            if (!opScheduleIdse) {
+                // 備援方案：在整行 HTML 中搜尋符合流水號格式的字串 (例如 2026-T0-066998)
+                const trHtml = tr.innerHTML || '';
+                const match = trHtml.match(/([A-Za-z0-9]+[-–—][A-Za-z0-9]+[-–—][A-Za-z0-9]+)/);
+                if (match) {
+                    opScheduleIdse = match[1].trim();
+                }
+            }
+
+            if (!opList.some(item => item.opDate === dateStr && item.opName === currentOpName)) {
+                opList.push({ opDate: dateStr, opName: currentOpName, opScheduleIdse: opScheduleIdse });
+            }
         }
-        return { opDate, opName };
+        // 按日期從新到舊排序 (最新一筆在 list[0])
+        opList.sort((a, b) => new Date(b.opDate) - new Date(a.opDate));
+        return opList;
+    }
+
+    function fetchOpData() {
+        const list = fetchOpDataList();
+        if (list.length > 0) {
+            return { opDate: list[0].opDate, opName: list[0].opName };
+        }
+        return { opDate: '', opName: '' };
+    }
+
+    function addOpRow(date = '', name = '', opScheduleIdse = '') {
+        const container = document.getElementById('ntuh-diag-op-rows-container');
+        if (!container) return;
+
+        const isFirst = container.children.length === 0;
+        const row = document.createElement('div');
+        row.className = 'ntuh-diag-op-row';
+        row.setAttribute('data-op-idse', opScheduleIdse);
+        row.style.cssText = 'display:flex; flex-direction:column; gap:4px; padding:6px; border:1px solid #2d3650; border-radius:6px; background:#141824; position:relative; margin-bottom:4px;';
+
+        let removeBtnHtml = '';
+        if (!isFirst) {
+            removeBtnHtml = `<button class="ntuh-diag-remove-op-btn" type="button" style="background:none; border:none; color:#e05c5c; cursor:pointer; font-size:14px; padding:0 4px; line-height:1;">✕</button>`;
+        }
+
+        row.innerHTML = `
+            <div style="display:flex; align-items:center; gap:4px;">
+                <input class="ntuh-diag-op-date-input" type="text" placeholder="手術日期 YYYY/MM/DD" value="${date}" style="flex:1; background:#0f1420; border:1px solid #2d3650; border-radius:6px; color:#c8d3e8; padding:4px 6px; font-size:11px;" />
+                ${removeBtnHtml}
+            </div>
+            <input class="ntuh-diag-op-name-input" type="text" placeholder="手術名稱" value="${name}" style="background:#0f1420; border:1px solid #2d3650; border-radius:6px; color:#c8d3e8; padding:4px 6px; font-size:11px;" />
+        `;
+
+        if (!isFirst) {
+            row.querySelector('.ntuh-diag-remove-op-btn').addEventListener('click', () => {
+                row.remove();
+            });
+        }
+
+        container.appendChild(row);
     }
 
     function fetchEmgData() {
@@ -382,7 +443,7 @@
         hasInpat, hasOpd, hasOp, hasEmg,
         opdDates, opdStartDate,
         inpat, emg, dept,
-        opDate, opName, dischargeDate
+        opEvents, dischargeDate
     }) {
         const events = [];
 
@@ -409,43 +470,118 @@
         const fromEmg = !!(emg && emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
         const inpatStart = fromEmg && emg && emg.arrivalDT ? emg.arrivalDT : (inpat ? inpat.inpatStartDate : '');
         const inpatStartDateObj = parseDate(inpatStart);
-
-        const opDateObj = parseDate(opDate);
         const dischargeDateObj = parseDate(dischargeDate);
 
-        let isOpMerged = false;
-        if (hasInpat && hasOp && opDateObj && inpatStartDateObj && dischargeDateObj) {
-            if (opDateObj >= inpatStartDateObj && opDateObj <= dischargeDateObj) {
-                isOpMerged = true;
-            }
+        const mergedOps = [];
+        const unmergedOps = [];
+
+        if (opEvents && opEvents.length > 0) {
+            opEvents.forEach(evt => {
+                const evtDateObj = parseDate(evt.date);
+                if (hasInpat && inpatStartDateObj && dischargeDateObj && evtDateObj && evtDateObj >= inpatStartDateObj && evtDateObj <= dischargeDateObj) {
+                    mergedOps.push(evt);
+                } else {
+                    unmergedOps.push(evt);
+                }
+            });
         }
 
         if (hasInpat && inpatStartDateObj && inpat) {
-            let inpatText = '';
+            const inpatSubEvents = [];
+            const timeline = inpat.timeline || [];
+            const startDept = (timeline.length > 0 && timeline[0].dept) ? timeline[0].dept : dept;
+
+            // 1. 住院開始子事件
+            let startText = '';
             if (fromEmg) {
                 const aStr = emg.arrivalDT ? fmtDateTime(emg.arrivalDT) : fmtDate(inpat.inpatStartDate);
                 const lStr = emg.leaveDT ? fmtDateTime(emg.leaveDT) : fmtDate(inpat.inpatStartDate);
-                inpatText = `於${aStr}至本院急診就醫，於${lStr}轉至本院${dept}一般病房住院`;
+                startText = `於${aStr}至本院急診就醫，於${lStr}轉至本院${startDept}一般病房住院`;
             } else {
-                inpatText = `於${fmtDate(inpat.inpatStartDate)}於本院${dept}一般病房住院`;
+                startText = `於${fmtDate(inpat.inpatStartDate)}於本院${startDept}一般病房住院`;
+            }
+            inpatSubEvents.push({
+                date: inpatStartDateObj,
+                priority: 1,
+                text: startText
+            });
+
+            // 2. 第一步如果是 ICU，補上轉入加護病房的敘述
+            if (timeline.length > 0 && ICU_SET.has(timeline[0].bed)) {
+                const icuDateObj = parseDate(timeline[0].start) || inpatStartDateObj;
+                inpatSubEvents.push({
+                    date: icuDateObj,
+                    priority: 3,
+                    text: `於${fmtDate(timeline[0].start)}轉入本院${timeline[0].dept}加護病房治療`
+                });
             }
 
-            if (isOpMerged) {
-                inpatText += `，於${fmtDate(opDate)}接受${opName ? opName + '手術' : '手術'}`;
-            }
+            // 3. 遍歷住院期間的其他病房/科別異動事件
+            for (let i = 1; i < timeline.length; i++) {
+                const current = timeline[i];
+                const prev = timeline[i - 1];
+                const isCurrentICU = ICU_SET.has(current.bed);
+                const isPrevICU = ICU_SET.has(prev.bed);
+                const currentDateObj = parseDate(current.start) || inpatStartDateObj;
 
-            if (inpat.hasICU) {
-                inpatText += `，於${fmtDate(inpat.icuStart)}轉入本院加護病房治療`;
-                if (inpat.wardAfterICU) {
-                    inpatText += `，於${fmtDate(inpat.wardAfterICU)}轉入本院${dept}一般病房`;
+                if (isCurrentICU && !isPrevICU) {
+                    inpatSubEvents.push({
+                        date: currentDateObj,
+                        priority: 3,
+                        text: `於${fmtDate(current.start)}轉入本院${current.dept}加護病房治療`
+                    });
+                } else if (!isCurrentICU && isPrevICU) {
+                    inpatSubEvents.push({
+                        date: currentDateObj,
+                        priority: 3,
+                        text: `於${fmtDate(current.start)}轉入本院${current.dept}一般病房`
+                    });
+                } else if (!isCurrentICU && !isPrevICU && current.dept && prev.dept && current.dept !== prev.dept) {
+                    inpatSubEvents.push({
+                        date: currentDateObj,
+                        priority: 3,
+                        text: `於${fmtDate(current.start)}轉入本院${current.dept}一般病房`
+                    });
                 }
             }
 
+            // 4. 合併住院期間的手術/檢查
+            if (mergedOps.length > 0) {
+                mergedOps.forEach(evt => {
+                    const evtDateObj = parseDate(evt.date) || inpatStartDateObj;
+                    inpatSubEvents.push({
+                        date: evtDateObj,
+                        priority: 2,
+                        text: `於${fmtDate(evt.date)}接受${evt.name || '手術'}`
+                    });
+                });
+            }
+
+            // 5. 出院子事件
             if (dischargeDate) {
                 const dp = dischargeDate.split('/');
                 const dFmt = `西元${dp[0]}年${String(dp[1]).padStart(2,'0')}月${String(dp[2]).padStart(2,'0')}日`;
-                inpatText += `，於${dFmt}出院`;
+                inpatSubEvents.push({
+                    date: dischargeDateObj || inpatStartDateObj,
+                    priority: 4,
+                    text: `於${dFmt}出院`
+                });
             }
+
+            // 對所有住院子事件進行排序：先按日期，同天則按優先權：起點(1) -> 手術(2) -> 轉床(3) -> 出院(4)
+            inpatSubEvents.sort((a, b) => {
+                if (a.date.getTime() !== b.date.getTime()) {
+                    return a.date - b.date;
+                }
+                return a.priority - b.priority;
+            });
+
+            // 拼接所有子事件文字
+            let inpatText = '';
+            inpatSubEvents.forEach((sev, sidx) => {
+                if (sidx > 0) inpatText += '，';
+                inpatText += sev.text;
+            });
 
             events.push({
                 type: 'inpat',
@@ -465,11 +601,17 @@
             }
         }
 
-        if (hasOp && opDateObj && !isOpMerged) {
-            events.push({
-                type: 'op',
-                date: opDateObj,
-                text: `於${fmtDate(opDate)}接受${opName ? opName + '手術' : '手術'}`
+        // 獨立的手術事件，按日期排序
+        if (unmergedOps.length > 0) {
+            unmergedOps.forEach(evt => {
+                const dObj = parseDate(evt.date);
+                if (dObj) {
+                    events.push({
+                        type: 'op',
+                        date: dObj,
+                        text: `於${fmtDate(evt.date)}接受${evt.name || '手術'}`
+                    });
+                }
             });
         }
 
@@ -558,23 +700,44 @@
                 }
             }
 
-            let opDate = '', opName = '';
+            const opEvents = [];
             if (hasOpUI) {
                 setDiagStatus('展開手術資料…', 'warn');
                 await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_divOpScheduleInfo');
-                const autoOp = fetchOpData();
-                opDate = document.getElementById('ntuh-diag-op-date')?.value.trim() || autoOp.opDate;
-                opName = document.getElementById('ntuh-diag-op-name')?.value.trim() || autoOp.opName;
+                const container = document.getElementById('ntuh-diag-op-rows-container');
+                if (container) {
+                    const rows = container.getElementsByClassName('ntuh-diag-op-row');
+                    for (const row of rows) {
+                        const dateInput = row.querySelector('.ntuh-diag-op-date-input');
+                        const nameInput = row.querySelector('.ntuh-diag-op-name-input');
+                        const dateVal = dateInput ? dateInput.value.trim() : '';
+                        const nameVal = nameInput ? nameInput.value.trim() : '';
+                        if (dateVal) {
+                            opEvents.push({ date: dateVal, name: nameVal });
+                        }
+                    }
+                }
             }
+
+            const consentCbxs = document.querySelectorAll('.ntuh-diag-consent-cbx:checked');
+            consentCbxs.forEach(cbx => {
+                const title = cbx.getAttribute('data-title') || '';
+                const date = cbx.getAttribute('data-date') || '';
+                if (date) {
+                    const cleanName = title.replace(/(說明暨同意書|同意書|說明書)[\s\S]*$/, '').trim();
+                    const cleanDate = date.split(' ')[0].trim().replace(/-/g, '/');
+                    opEvents.push({ date: cleanDate, name: cleanName });
+                }
+            });
 
             const cleanInpatStart = inpat.inpatStartDate ? inpat.inpatStartDate.substring(0, 10).trim().replace(/-/g, '/') : '';
             const fromEmg = !!(emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
 
             const txt = buildText({
-                hasInpat: hasInpatUI, hasOpd: hasOpdUI, hasOp: hasOpUI, hasEmg: hasEmgUI,
+                hasInpat: hasInpatUI, hasOpd: hasOpdUI, hasOp: (opEvents.length > 0), hasEmg: hasEmgUI,
                 opdDates, opdStartDate,
                 inpat, emg, dept,
-                opDate, opName, dischargeDate
+                opEvents, dischargeDate
             });
 
             fillField('NTUHWeb1_InstructionSetItem', txt);
@@ -623,9 +786,11 @@
                 }
             }
 
-            if (hasOpUI && opDate) {
-                dateCandidates.push({ start: opDate, end: opDate });
-            }
+            opEvents.forEach(evt => {
+                if (evt.date) {
+                    dateCandidates.push({ start: evt.date, end: evt.date });
+                }
+            });
 
             if (dateCandidates.length > 0) {
                 let minDateStr = null;
@@ -680,16 +845,35 @@
             return;
         }
 
-        let html = `<div style="font-weight:bold; color:#ff7597; font-size:11px; margin-top:4px; border-top:1px dashed #2d3650; padding-top:6px;">📋 擷取到手術/術式同意書 (點擊開啟)：</div>`;
-        html += `<ul style="margin:0; padding-left:14px; font-size:12px; line-height:1.6; max-height:150px; overflow-y:auto;">`;
-        list.forEach(item => {
+        const sortedList = [...list].sort((a, b) => {
+            const aSigned = a.status === '已簽署';
+            const bSigned = b.status === '已簽署';
+            if (aSigned !== bSigned) {
+                return aSigned ? -1 : 1;
+            }
+            const aDate = new Date(a.date ? a.date.replace(/-/g, '/') : '');
+            const bDate = new Date(b.date ? b.date.replace(/-/g, '/') : '');
+            if (isNaN(aDate) && isNaN(bDate)) return 0;
+            if (isNaN(aDate)) return 1;
+            if (isNaN(bDate)) return -1;
+            return bDate - aDate;
+        });
+
+        let html = `<div style="font-weight:bold; color:#ff7597; font-size:11px; margin-top:4px; border-top:1px dashed #2d3650; padding-top:6px;">📋 擷取到同意書 (勾選帶入診斷書)：</div>`;
+        html += `<ul style="margin:0; padding:0; list-style:none; font-size:12px; line-height:1.6; max-height:150px; overflow-y:auto;">`;
+        sortedList.forEach(item => {
+            const escapedTitle = item.title.replace(/"/g, '&quot;');
+            const escapedDate = (item.date || '').replace(/"/g, '&quot;');
             html += `
-                <li style="margin-bottom: 4px; list-style-type: square;">
-                    <span style="color:#7a8aaa; font-size:11px;">[${item.date}]</span><br>
-                    <a href="${item.url}" target="_blank" style="color:#63b3ed; font-weight:bold; text-decoration:underline;">
-                        ${item.title}
-                    </a>
-                    <span style="color:#48bb78; font-size:11px;">(${item.status})</span>
+                <li style="margin-bottom: 6px; display: flex; align-items: flex-start; gap: 6px;">
+                    <input type="checkbox" class="ntuh-diag-consent-cbx" data-title="${escapedTitle}" data-date="${escapedDate}" style="margin-top: 3px; cursor: pointer;" />
+                    <div style="flex: 1;">
+                        <span style="color:#7a8aaa; font-size:11px;">[${item.date}]</span>
+                        <a href="${item.url}" target="_blank" style="color:#63b3ed; font-weight:bold; text-decoration:underline; display: block;">
+                            ${item.title}
+                        </a>
+                        <span style="color:#48bb78; font-size:11px;">(${item.status})</span>
+                    </div>
                 </li>`;
         });
         html += `</ul>`;
@@ -697,22 +881,130 @@
         setDiagStatus('✓ 同意書背景跨網讀取成功！', 'ok');
     }
 
-    function handleReceivedOpName(opName) {
-        const inputEl = document.getElementById('ntuh-diag-op-name');
-        if (inputEl) {
-            inputEl.value = opName;
-            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    function handleReceivedOpName(opData) {
+        const container = document.getElementById('ntuh-diag-op-rows-container');
+        if (!container) return;
 
-            const cbxOp = document.getElementById('ntuh-diag-has-op');
-            if (cbxOp && !cbxOp.checked) {
-                cbxOp.checked = true;
-                const detailEl = document.getElementById('ntuh-diag-op-detail');
-                if (detailEl) detailEl.style.display = 'flex';
+        let mainOpName = '';
+        let mainIdse = '';
+        let otherOpMaps = {};
+
+        if (opData) {
+            if (typeof opData === 'string') {
+                if (opData.trim().startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(opData);
+                        mainOpName = parsed.mainOpName || '';
+                        mainIdse = parsed.opScheduleIdse || '';
+                        otherOpMaps = parsed.otherOpMaps || {};
+                    } catch (e) {
+                        mainOpName = opData;
+                    }
+                } else {
+                    mainOpName = opData;
+                }
+            } else if (typeof opData === 'object') {
+                mainOpName = opData.mainOpName || '';
+                mainIdse = opData.opScheduleIdse || '';
+                otherOpMaps = opData.otherOpMaps || {};
+            }
+        }
+
+        const normalizeIdse = s => s ? s.replace(/[^A-Za-z0-9]/g, '').toLowerCase().trim() : '';
+        console.log('[DiagFiller] 收到手術名稱資料, mainIdse:', mainIdse, 'mainOpName:', mainOpName, 'otherOpMaps:', otherOpMaps);
+
+        // 1. 更新 detectedOpList 中的手術名稱
+        if (detectedOpList && detectedOpList.length > 0) {
+            const normMainIdse = normalizeIdse(mainIdse);
+            
+            // 優先以流水號匹配更新 mainOpName
+            let updatedMain = false;
+            if (normMainIdse) {
+                for (let i = 0; i < detectedOpList.length; i++) {
+                    if (normalizeIdse(detectedOpList[i].opScheduleIdse) === normMainIdse) {
+                        detectedOpList[i].opName = mainOpName;
+                        updatedMain = true;
+                        console.log(`[DiagFiller] 依流水號匹配，將第 ${i} 筆手術名稱更新為 mainOpName: ${mainOpName}`);
+                        break;
+                    }
+                }
+            }
+            // 保底方案：若無匹配到流水號，則更新第一筆
+            if (!updatedMain) {
+                detectedOpList[0].opName = mainOpName;
+                console.log(`[DiagFiller] 未匹配到流水號，保底更新第一筆手術名稱為 mainOpName: ${mainOpName}`);
             }
 
-            setDiagStatus('✓ 手術名稱背景讀取成功！', 'ok');
+            const normOtherOpMaps = {};
+            for (const key in otherOpMaps) {
+                normOtherOpMaps[normalizeIdse(key)] = otherOpMaps[key];
+            }
+            console.log('[DiagFiller] 轉換後的 normOtherOpMaps:', normOtherOpMaps);
+
+            // 更新其他在同意書表格中關聯的手術名稱
+            for (let i = 0; i < detectedOpList.length; i++) {
+                if (normMainIdse && normalizeIdse(detectedOpList[i].opScheduleIdse) === normMainIdse) {
+                    continue; // 剛才已經更新過 mainOpName 的不重複更新
+                }
+                const idse = detectedOpList[i].opScheduleIdse;
+                const normIdse = normalizeIdse(idse);
+                console.log(`[DiagFiller] 檢查第 ${i} 筆手術: idse=${idse}, normIdse=${normIdse}`);
+                if (normIdse && normOtherOpMaps[normIdse]) {
+                    detectedOpList[i].opName = normOtherOpMaps[normIdse];
+                    console.log(`[DiagFiller] 成功比對第 ${i} 筆手術名稱為: ${detectedOpList[i].opName}`);
+                } else {
+                    console.warn(`[DiagFiller] 第 ${i} 筆手術比對失敗，未在 normOtherOpMaps 中找到對應名稱`);
+                }
+            }
         }
+
+        // 2. 確保至少有一個 row，並更新 UI 中所有已存在的 rows 的輸入值
+        const rows = container.getElementsByClassName('ntuh-diag-op-row');
+        if (rows.length === 0) {
+            const firstOp = detectedOpList && detectedOpList[0] ? detectedOpList[0] : { opDate: todayStr(), opName: mainOpName, opScheduleIdse: '' };
+            addOpRow(firstOp.opDate, mainOpName, firstOp.opScheduleIdse);
+        } else {
+            const opMapByIdse = {};
+            if (detectedOpList) {
+                detectedOpList.forEach(item => {
+                    const norm = normalizeIdse(item.opScheduleIdse);
+                    if (norm) opMapByIdse[norm] = item;
+                });
+            }
+
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const idse = row.getAttribute('data-op-idse') || '';
+                const normIdse = normalizeIdse(idse);
+                
+                let targetName = '';
+                if (normIdse && opMapByIdse[normIdse]) {
+                    targetName = opMapByIdse[normIdse].opName;
+                } else if (i === 0) {
+                    targetName = mainOpName;
+                } else if (detectedOpList && detectedOpList[i]) {
+                    targetName = detectedOpList[i].opName;
+                }
+
+                if (targetName) {
+                    const nameInput = row.querySelector('.ntuh-diag-op-name-input');
+                    if (nameInput) {
+                        nameInput.value = targetName;
+                        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+            }
+        }
+
+        const cbxOp = document.getElementById('ntuh-diag-has-op');
+        if (cbxOp && !cbxOp.checked) {
+            cbxOp.checked = true;
+            const detailEl = document.getElementById('ntuh-diag-op-detail');
+            if (detailEl) detailEl.style.display = 'flex';
+        }
+
+        setDiagStatus('✓ 手術名稱背景讀取成功！', 'ok');
     }
 
     function makeDraggable(panel, handle) {
@@ -738,15 +1030,16 @@
         style.textContent = `
             #ntuh-diag-fab { position: fixed; bottom: 80px; right: 24px; width: 48px; height: 48px; border-radius: 50%; background: #2a1f3a; border: 2px solid #9a7cdc; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 99999; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 20px; transition: transform 0.15s, box-shadow 0.15s; user-select: none; }
             #ntuh-diag-fab:hover { transform: scale(1.1); box-shadow: 0 6px 20px rgba(0,0,0,0.5); }
-            #ntuh-diag-panel { position: fixed; bottom: 80px; right: 24px; width: 320px; background: #1a1f2e; border: 1px solid #2d3650; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); z-index: 99999; font-family: 'Consolas',monospace; font-size: 12px; color: #c8d3e8; overflow: hidden; display: none; }
-            #ntuh-diag-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: #2a1f3a; border-bottom: 1px solid #2d3650; cursor: move; user-select: none; font-size: 13px; font-weight: 600; }
+            #ntuh-diag-panel { position: fixed; bottom: 80px; right: 24px; width: 320px; background: #1a1f2e; border: 1px solid #2d3650; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); z-index: 99999; font-family: 'Consolas',monospace; font-size: 12px; color: #c8d3e8; display: none; max-height: 85vh; flex-direction: column; overflow: hidden; }
+            #ntuh-diag-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: #2a1f3a; border-bottom: 1px solid #2d3650; cursor: move; user-select: none; font-size: 13px; font-weight: 600; flex-shrink: 0; }
             #ntuh-diag-close { background: none; border: none; color: #7a8aaa; cursor: pointer; font-size: 16px; padding: 0 4px; line-height: 1; }
-            #ntuh-diag-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+            #ntuh-diag-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
+            #ntuh-diag-footer { padding: 10px 12px; background: #151926; border-top: 1px solid #2d3650; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
             #ntuh-diag-discharge-row { display: none; align-items: center; gap: 8px; }
             #ntuh-diag-discharge { flex: 1; background: #0f1420; border: 1px solid #2d3650; border-radius: 6px; color: #c8d3e8; font-size: 12px; padding: 5px 8px; }
-            #ntuh-diag-run { padding: 8px 0; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; background: #6a3cac; color: #fff; }
+            #ntuh-diag-run { padding: 8px 0; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; background: #6a3cac; color: #fff; flex-shrink: 0; }
             #ntuh-diag-run:disabled { opacity: 0.5; cursor: not-allowed; }
-            #ntuh-diag-preview { display: none; background: #0f1420; border: 1px solid #2d3650; border-radius: 6px; padding: 8px; font-size: 11px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; color: #a8c0e8; }
+            #ntuh-diag-preview { display: none; background: #0f1420; border: 1px solid #2d3650; border-radius: 6px; padding: 8px; font-size: 11px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; color: #a8c0e8; }
             .diag-ok { color: #3fb950; } .diag-err { color: #e05c5c; } .diag-warn { color: #f0a030; }
         `;
         document.head.appendChild(style);
@@ -784,14 +1077,15 @@
 
                 <div style="display:flex;align-items:center;gap:6px;"><label><input type="checkbox" id="ntuh-diag-has-op" /> <span>手術</span></label></div>
                 <div id="ntuh-diag-op-detail" style="display:none;flex-direction:column;gap:6px;">
-                    <input id="ntuh-diag-op-date" type="text" placeholder="手術日期 YYYY/MM/DD" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
-                    <input id="ntuh-diag-op-name" type="text" placeholder="手術名稱" style="background:#0f1420;border:1px solid #2d3650;border-radius:6px;color:#c8d3e8;padding:5px 8px;" />
+                    <div id="ntuh-diag-op-rows-container" style="display:flex;flex-direction:column;gap:6px;"></div>
+                    <button id="ntuh-diag-add-op-btn" type="button" style="padding:4px; border:1px dashed #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; margin-top:4px;">➕ 新增手術</button>
                 </div>
-
+                <div id="ntuh-diag-consent-result-box" style="display:none;"></div>
+            </div>
+            <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
                 <button id="ntuh-diag-open-consent" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 背景檢查電子同意書項目</button>
                 <div id="ntuh-diag-status"></div>
-                <div id="ntuh-diag-consent-result-box" style="display:none;"></div>
                 <div id="ntuh-diag-preview"></div>
             </div>
         `;
@@ -853,11 +1147,30 @@
             const detailEl = document.getElementById('ntuh-diag-op-detail');
             if (this.checked) {
                 detailEl.style.display = 'flex';
-                if (!document.getElementById('ntuh-diag-op-date').value) document.getElementById('ntuh-diag-op-date').value = todayStr();
-            } else { detailEl.style.display = 'none'; }
+                const container = document.getElementById('ntuh-diag-op-rows-container');
+                if (container && container.children.length === 0) {
+                    if (detectedOpList && detectedOpList.length > 0) {
+                        addOpRow(detectedOpList[0].opDate, detectedOpList[0].opName, detectedOpList[0].opScheduleIdse);
+                    } else {
+                        addOpRow(todayStr(), '', '');
+                    }
+                }
+            } else {
+                detailEl.style.display = 'none';
+            }
         });
 
-        fab.onclick = () => { fab.style.display = 'none'; panel.style.display = 'block'; };
+        document.getElementById('ntuh-diag-add-op-btn').addEventListener('click', function() {
+            const container = document.getElementById('ntuh-diag-op-rows-container');
+            const nextIndex = container ? container.children.length : 0;
+            if (detectedOpList && nextIndex < detectedOpList.length) {
+                addOpRow(detectedOpList[nextIndex].opDate, detectedOpList[nextIndex].opName, detectedOpList[nextIndex].opScheduleIdse);
+            } else {
+                addOpRow(todayStr(), '', '');
+            }
+        });
+
+        fab.onclick = () => { fab.style.display = 'none'; panel.style.display = 'flex'; };
         document.getElementById('ntuh-diag-close').onclick = () => { panel.style.display = 'none'; fab.style.display = 'flex'; };
         makeDraggable(panel, document.getElementById('ntuh-diag-header'));
         document.getElementById('ntuh-diag-run').onclick = () => runDiagFiller();
@@ -892,25 +1205,40 @@
                     window.open(targetUrl, '_blank');
                 }
 
-                const opBtn = document.querySelector('[id^="btnSetOpDateInfo_"]');
-                if (opBtn) {
-                    const opScheduleIdse = opBtn.id.replace('btnSetOpDateInfo_', '').trim();
-                    if (opScheduleIdse) {
-                        const opToken = 'ntuh_op_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-                        currentOpScanToken = opToken;
-
-                        const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentFormManagement.aspx` +
-                                           `?SESSION=${session}&OpScheduleIdse=${opScheduleIdse}&ConsentType=O&RecognitionPageOpening=false&ntuh_token=${opToken}`;
-
-                        if (typeof GM_openInTab !== 'undefined') {
-                            GM_openInTab(opTargetUrl, { active: false, insert: true, setParent: true });
-                        } else {
-                            window.open(opTargetUrl, '_blank');
-                        }
+                // 收集目前 UI 上所有的手術列掃描任務 (只為需要翻譯成中文的手術排程開啟背景分頁)
+                const rows = Array.from(document.getElementById('ntuh-diag-op-rows-container').getElementsByClassName('ntuh-diag-op-row'));
+                const scanTasks = [];
+                
+                rows.forEach((row, index) => {
+                    const nameInput = row.querySelector('.ntuh-diag-op-name-input');
+                    const opName = nameInput ? nameInput.value.trim() : '';
+                    const opScheduleIdse = row.getAttribute('data-op-idse') || '';
+                    
+                    // 第一筆一定要掃 (用來帶入主同意書清單)；其他筆若非中文且有流水號才掃
+                    const isFirst = index === 0;
+                    const needsScan = isFirst || !opName || /[A-Za-z]/.test(opName);
+                    
+                    if (needsScan && opScheduleIdse) {
+                        const opToken = 'ntuh_op_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '_' + index;
+                        scanTasks.push({ opScheduleIdse, opToken });
                     }
-                } else {
-                    console.log('[DiagFiller] 頁面未發現 id 開頭為 btnSetOpDateInfo_ 的按鈕，跳過手術名稱撈取');
-                }
+                });
+
+                console.log('[DiagFiller] 規劃的手術背景掃描任務:', scanTasks);
+
+                activeOpScanTokens = {};
+                scanTasks.forEach(task => {
+                    const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentFormManagement.aspx` +
+                                       `?SESSION=${session}&OpScheduleIdse=${task.opScheduleIdse}&ConsentType=O&RecognitionPageOpening=false&ntuh_token=${task.opToken}`;
+                    
+                    activeOpScanTokens[task.opToken] = task.opScheduleIdse;
+
+                    if (typeof GM_openInTab !== 'undefined') {
+                        GM_openInTab(opTargetUrl, { active: false, insert: true, setParent: true });
+                    } else {
+                        window.open(opTargetUrl, '_blank');
+                    }
+                });
 
                 // 啟動資料輪詢機制讀取背景回傳資料
                 const startTime = Date.now();
@@ -942,18 +1270,18 @@
                     }
 
                     // 2. 檢查手術名稱資料
-                    if (currentOpScanToken) {
-                        const opNameData = getSharedData('ntuh_op_name_' + currentOpScanToken);
+                    for (const opToken in activeOpScanTokens) {
+                        const opNameData = getSharedData('ntuh_op_name_' + opToken);
                         if (opNameData) {
-                            console.log('[DiagFiller] 收到手術名稱資料:', opNameData);
+                            console.log(`[DiagFiller] 收到 Token ${opToken} 的手術名稱資料:`, opNameData);
                             handleReceivedOpName(opNameData);
-                            deleteSharedData('ntuh_op_name_' + currentOpScanToken);
-                            currentOpScanToken = null; // 標記已處理
+                            deleteSharedData('ntuh_op_name_' + opToken);
+                            delete activeOpScanTokens[opToken]; // 標記已處理
                         }
                     }
 
                     // 3. 如果兩者都已經處理完畢（或沒啟動的就不存在），清除輪詢
-                    if (!currentScanToken && !currentOpScanToken) {
+                    if (!currentScanToken && Object.keys(activeOpScanTokens).length === 0) {
                         clearInterval(pollInterval);
                         console.log('[DiagFiller] 所有背景資料已成功接收，停止輪詢');
                     }
@@ -974,12 +1302,14 @@
             // 1. 手術
             setDiagStatus('自動偵測病歷中：展開手術資料…', 'warn');
             await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_lblOpScheduleMsg');
-            const initialOpData = fetchOpData();
-            if (initialOpData.opDate || initialOpData.opName) {
+            const opList = fetchOpDataList();
+            detectedOpList = opList;
+            const container = document.getElementById('ntuh-diag-op-rows-container');
+            if (container) container.innerHTML = '';
+            if (opList.length > 0) {
                 document.getElementById('ntuh-diag-has-op').checked = true;
                 document.getElementById('ntuh-diag-op-detail').style.display = 'flex';
-                if (initialOpData.opDate) document.getElementById('ntuh-diag-op-date').value = initialOpData.opDate;
-                if (initialOpData.opName) document.getElementById('ntuh-diag-op-name').value = initialOpData.opName;
+                addOpRow(opList[0].opDate, opList[0].opName, opList[0].opScheduleIdse);
             } else {
                 document.getElementById('ntuh-diag-has-op').checked = false;
                 document.getElementById('ntuh-diag-op-detail').style.display = 'none';
@@ -1238,8 +1568,33 @@
         return processedItems.join('併') + '手術';
     }
 
+    function extractOtherOpScheduleNames() {
+        const otherOpMaps = {};
+        const tbody = document.getElementById('tbBodyConsentFormInfo');
+        if (tbody) {
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            for (const tr of rows) {
+                const tds = tr.querySelectorAll('td');
+                if (tds.length >= 6) {
+                    const statusText = tds[2]?.textContent || '';
+                    const match = statusText.match(/([A-Za-z0-9]+[-–—][A-Za-z0-9]+[-–—][A-Za-z0-9]+)/);
+                    if (match) {
+                        const otherIdse = match[1].trim();
+                        let otherOpName = tds[4]?.textContent.trim();
+                        if (otherIdse && otherOpName) {
+                            const formatted = formatCombinedOpName(otherOpName);
+                            otherOpMaps[otherIdse] = formatted || otherOpName;
+                        }
+                    }
+                }
+            }
+        }
+        return otherOpMaps;
+    }
+
     async function runOpNameExtractorAndReturn() {
         const token = new URLSearchParams(window.location.search).get('ntuh_token') || '';
+        const opScheduleIdse = new URLSearchParams(window.location.search).get('OpScheduleIdse') || '';
         try {
             await sleep(600);
             const rawOpName = extractOpNameFromDOM();
@@ -1247,19 +1602,30 @@
             const formatted = formatCombinedOpName(rawOpName);
             console.log('[OpNameExtractor] 格式化後的手術名稱:', formatted);
 
+            const otherOpMaps = extractOtherOpScheduleNames();
+            console.log('[OpNameExtractor] 擷取到其他手術名稱映射:', otherOpMaps);
+
+            const opResult = {
+                opScheduleIdse: opScheduleIdse,
+                mainOpName: formatted,
+                otherOpMaps: otherOpMaps
+            };
+
+            const resultString = JSON.stringify(opResult);
+
             // 寫入全域資料進行跨網域共享
             if (token) {
                 console.log('[OpNameExtractor] 寫入傳遞資料, token:', token);
-                setSharedData('ntuh_op_name_' + token, formatted);
+                setSharedData('ntuh_op_name_' + token, resultString);
             }
 
             // 透過 postMessage 將資料回傳給主視窗（備援/舊版相容）
             if (window.opener) {
                 window.opener.postMessage(
-                    { ntuh: true, token, type: 'opName', data: formatted },
+                    { ntuh: true, token, type: 'opName', data: opResult },
                     'https://hisaw.ntuh.gov.tw'
                 );
-                console.log('[OpNameExtractor] 手術名稱已回傳:', formatted);
+                console.log('[OpNameExtractor] 手術名稱已回傳:', opResult);
             } else {
                 console.log('[OpNameExtractor] 無法取得 opener，改以全域資料通訊機制回傳');
             }
