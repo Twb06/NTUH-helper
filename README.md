@@ -15,6 +15,7 @@
 
 | 書籤 | 說明 | 使用頁面 | 原始碼 |
 |------|------|----------|--------|
+| `chart-antibiotic` | 在藥歷圖頁面按書籤，整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用並顯示療程天數 | Portal 藥歷圖（Chart.aspx） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/chart-antibiotic.js) |
 | `lab-trend` | 框選「綠單」檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組） | Portal 報告頁面的綠單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-trend.js) |
 | `lab-summary` | 框選「清單」檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期 | Portal 報告頁面的清單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-summary.js) |
 | `goto-nursing-handover` | 新開分頁跳轉到該病人的「護理交班」頁面 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-handover.js) |
