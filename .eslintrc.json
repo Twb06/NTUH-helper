@@ -23,7 +23,8 @@
     "GM_registerMenuCommand": "readonly",
     "GM_unregisterMenuCommand": "readonly",
     "unsafeWindow": "readonly",
-    "OnClientClick_GetSelectedLabData": "readonly"
+    "OnClientClick_GetSelectedLabData": "readonly",
+    "__doPostBack": "readonly"
   },
   "rules": {
     "no-unused-vars": "warn",
