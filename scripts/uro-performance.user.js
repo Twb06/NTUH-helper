@@ -4,8 +4,8 @@
 // @version      1.8.0
 // @description  對照表CSV+刀表病人CSV+病歷號雙鍵+已填判斷+全自動寫入。巡檢:切病人→判已填→完全未填才填主治+R→新增→切下一位。嚴格病歷號比對。無對外連線。
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
-// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/uro-performance.user.js
-// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/uro-performance.user.js
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
