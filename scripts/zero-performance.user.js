@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         NTUH 掛0%績效工具 (半自動寫入版 v1.4.2)
+// @name         NTUH 掛0%績效工具 v1.4.2
 // @namespace    ntuh-zero
 // @version      1.4.2
 // @description  一鍵把指定員編以0%掛進當前病人的R角色:讀現有R→設人數(VS0/成本0/R現有+1)→照抄舊R+自己0%→刪舊R→新增。狀態機跨postback接力。不切換病人。
@@ -114,7 +114,7 @@
   root.innerHTML =
     '<div id="ptz-fab" title="掛0%績效工具">0%</div>' +
     '<div id="ptz-panel" style="display:none">' +
-      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">半自動寫入 v1.4.2</span></span><span id="ptz-close">✕</span></div>' +
+      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">v1.4.2</span></span><span id="ptz-close">✕</span></div>' +
       '<div id="ptz-body">' +
         '<label>要掛 0% 的員編(預設掛自己,可改)</label>' +
         '<input type="text" id="ptz-emp" placeholder="輸入員編" />' +
