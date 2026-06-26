@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NTUH Helper 安裝教學</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0f172a;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 20px 48px;
+}
+
+/* ── Header ── */
+.header { text-align: center; margin-bottom: 28px; animation: fadeDown .5s ease; }
+.header h1 { font-size: 26px; font-weight: 700; color: #f8fafc; }
+.header p  { color: #64748b; margin-top: 5px; font-size: 14px; }
+
+/* ── Step nav ── */
+.step-rail {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 28px;
+  animation: fadeDown .5s ease .08s both;
+}
+.rail-item { display: flex; align-items: center; }
+.rail-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 18px;
+  background: #1e293b; border: 1px solid #334155;
+  color: #475569; font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all .2s; white-space: nowrap;
+}
+.rail-item:first-child .rail-btn { border-radius: 8px 0 0 8px; }
+.rail-item:last-child  .rail-btn { border-radius: 0 8px 8px 0; }
+.rail-item:not(:first-child) .rail-btn { border-left: none; }
+.rail-num {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #334155; color: #64748b;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; flex-shrink: 0;
+  transition: all .2s;
+}
+.rail-btn.active { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+.rail-btn.active .rail-num { background: rgba(255,255,255,.25); color: #fff; }
+.rail-btn.done { color: #22c55e; }
+.rail-btn.done .rail-num { background: #14532d; color: #22c55e; }
+
+/* ── Card ── */
+.card {
+  width: 820px; max-width: 100%;
+  background: #1e293b; border: 1px solid #334155; border-radius: 16px;
+  overflow: hidden; animation: fadeDown .5s ease .15s both;
+}
+
+/* ── Panel ── */
+.panel { display: none; }
+.panel.active { display: flex; flex-direction: column; animation: slideIn .35s ease; }
+@keyframes slideIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+@keyframes fadeDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+
+/* Panel header */
+.ph {
+  padding: 22px 28px 18px;
+  border-bottom: 1px solid #334155;
+  display: flex; align-items: flex-start; gap: 14px;
+}
+.ph-icon {
+  width: 42px; height: 42px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0;
+}
+.ph-icon.blue   { background: #1e3a5f; }
+.ph-icon.orange { background: #431407; }
+.ph-icon.green  { background: #14532d; }
+.ph-icon.indigo { background: #1e1b4b; }
+.ph-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: #475569; margin-bottom: 2px; }
+.ph h2 { font-size: 18px; font-weight: 700; color: #f8fafc; }
+.ph p  { font-size: 13px; color: #64748b; margin-top: 3px; line-height: 1.5; }
+
+/* Panel body */
+.pb { padding: 24px 28px; flex: 1; }
+
+/* Panel footer */
+.pf {
+  padding: 16px 28px 20px;
+  border-top: 1px solid #334155;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.dots { display: flex; gap: 5px; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: #334155; transition: all .3s; }
+.dot.active { background: #2563eb; width: 18px; border-radius: 3px; }
+.dot.done   { background: #16a34a; }
+
+.nav-btns { display: flex; gap: 8px; }
+.btn {
+  padding: 8px 18px; border-radius: 7px;
+  font-size: 13px; font-weight: 600; cursor: pointer; border: none;
+  transition: all .15s;
+}
+.btn-prev { background: #1e293b; border: 1px solid #475569; color: #94a3b8; }
+.btn-prev:hover:not(:disabled) { color: #f8fafc; border-color: #64748b; }
+.btn-prev:disabled { opacity: .4; cursor: default; }
+.btn-next { background: #2563eb; color: #fff; }
+.btn-next:hover { background: #1d4ed8; }
+.btn-finish { background: #16a34a; color: #fff; }
+.btn-finish:hover { background: #15803d; }
+
+/* Callout */
+.callout {
+  display: flex; gap: 10px; margin-top: 16px;
+  border-radius: 8px; padding: 12px 14px;
+  font-size: 13px; line-height: 1.5;
+}
+.callout.blue   { background: #0c1a3a; border: 1px solid #1d4ed8; color: #93c5fd; }
+.callout.green  { background: #052e16; border: 1px solid #15803d; color: #86efac; }
+.callout.orange { background: #2c0a00; border: 1px solid #c2410c; color: #fdba74; }
+.callout .ci { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+
+/* ━━━━━━━ BROWSER SHELL ━━━━━━━ */
+.browser {
+  border-radius: 10px; overflow: hidden;
+  border: 1px solid #334155; background: #0f172a;
+  font-size: 13px;
+}
+.browser-bar {
+  background: #1e293b; padding: 10px 14px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid #334155;
+}
+.dots3 { display: flex; gap: 5px; }
+.d { width: 10px; height: 10px; border-radius: 50%; }
+.d.r{background:#f87171;} .d.y{background:#fbbf24;} .d.g{background:#34d399;}
+.url-pill {
+  flex: 1; background: #0f172a; border-radius: 6px;
+  padding: 6px 14px; font-size: 13px; color: #94a3b8;
+  display: flex; align-items: center; gap: 6px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  letter-spacing: 0.01em;
+}
+.lock { color: #22c55e; font-size: 12px; }
+
+/* ━━━━━━━ CHROME WEB STORE ━━━━━━━ */
+.cws {
+  background: #fff; color: #202124;
+  padding: 0; font-family: "Google Sans", Arial, sans-serif;
+}
+.cws-header {
+  background: #fff; padding: 12px 20px;
+  display: flex; align-items: center; gap: 12px;
+  border-bottom: 1px solid #e8eaed;
+}
+.cws-logo { font-size: 13px; color: #5f6368; display: flex; align-items: center; gap: 6px; }
+.cws-logo strong { color: #202124; }
+.cws-search {
+  flex: 1; background: #f1f3f4; border-radius: 24px;
+  padding: 7px 16px; font-size: 13px; color: #3c4043;
+  display: flex; align-items: center; gap: 6px;
+}
+.ext-detail { padding: 20px 24px; display: flex; gap: 20px; }
+.ext-icon-big {
+  width: 80px; height: 80px; border-radius: 16px;
+  background: #1a1a2e; display: flex; align-items: center;
+  justify-content: center; font-size: 44px; flex-shrink: 0;
+  border: 1px solid #e8eaed;
+}
+.ext-info { flex: 1; }
+.ext-name { font-size: 22px; font-weight: 700; color: #202124; margin-bottom: 4px; }
+.ext-author { font-size: 13px; color: #1a73e8; margin-bottom: 8px; }
+.ext-rating { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #5f6368; margin-bottom: 12px; }
+.stars { color: #fbbc04; font-size: 14px; }
+.btn-cws-add {
+  background: #1a73e8; color: #fff; border: none;
+  border-radius: 4px; padding: 9px 20px;
+  font-size: 14px; font-weight: 500; cursor: pointer;
+  animation: cwsGlow 2s ease-in-out infinite;
+}
+@keyframes cwsGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(26,115,232,.4); }
+  50%      { box-shadow: 0 0 0 6px rgba(26,115,232,.1); }
+}
+.ext-desc { font-size: 13px; color: #5f6368; margin-top: 10px; line-height: 1.5; }
+.ext-stats { display: flex; gap: 16px; margin-top: 12px; }
+.ext-stat { text-align: center; }
+.ext-stat-val { font-size: 18px; font-weight: 700; color: #202124; }
+.ext-stat-lbl { font-size: 11px; color: #5f6368; }
+
+/* ━━━━━━━ CHROME EXTENSIONS PAGE ━━━━━━━ */
+.chrome-ext-page { background: #f8f9fa; }
+.chrome-ext-header {
+  background: #fff; padding: 14px 20px;
+  display: flex; align-items: center; gap: 14px;
+  border-bottom: 1px solid #e8eaed;
+}
+.chrome-ext-title { font-size: 15px; font-weight: 500; color: #202124; }
+.ext-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 16px; }
+.ext-card {
+  background: #fff; border: 1px solid #e8eaed; border-radius: 12px;
+  padding: 14px; font-family: Arial, sans-serif;
+}
+.ext-card.highlight-card {
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 2px rgba(26,115,232,.2);
+  animation: cwsGlow 2s ease-in-out infinite;
+}
+.ec-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.ec-icon { width: 36px; height: 36px; border-radius: 8px; display:flex;align-items:center;justify-content:center; font-size:20px; flex-shrink:0; }
+.ec-name { font-size: 13px; font-weight: 700; color: #202124; }
+.ec-ver  { font-size: 11px; color: #5f6368; }
+.ec-desc { font-size: 11px; color: #5f6368; line-height: 1.4; margin-bottom: 8px; }
+.ec-id   { font-size: 10px; color: #80868b; margin-bottom: 6px; font-family: monospace; }
+.ec-footer { display: flex; align-items: center; gap: 6px; }
+.ec-btn {
+  padding: 4px 12px; border-radius: 4px; font-size: 11px;
+  border: 1px solid #dadce0; background: #fff; color: #3c4043;
+  cursor: pointer; font-weight: 500;
+}
+.ec-btn.detail-btn-hl { border-color: #1a73e8; color: #1a73e8; font-weight: 700; }
+.toggle-sw {
+  margin-left: auto; width: 34px; height: 18px;
+  border-radius: 9px; background: #dadce0;
+  position: relative; cursor: pointer; flex-shrink: 0;
+}
+.toggle-sw.on { background: #1a73e8; }
+.toggle-knob {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; position: absolute; top: 2px; left: 2px;
+  transition: left .2s; box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.toggle-sw.on .toggle-knob { left: 18px; }
+
+/* ━━━━━━━ EXTENSION DETAIL PAGE ━━━━━━━ */
+.ext-detail-page { background: #fff; font-family: Arial, sans-serif; color: #202124; }
+.ext-detail-header {
+  background: #fff; padding: 12px 20px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid #e8eaed;
+}
+.back-arrow { font-size: 18px; color: #5f6368; cursor: pointer; }
+.ext-detail-name { font-size: 15px; font-weight: 500; }
+.detail-rows { padding: 0 20px; }
+.detail-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 0; border-bottom: 1px solid #e8eaed;
+}
+.detail-row:last-child { border-bottom: none; }
+.dr-left { }
+.dr-title { font-size: 14px; font-weight: 500; color: #202124; margin-bottom: 3px; }
+.dr-desc  { font-size: 12px; color: #5f6368; line-height: 1.4; max-width: 420px; }
+.dr-right { flex-shrink: 0; margin-left: 16px; }
+.toggle-lg {
+  width: 42px; height: 22px; border-radius: 11px;
+  background: #dadce0; position: relative; cursor: pointer;
+}
+.toggle-lg.on { background: #1a73e8; }
+.toggle-lg-knob {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; position: absolute; top: 3px; left: 3px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  transition: left .2s;
+}
+.toggle-lg.on .toggle-lg-knob { left: 23px; }
+.toggle-lg.highlight-toggle {
+  animation: toggleGlow 2s ease-in-out infinite;
+}
+@keyframes toggleGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(26,115,232,.5); }
+  50%      { box-shadow: 0 0 0 5px rgba(26,115,232,.15); }
+}
+.select-pill {
+  border: 1px solid #dadce0; border-radius: 4px;
+  padding: 5px 10px; font-size: 13px; color: #202124;
+  display: flex; align-items: center; gap: 6px;
+}
+
+/* ━━━━━━━ GITHUB ━━━━━━━ */
+.gh-page { background: #0d1117; color: #c9d1d9; }
+.gh-nav {
+  background: #161b22; padding: 12px 20px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid #30363d;
+}
+.gh-nav-logo { font-size: 24px; color: #f0f6fc; }
+.gh-nav-path { font-size: 13px; color: #8b949e; }
+.gh-nav-path a { color: #58a6ff; }
+.gh-content { padding: 16px 20px; }
+
+/* README section */
+.gh-readme-h2 { font-size: 17px; font-weight: 700; color: #e6edf3; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+.gh-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.gh-table th { padding: 7px 10px; text-align: left; color: #8b949e; border-bottom: 1px solid #30363d; font-weight: 600; background: #161b22; }
+.gh-table td { padding: 9px 10px; border-bottom: 1px solid #21262d; }
+.gh-table tr:hover td { background: #161b22; }
+.col-name { font-family: monospace; color: #79c0ff; font-size: 12px; }
+.col-link {
+  color: #58a6ff; text-decoration: underline; cursor: pointer;
+}
+.col-link.hl {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #16a34a; color: #fff; padding: 3px 10px;
+  border-radius: 5px; text-decoration: none; font-weight: 700; font-size: 12px;
+  animation: greenGlow 2s ease-in-out infinite;
+}
+@keyframes greenGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(22,163,74,.4); }
+  50%      { box-shadow: 0 0 0 5px rgba(22,163,74,.1); }
+}
+.row-hl td { background: #0d2818 !important; }
+
+/* TM confirm dialog */
+.tm-confirm {
+  margin-top: 18px;
+  border: 1px solid #e85d04; border-radius: 10px; overflow: hidden;
+  animation: popIn .35s cubic-bezier(.175,.885,.32,1.275);
+}
+@keyframes popIn { from{opacity:0;transform:scale(.88)} to{opacity:1;transform:scale(1)} }
+.tm-confirm-head {
+  background: #e85d04; padding: 9px 16px;
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 700; color: #fff; font-size: 13px;
+}
+.tm-confirm-body { background: #0d1117; padding: 14px 16px; }
+.tm-script-box {
+  background: #161b22; border: 1px solid #30363d;
+  border-radius: 6px; padding: 10px 12px; margin-bottom: 12px;
+}
+.tm-script-name { font-weight: 700; color: #f0f6fc; font-size: 13px; }
+.tm-script-meta { font-size: 11px; color: #8b949e; margin-top: 2px; }
+.tm-perm { font-size: 11px; color: #8b949e; margin-bottom: 12px; }
+.tm-perm span { color: #ffa657; }
+.tm-btns { display: flex; gap: 8px; justify-content: flex-end; }
+.tm-btn-cancel { padding: 6px 14px; background: transparent; border: 1px solid #30363d; color: #8b949e; border-radius: 5px; font-size: 12px; cursor: pointer; }
+.tm-btn-ok {
+  padding: 6px 14px; background: #e85d04; border: none; color: #fff;
+  border-radius: 5px; font-size: 12px; font-weight: 700; cursor: pointer;
+  animation: orangeGlow 2s ease-in-out infinite;
+}
+@keyframes orangeGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(232,93,4,.4); }
+  50%      { box-shadow: 0 0 0 5px rgba(232,93,4,.1); }
+}
+
+/* Bookmarklets step */
+.bm-steps-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-top: 18px; }
+.bm-step {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 12px 10px; text-align: center; position: relative;
+}
+.bm-step::after { content:'→'; position:absolute; right:-13px; top:50%; transform:translateY(-50%); color:#475569; font-size:14px; }
+.bm-step:last-child::after { display:none; }
+.bm-num { width:22px;height:22px;border-radius:50%;background:#1d4ed8;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 7px; }
+.bm-icon { font-size:22px; margin-bottom:5px; }
+.bm-text { font-size:11px; color:#8b949e; line-height:1.4; }
+.bm-text strong { color:#c9d1d9; }
+
+/* Raw code box */
+.raw-code {
+  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+  padding: 10px 14px; font-family: monospace; font-size: 11px; color: #79c0ff;
+  line-height: 1.5; margin-top: 12px; overflow-x: auto;
+  max-height: 80px; overflow-y: hidden;
+  position: relative;
+}
+.raw-code::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+  height: 30px; background: linear-gradient(transparent, #161b22);
+}
+.copy-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #1d4ed8; color: #fff; border-radius: 4px;
+  padding: 3px 10px; font-size: 11px; font-weight: 700; margin-top: 8px;
+  animation: blueGlow 2s ease-in-out infinite;
+}
+@keyframes blueGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(29,78,216,.4); }
+  50%      { box-shadow: 0 0 0 5px rgba(29,78,216,.1); }
+}
+
+/* Bookmark dialog */
+.bm-dialog {
+  background: #fff; color: #202124; font-family: Arial,sans-serif;
+  border-radius: 8px; border: 1px solid #dadce0;
+  box-shadow: 0 4px 20px rgba(0,0,0,.3); padding: 0; overflow: hidden;
+  margin-top: 14px; animation: popIn .35s cubic-bezier(.175,.885,.32,1.275);
+  max-width: 380px;
+}
+.bm-dialog-header {
+  padding: 12px 16px 10px;
+  font-size: 14px; font-weight: 500; border-bottom: 1px solid #e8eaed;
+}
+.bm-dialog-body { padding: 12px 16px; }
+.bm-field { margin-bottom: 10px; }
+.bm-field label { display: block; font-size: 11px; color: #5f6368; margin-bottom: 4px; }
+.bm-field input {
+  width: 100%; border: 1px solid #dadce0; border-radius: 4px;
+  padding: 7px 10px; font-size: 13px; color: #202124; outline: none;
+}
+.bm-field input.url-field { font-family: monospace; font-size: 11px; color: #1a73e8; }
+.bm-field input.url-field.hl { border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,.2); }
+.bm-dialog-footer { padding: 8px 16px 12px; display: flex; justify-content: flex-end; gap: 8px; }
+.bm-save { background: #1a73e8; color: #fff; border: none; border-radius: 4px; padding: 7px 16px; font-size: 13px; cursor: pointer; font-weight: 500; animation: cwsGlow 2s ease-in-out infinite; }
+.bm-cancel { background: #fff; color: #3c4043; border: 1px solid #dadce0; border-radius: 4px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
+
+/* Success */
+.success { display:none; text-align:center; padding:52px 32px; animation:slideIn .5s ease; }
+.success.show { display:block; }
+.success-emoji { font-size:52px; margin-bottom:14px; }
+.success h2 { font-size:22px; font-weight:700; color:#f8fafc; margin-bottom:6px; }
+.success p { color:#64748b; font-size:14px; }
+.success-chips { display:flex;gap:8px;justify-content:center;margin-top:18px;flex-wrap:wrap; }
+.chip { background:#052e16;border:1px solid#15803d;color:#22c55e;border-radius:999px;padding:5px 14px;font-size:12px;font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🏥 NTUH Helper 安裝教學</h1>
+  <p>四步驟完成設定，自動化你的醫院工作流程</p>
+</div>
+
+<!-- Step Rail -->
+<div class="step-rail">
+  <div class="rail-item">
+    <button class="rail-btn active" id="nav1" onclick="go(1)">
+      <span class="rail-num">1</span> 安裝 Tampermonkey
+    </button>
+  </div>
+  <div class="rail-item">
+    <button class="rail-btn" id="nav2" onclick="go(2)">
+      <span class="rail-num">2</span> 開啟使用者指令碼
+    </button>
+  </div>
+  <div class="rail-item">
+    <button class="rail-btn" id="nav3" onclick="go(3)">
+      <span class="rail-num">3</span> 安裝腳本
+    </button>
+  </div>
+  <div class="rail-item">
+    <button class="rail-btn" id="nav4" onclick="go(4)">
+      <span class="rail-num">4</span> 安裝書籤工具
+    </button>
+  </div>
+</div>
+
+<div class="card">
+
+  <!-- ══ STEP 1: Install Tampermonkey ══ -->
+  <div class="panel active" id="p1">
+    <div class="ph">
+      <div class="ph-icon blue">🐒</div>
+      <div>
+        <div class="ph-label">步驟 1 / 4</div>
+        <h2>安裝 Tampermonkey（篡改猴）</h2>
+        <p>前往 Chrome Web Store，搜尋並安裝 Tampermonkey 擴充功能</p>
+      </div>
+    </div>
+    <div class="pb">
+      <!-- Chrome Web Store mockup -->
+      <div class="browser">
+        <div class="browser-bar">
+          <div class="dots3"><div class="d r"></div><div class="d y"></div><div class="d g"></div></div>
+          <div class="url-pill">
+            <span class="lock">🔒</span>
+            chromewebstore.google.com / detail / tampermonkey / dhdgffkkebhmkfjojejmpbldmpobfkfo
+          </div>
+        </div>
+        <div class="cws">
+          <div class="cws-header">
+            <div class="cws-logo">
+              <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#4285f4"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>
+              <strong>Chrome</strong>&nbsp;線上應用程式商店
+            </div>
+            <div class="cws-search">🔍 Tampermonkey</div>
+          </div>
+          <div class="ext-detail">
+            <div class="ext-icon-big">🐒</div>
+            <div class="ext-info">
+              <div class="ext-name">Tampermonkey</div>
+              <div class="ext-author">由 Jan Biniok 提供</div>
+              <div class="ext-rating">
+                <span class="stars">★★★★★</span>
+                <span>4.7 · 10,000,000+ 位使用者</span>
+              </div>
+              <button class="btn-cws-add">加到 Chrome</button>
+              <div class="ext-desc">竄改猴是最受歡迎的使用者指令碼管理器，適用於 Chrome、Microsoft Edge、Safari、Opera 和 Firefox。</div>
+              <div class="ext-stats">
+                <div class="ext-stat"><div class="ext-stat-val">10M+</div><div class="ext-stat-lbl">使用者</div></div>
+                <div class="ext-stat"><div class="ext-stat-val">5.5.0</div><div class="ext-stat-lbl">版本</div></div>
+                <div class="ext-stat"><div class="ext-stat-val">免費</div><div class="ext-stat-lbl">價格</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="callout green" style="margin-top:14px">
+        <span class="ci">✅</span>
+        <span>點擊「<strong>加到 Chrome</strong>」後，在彈出視窗確認安裝。安裝完成後瀏覽器右上角工具列會出現 🐒 圖示。</span>
+      </div>
+    </div>
+    <div class="pf">
+      <div class="dots">
+        <div class="dot active"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-prev" disabled>← 上一步</button>
+        <button class="btn btn-next" onclick="go(2)">下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STEP 2: Enable userscripts ══ -->
+  <div class="panel" id="p2">
+    <div class="ph">
+      <div class="ph-icon orange">⚙️</div>
+      <div>
+        <div class="ph-label">步驟 2 / 4</div>
+        <h2>開啟「允許使用者指令碼」</h2>
+        <p>Chrome 預設關閉此功能，必須手動在 Tampermonkey 詳細資料頁開啟</p>
+      </div>
+    </div>
+    <div class="pb">
+
+      <div style="display:flex;gap:6px;margin-bottom:14px;font-size:12px;color:#94a3b8;align-items:center">
+        <span style="background:#334155;border-radius:4px;padding:2px 8px;">① 前往擴充功能管理</span>
+        <span>→</span>
+        <span style="background:#334155;border-radius:4px;padding:2px 8px;">② 點「詳細資料」</span>
+        <span>→</span>
+        <span style="background:#1d4ed8;color:#fff;border-radius:4px;padding:2px 8px;">③ 開啟切換開關</span>
+      </div>
+
+      <!-- Side-by-side: Extensions list (left) + Detail page (right) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+        <!-- LEFT: Extensions list -->
+        <div class="browser">
+          <div class="browser-bar">
+            <div class="dots3"><div class="d r"></div><div class="d y"></div><div class="d g"></div></div>
+            <div class="url-pill" style="font-size:10px"><span class="lock">🔒</span>chrome://extensions</div>
+          </div>
+          <div class="chrome-ext-page">
+            <div class="chrome-ext-header">
+              <span style="font-size:16px;color:#5f6368">☰</span>
+              <span class="chrome-ext-title" style="font-size:13px">所有擴充功能</span>
+            </div>
+            <div style="padding:10px;display:flex;flex-direction:column;gap:8px">
+              <div class="ext-card">
+                <div class="ec-header">
+                  <div class="ec-icon" style="background:#1a1a2e;width:28px;height:28px;font-size:14px">✳️</div>
+                  <div><div class="ec-name">Claude</div><div class="ec-ver">1.0.77</div></div>
+                </div>
+                <div class="ec-footer">
+                  <button class="ec-btn" style="font-size:10px;padding:3px 8px">詳細資料</button>
+                  <button class="ec-btn" style="font-size:10px;padding:3px 8px">移除</button>
+                  <div class="toggle-sw on" style="margin-left:auto"><div class="toggle-knob"></div></div>
+                </div>
+              </div>
+              <div class="ext-card">
+                <div class="ec-header">
+                  <div class="ec-icon" style="background:#2c1010;width:28px;height:28px;font-size:14px">🍪</div>
+                  <div><div class="ec-name">Cookie-Editor</div><div class="ec-ver">1.13.0</div></div>
+                </div>
+                <div class="ec-footer">
+                  <button class="ec-btn" style="font-size:10px;padding:3px 8px">詳細資料</button>
+                  <button class="ec-btn" style="font-size:10px;padding:3px 8px">移除</button>
+                  <div class="toggle-sw on" style="margin-left:auto"><div class="toggle-knob"></div></div>
+                </div>
+              </div>
+              <!-- Tampermonkey HIGHLIGHTED -->
+              <div class="ext-card highlight-card">
+                <div class="ec-header">
+                  <div class="ec-icon" style="background:#1a1a2e;width:28px;height:28px;font-size:14px">🐒</div>
+                  <div><div class="ec-name">篡改猴</div><div class="ec-ver">5.5.0</div></div>
+                </div>
+                <div class="ec-desc" style="font-size:10px">透過使用者腳本自由改變網頁</div>
+                <div class="ec-id" style="font-size:9px">ID：dhdgffkkebhmkfjojejmpbldmpobfkfo</div>
+                <div class="ec-footer">
+                  <button class="ec-btn detail-btn-hl" style="font-size:10px;padding:3px 8px">詳細資料 →</button>
+                  <button class="ec-btn" style="font-size:10px;padding:3px 8px">移除</button>
+                  <div class="toggle-sw on" style="margin-left:auto"><div class="toggle-knob"></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: Detail page -->
+        <div class="browser">
+          <div class="browser-bar">
+            <div class="dots3"><div class="d r"></div><div class="d y"></div><div class="d g"></div></div>
+            <div class="url-pill" style="font-size:10px"><span class="lock">🔒</span>chrome://extensions/?id=dhdgff…</div>
+          </div>
+          <div class="ext-detail-page">
+            <div class="ext-detail-header">
+              <span class="back-arrow">←</span>
+              <span class="ext-detail-name">篡改猴 詳細資料</span>
+            </div>
+            <div class="detail-rows">
+              <div class="detail-row">
+                <div class="dr-left">
+                  <div class="dr-title">網站存取權</div>
+                </div>
+                <div class="dr-right">
+                  <div class="select-pill" style="font-size:11px">所有網站 ▼</div>
+                </div>
+              </div>
+              <div class="detail-row" style="background:#fffbf5">
+                <div class="dr-left">
+                  <div class="dr-title" style="color:#b45309;font-size:13px">⚠️ 允許使用者指令碼</div>
+                  <div class="dr-desc">擴充功能將可執行 Google 尚未審查的程式碼。這可能不安全，除非有明確用途，否則請不要啟用。</div>
+                </div>
+                <div class="dr-right">
+                  <div class="toggle-lg on highlight-toggle">
+                    <div class="toggle-lg-knob"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="detail-row">
+                <div class="dr-left"><div class="dr-title">網站設定</div></div>
+                <div class="dr-right" style="font-size:16px;color:#5f6368">↗</div>
+              </div>
+              <div class="detail-row">
+                <div class="dr-left"><div class="dr-title">在工具列中固定</div></div>
+                <div class="dr-right"><div class="toggle-lg"><div class="toggle-lg-knob"></div></div></div>
+              </div>
+              <div class="detail-row">
+                <div class="dr-left">
+                  <div class="dr-title">允許在無痕模式中執行</div>
+                </div>
+                <div class="dr-right"><div class="toggle-lg"><div class="toggle-lg-knob"></div></div></div>
+              </div>
+              <div class="detail-row">
+                <div class="dr-left"><div class="dr-title">允許存取檔案網址</div></div>
+                <div class="dr-right"><div class="toggle-lg"><div class="toggle-lg-knob"></div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="callout orange" style="margin-top:14px">
+        <span class="ci">⚠️</span>
+        <span>Chrome 132+ 預設關閉此選項。必須手動將「<strong>允許使用者指令碼</strong>」切換為開啟（藍色），否則腳本無法執行。</span>
+      </div>
+    </div>
+    <div class="pf">
+      <div class="dots">
+        <div class="dot done"></div><div class="dot active"></div><div class="dot"></div><div class="dot"></div>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-prev" onclick="go(1)">← 上一步</button>
+        <button class="btn btn-next" onclick="go(3)">下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STEP 3: Install script ══ -->
+  <div class="panel" id="p3">
+    <div class="ph">
+      <div class="ph-icon green">📜</div>
+      <div>
+        <div class="ph-label">步驟 3 / 4</div>
+        <h2>安裝 Userscript 腳本</h2>
+        <p>在 GitHub README 點擊對應腳本的「安裝」連結，Tampermonkey 會跳出確認視窗</p>
+      </div>
+    </div>
+    <div class="pb">
+      <!-- GitHub README -->
+      <div class="browser">
+        <div class="browser-bar">
+          <div class="dots3"><div class="d r"></div><div class="d y"></div><div class="d g"></div></div>
+          <div class="url-pill"><span class="lock">🔒</span>github.com / Twb06 / NTUH-helper</div>
+        </div>
+        <div class="gh-page">
+          <div class="gh-nav">
+            <span class="gh-nav-logo">⬡</span>
+            <span class="gh-nav-path"><a>Twb06</a> / <a>NTUH-helper</a></span>
+          </div>
+          <div class="gh-content">
+            <div class="gh-readme-h2">📋 專案內容</div>
+            <table class="gh-table">
+              <thead>
+                <tr>
+                  <th>腳本</th>
+                  <th>說明</th>
+                  <th>適用範圍</th>
+                  <th>使用方式</th>
+                  <th>安裝連結</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="row-hl">
+                  <td><span class="col-name">NTUH-diagcertificate-filler</span></td>
+                  <td>自動填入診斷書，利用背景頁與跨網域沙盒自動擷取手術同意書回傳</td>
+                  <td>通用</td>
+                  <td>開啟診斷書頁面，點擊右下角浮動按鈕</td>
+                  <td><span class="col-link hl">⬇ 安裝</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">chart-antibiotic</span></td>
+                  <td>讀取藥歷圖表，整理抗生素用藥成商品名</td>
+                  <td>通用</td>
+                  <td>開啟藥歷圖頁面，點擊右上角「整理抗生素」</td>
+                  <td><span class="col-link">安裝</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">admission-note-filler</span></td>
+                  <td>自動填入入院紀錄各欄位</td>
+                  <td>通用</td>
+                  <td>開啟入院紀錄頁面，點擊右下角浮動按鈕</td>
+                  <td><span class="col-link">安裝</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">op-automation</span></td>
+                  <td>批次執行術前評估、當日評估、同意書綁定</td>
+                  <td>通用</td>
+                  <td>開啟手術排程頁面，點擊右下角批次按鈕</td>
+                  <td><span class="col-link">安裝</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">zero-performance</span></td>
+                  <td>掛進當前病人 R 角色，自動處理人數設定</td>
+                  <td>通用</td>
+                  <td>開啟績效頁面，點擊右下角「掛 0%」浮動按鈕</td>
+                  <td><span class="col-link">安裝</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- TM confirm dialog -->
+      <div class="tm-confirm">
+        <div class="tm-confirm-head">
+          🐒 Tampermonkey — 安裝使用者指令碼
+        </div>
+        <div class="tm-confirm-body">
+          <div class="tm-script-box">
+            <div class="tm-script-name">NTUH-diagcertificate-filler</div>
+            <div class="tm-script-meta">來源：raw.githubusercontent.com／作者：Twb06／版本 1.0.0</div>
+          </div>
+          <div class="tm-perm">此腳本將可存取：<span>所有網站</span>、<span>GM_setValue / GM_getValue</span></div>
+          <div class="tm-btns">
+            <button class="tm-btn-cancel">取消</button>
+            <button class="tm-btn-ok">✓ 確認安裝</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout blue" style="margin-top:14px">
+        <span class="ci">💡</span>
+        <span>每個腳本需單獨安裝。安裝後可在 Tampermonkey 儀表板（🐒 → 儀表板）管理已安裝的腳本。</span>
+      </div>
+    </div>
+    <div class="pf">
+      <div class="dots">
+        <div class="dot done"></div><div class="dot done"></div><div class="dot active"></div><div class="dot"></div>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-prev" onclick="go(2)">← 上一步</button>
+        <button class="btn btn-next" onclick="go(4)">下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STEP 4: Bookmarklets ══ -->
+  <div class="panel" id="p4">
+    <div class="ph">
+      <div class="ph-icon indigo">🔖</div>
+      <div>
+        <div class="ph-label">步驟 4 / 4</div>
+        <h2>安裝書籤工具（Bookmarklets）</h2>
+        <p>複製 raw 程式碼，手動新增為瀏覽器書籤，點擊即可在對應頁面執行</p>
+      </div>
+    </div>
+    <div class="pb">
+
+      <!-- GitHub Bookmarklets -->
+      <div class="browser">
+        <div class="browser-bar">
+          <div class="dots3"><div class="d r"></div><div class="d y"></div><div class="d g"></div></div>
+          <div class="url-pill"><span class="lock">🔒</span>github.com / Twb06 / NTUH-helper — README · Bookmarklets</div>
+        </div>
+        <div class="gh-page">
+          <div class="gh-nav">
+            <span class="gh-nav-logo">⬡</span>
+            <span class="gh-nav-path"><a>Twb06</a> / <a>NTUH-helper</a> / README.md</span>
+          </div>
+          <div class="gh-content">
+            <div class="gh-readme-h2">📌 Bookmarklets</div>
+            <table class="gh-table">
+              <thead>
+                <tr><th>書籤</th><th>說明</th><th>使用頁面</th><th>原始碼</th></tr>
+              </thead>
+              <tbody>
+                <tr class="row-hl">
+                  <td><span class="col-name">chart-antibiotic</span></td>
+                  <td>整理抗生素用藥成商品名 起日-迄日，分進行中與已停用</td>
+                  <td>Portal 藥歷圖（Chart.aspx）</td>
+                  <td><span class="col-link hl">📋 raw</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">lab-trend</span></td>
+                  <td>框選「線單」後按書籤，將多日資料以趨勢方式呈現</td>
+                  <td>Portal 報告頁面的線單</td>
+                  <td><span class="col-link">raw</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">lab-summary</span></td>
+                  <td>框選「清單」後按書籤，將數值依臨床分組整理成段落</td>
+                  <td>Portal 報告頁面的清單</td>
+                  <td><span class="col-link">raw</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">goto-nursing-handover</span></td>
+                  <td>新開分頁跳轉到該病人的「護理交班」頁面</td>
+                  <td>Portal 病人專屬頁面</td>
+                  <td><span class="col-link">raw</span></td>
+                </tr>
+                <tr>
+                  <td><span class="col-name">goto-emergency</span></td>
+                  <td>新開分頁跳轉到「急診」頁面</td>
+                  <td>Portal 任一網域</td>
+                  <td><span class="col-link">raw</span></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- Install steps callout -->
+            <div style="margin-top:14px;background:#161b22;border:1px solid#30363d;border-radius:8px;padding:12px 14px;">
+              <div style="font-size:12px;font-weight:700;color:#e6edf3;margin-bottom:8px;">📖 安裝方式</div>
+              <ol style="font-size:12px;color:#8b949e;line-height:2;padding-left:18px;">
+                <li>點擊上方表格對應書籤的檔案連結，<strong style="color:#c9d1d9">複製全部內容</strong></li>
+                <li>在瀏覽器書籤列上<strong style="color:#c9d1d9">按右鍵 → 新增書籤</strong></li>
+                <li>名稱自訂，<strong style="color:#c9d1d9">網址欄貼上複製的內容</strong></li>
+                <li>儲存後即可使用</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Raw code preview -->
+      <div style="margin-top:14px">
+        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">點擊 raw 後複製完整程式碼：</div>
+        <div class="raw-code">javascript:(function(){const s=document.querySelectorAll('.grid-row');if(!s.length){alert('請先在藥歷圖頁面執行');return;}const data=[];s.forEach(r=>{const name=r.querySelector('.drug-name')?.textContent.trim();const start=r.querySelector('.start-date')?.textContent.trim();const end=r.querySelector('.end-date')?.textContent.trim();if(name)data.push({name,start,end});});/* ... */})();</div>
+        <span class="copy-badge">📋 全選複製 (Cmd+A → Cmd+C)</span>
+      </div>
+
+      <!-- Add bookmark dialog -->
+      <div style="margin-top:6px">
+        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">書籤列右鍵 → 新增書籤，貼入程式碼：</div>
+        <div class="bm-dialog">
+          <div class="bm-dialog-header">新增書籤</div>
+          <div class="bm-dialog-body">
+            <div class="bm-field">
+              <label>名稱</label>
+              <input type="text" value="抗生素整理 (chart-antibiotic)">
+            </div>
+            <div class="bm-field">
+              <label>網址</label>
+              <input type="text" class="url-field hl" value="javascript:(function(){const s=document.qu…">
+            </div>
+          </div>
+          <div class="bm-dialog-footer">
+            <button class="bm-cancel">取消</button>
+            <button class="bm-save">儲存</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="pf">
+      <div class="dots">
+        <div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot active"></div>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-prev" onclick="go(3)">← 上一步</button>
+        <button class="btn btn-finish" onclick="finish()">🎉 完成設定！</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Success ══ -->
+  <div class="success" id="success">
+    <div class="success-emoji">🎉</div>
+    <h2>NTUH Helper 已就緒！</h2>
+    <p>所有工具安裝完成，開始自動化你的醫院工作流程</p>
+    <div class="success-chips">
+      <span class="chip">✓ Tampermonkey 已安裝</span>
+      <span class="chip">✓ 使用者指令碼已開啟</span>
+      <span class="chip">✓ Userscripts 已安裝</span>
+      <span class="chip">✓ 書籤工具已設定</span>
+    </div>
+  </div>
+
+</div><!-- .card -->
+
+<script>
+let cur = 1;
+const TOTAL = 4;
+
+function go(n) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('success').classList.remove('show');
+  const panel = document.getElementById('p' + n);
+  if (panel) panel.classList.add('active');
+  for (let i = 1; i <= TOTAL; i++) {
+    const b = document.getElementById('nav' + i);
+    b.classList.remove('active','done');
+    if (i === n) b.classList.add('active');
+    else if (i < n) b.classList.add('done');
+  }
+  cur = n;
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function finish() {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('success').classList.add('show');
+  for (let i = 1; i <= TOTAL; i++) {
+    const b = document.getElementById('nav' + i);
+    b.classList.remove('active');
+    b.classList.add('done');
+  }
+}
+</script>
+</body>
+</html>
