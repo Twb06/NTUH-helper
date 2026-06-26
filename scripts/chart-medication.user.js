@@ -301,7 +301,7 @@
         btn.textContent = '整理藥物';
         btn.style.cssText = `position:fixed;top:50px;right:20px;z-index:999999;
             padding:6px 14px;background:#507CD1;color:#fff;border:none;
-            border-radius:4px;cursor:pointer;font-family:sans-serif;font-weight:bold;`;
+            border-radius:4px;cursor:pointer;font-family:sans-serif;font-weight:bold;text-align:center;`;
         btn.onclick = () => {
             const grouped = buildResults();
             showResult(formatOutput(grouped));
