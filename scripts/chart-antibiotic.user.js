@@ -64,12 +64,19 @@
         return d.getTime() >= today.getTime();
     }
 
-    // ====== 商品名清理：只留第一個字 ======
+    // ====== 商品名清理：跳過中文前綴與括弧前綴，取第一個英文 token ======
     // "Unasyn (based on ampicillin content) 1000 mg/vial" → "Unasyn"
-    // "TARGOCID 200 mg/vial" → "TARGOCID"
+    // "袋 Norm-Saline Inj. 0.9% 500 mL /bag" → "Norm-Saline"
+    // "(PPN) Bfluid 1000 mL /bag" → "Bfluid"
     function cleanTradeName(complex) {
         if (!complex) return '';
-        return complex.trim().split(/\s+/)[0];
+        const tokens = complex.trim().split(/\s+/);
+        for (const token of tokens) {
+            if (/^[一-鿿㐀-䶿]+$/.test(token)) continue; // 純中文前綴
+            if (/^\([^)]+\)$/.test(token)) continue;                      // (PPN)、(VIT.C) 等括弧前綴
+            return token;
+        }
+        return tokens[0] || '';
     }
 
     // ====== 主整理邏輯 ======
