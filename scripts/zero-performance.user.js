@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         NTUH 掛0%績效工具 (半自動寫入版 v1.3)
+// @name         NTUH 掛0%績效工具 (半自動寫入版 v1.4)
 // @namespace    ntuh-zero
-// @version      1.3.0
+// @version      1.4.0
 // @description  一鍵把指定員編以0%掛進當前病人的R角色:讀現有R→設人數(VS0/成本0/R現有+1)→照抄舊R+自己0%→刪舊R→新增。狀態機跨postback接力。不切換病人。
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js
@@ -17,6 +17,11 @@
   const SKEY = 'ptZeroState';
   const DELAY = 600;
   const MAX_WAIT = 8;
+
+  // 角色名稱常數（若系統改名請在此修改）
+  const ROLE_VS   = '主治醫師';
+  const ROLE_R    = 'R或NP';
+  const ROLE_COST = '成本中心';
 
   function getSelfEmp() { try { return localStorage.getItem(LS_SELF) || ''; } catch (e) { return ''; } }
   function setSelfEmp(v) { try { localStorage.setItem(LS_SELF, v); } catch (e) {} }
@@ -36,18 +41,51 @@
     });
     return out;
   }
-  function existingRs() { return readAllRoles().filter(function (r) { return r.role === 'R或NP'; }); }
+  function existingRs() { return readAllRoles().filter(function (r) { return r.role === ROLE_R; }); }
 
-  // ---------- 人數下拉 ----------
-  function amountSelect(ctl) { return document.getElementById('NTUHWeb1_EnterPersonExcuteInfoUI1_RoleList_' + ctl + '_VSAmount'); }
-  function getAmount(ctl) { const s = amountSelect(ctl); return s ? s.value : null; }
-  function setAmount(ctl, val) {
-    const s = amountSelect(ctl);
+  // ---------- 人數下拉（依角色名稱動態定位） ----------
+  function amountSelectByRole(roleText) {
+    const links = document.querySelectorAll('a[id$="_LinkButtonRoleName"]');
+    for (const link of links) {
+      if ((link.textContent || '').trim() !== roleText) continue;
+      // 從 link 往上找包含 VSAmount 的容器
+      let el = link.parentElement;
+      for (let i = 0; i < 8; i++) {
+        if (!el) break;
+        const sel = el.querySelector('select[id*="_VSAmount"]');
+        if (sel) return sel;
+        el = el.parentElement;
+      }
+    }
+    return null;
+  }
+  function getAmountByRole(roleText) { const s = amountSelectByRole(roleText); return s ? s.value : null; }
+  function setAmountByRole(roleText, val) {
+    const s = amountSelectByRole(roleText);
     if (!s) return false;
     if (s.value === String(val)) return 'nochange';
     s.value = String(val);
     s.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
+  }
+
+  // 掃描頁面所有角色+目前人數，回傳可讀字串（供 log 除錯用）
+  function scanRoleAmounts() {
+    const links = document.querySelectorAll('a[id$="_LinkButtonRoleName"]');
+    const parts = [];
+    links.forEach(function (link) {
+      const roleName = (link.textContent || '').trim();
+      let el = link.parentElement;
+      let found = null;
+      for (let i = 0; i < 8; i++) {
+        if (!el) break;
+        const sel = el.querySelector('select[id*="_VSAmount"]');
+        if (sel) { found = sel; break; }
+        el = el.parentElement;
+      }
+      parts.push(roleName + ':' + (found ? found.value : '找不到'));
+    });
+    return parts.join(' / ');
   }
 
   // ---------- 輸入框(角色名稱定位) ----------
@@ -74,7 +112,7 @@
     const links = [];
     document.querySelectorAll('#NTUHWeb1_DataGridAccountList tr').forEach(function (tr) {
       const rs = tr.querySelector('span[id*="_RoleName"]');
-      if (!rs || (rs.textContent || '').trim() !== 'R或NP') return;
+      if (!rs || (rs.textContent || '').trim() !== ROLE_R) return;
       const del = tr.querySelector('a[id*="DeleteLinkButton"]');
       if (del) links.push(del);
     });
@@ -95,7 +133,7 @@
   root.innerHTML =
     '<div id="ptz-fab" title="掛0%績效工具">0%</div>' +
     '<div id="ptz-panel" style="display:none">' +
-      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">半自動寫入 v1.3</span></span><span id="ptz-close">✕</span></div>' +
+      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">半自動寫入 v1.4</span></span><span id="ptz-close">✕</span></div>' +
       '<div id="ptz-body">' +
         '<label>要掛 0% 的員編(預設掛自己,可改)</label>' +
         '<input type="text" id="ptz-emp" placeholder="輸入員編" />' +
@@ -146,6 +184,11 @@
     if (!rs.length) { alert('讀不到現有的 R,無法掛 0%(掛0%需原本已有真正的R)。'); return false; }
     if (rs.some(function (r) { return r.emp === emp; })) { alert('員編 ' + emp + ' 已在現有 R 名單中,無需再掛。'); return false; }
 
+    // 確認三個關鍵下拉都找得到
+    if (!amountSelectByRole(ROLE_VS))   { alert('找不到「' + ROLE_VS + '」人數下拉，請確認頁面已載入完成，或角色名稱有異。'); return false; }
+    if (!amountSelectByRole(ROLE_R))    { alert('找不到「' + ROLE_R + '」人數下拉，請確認頁面已載入完成。'); return false; }
+    if (!amountSelectByRole(ROLE_COST)) { alert('找不到「' + ROLE_COST + '」人數下拉，請確認頁面已載入完成，或角色名稱有異。'); return false; }
+
     const plan = rs.map(function (r) { return r.emp + ' ' + r.weight + '%'; }).join('、');
 
     const S = {
@@ -154,6 +197,7 @@
       targetRcount: rs.length + 1, waitTries: 0, log: [],
     };
     saveS(S);
+    log(S, '頁面角色掃描：' + scanRoleAmounts(), 'ptz-warn');
     log(S, '開始:現有 R ' + plan + ' → 加掛 ' + emp + ' 0%', 'ptz-step');
     tick();
     return false;
@@ -176,46 +220,49 @@
     const errMsg = getErrorMessage();
 
     if (S.phase === 'SET_VS0') {
-      if (getAmount('ctl00') === '0') { S.phase = 'SET_COST0'; resetWait(S); tick(); return; }
-      const r = setAmount('ctl00', 0);
+      if (getAmountByRole(ROLE_VS) === '0') { S.phase = 'SET_COST0'; resetWait(S); tick(); return; }
+      const r = setAmountByRole(ROLE_VS, 0);
+      if (r === false) { halt(S, '✗ 找不到「' + ROLE_VS + '」人數下拉（頁面角色：' + scanRoleAmounts() + '）'); return; }
       if (r === 'nochange') { S.phase = 'SET_COST0'; saveS(S); tick(); return; }
-      log(S, '① 主治醫師人數 → 0', 'ptz-step');
+      log(S, '① ' + ROLE_VS + ' 人數 → 0', 'ptz-step');
       S.phase = 'WAIT_VS0'; saveS(S);
       return;
     }
     if (S.phase === 'WAIT_VS0') {
-      if (getAmount('ctl00') === '0') { S.phase = 'SET_COST0'; resetWait(S); tick(); return; }
-      waitRetry(S, 'VS人數設0未生效'); return;
+      if (getAmountByRole(ROLE_VS) === '0') { S.phase = 'SET_COST0'; resetWait(S); tick(); return; }
+      waitRetry(S, ROLE_VS + '人數設0未生效'); return;
     }
 
     if (S.phase === 'SET_COST0') {
-      if (getAmount('ctl03') === '0') { S.phase = 'SET_RCOUNT'; resetWait(S); tick(); return; }
-      const r = setAmount('ctl03', 0);
+      if (getAmountByRole(ROLE_COST) === '0') { S.phase = 'SET_RCOUNT'; resetWait(S); tick(); return; }
+      const r = setAmountByRole(ROLE_COST, 0);
+      if (r === false) { halt(S, '✗ 找不到「' + ROLE_COST + '」人數下拉（頁面角色：' + scanRoleAmounts() + '）'); return; }
       if (r === 'nochange') { S.phase = 'SET_RCOUNT'; saveS(S); tick(); return; }
-      log(S, '② 成本中心人數 → 0', 'ptz-step');
+      log(S, '② ' + ROLE_COST + ' 人數 → 0', 'ptz-step');
       S.phase = 'WAIT_COST0'; saveS(S);
       return;
     }
     if (S.phase === 'WAIT_COST0') {
-      if (getAmount('ctl03') === '0') { S.phase = 'SET_RCOUNT'; resetWait(S); tick(); return; }
-      waitRetry(S, '成本中心人數設0未生效'); return;
+      if (getAmountByRole(ROLE_COST) === '0') { S.phase = 'SET_RCOUNT'; resetWait(S); tick(); return; }
+      waitRetry(S, ROLE_COST + '人數設0未生效'); return;
     }
 
     if (S.phase === 'SET_RCOUNT') {
-      if (getAmount('ctl01') === String(S.targetRcount)) { S.phase = 'FILL'; resetWait(S); tick(); return; }
-      const r = setAmount('ctl01', S.targetRcount);
+      if (getAmountByRole(ROLE_R) === String(S.targetRcount)) { S.phase = 'FILL'; resetWait(S); tick(); return; }
+      const r = setAmountByRole(ROLE_R, S.targetRcount);
+      if (r === false) { halt(S, '✗ 找不到「' + ROLE_R + '」人數下拉（頁面角色：' + scanRoleAmounts() + '）'); return; }
       if (r === 'nochange') { S.phase = 'FILL'; saveS(S); tick(); return; }
-      log(S, '③ R或NP 人數 → ' + S.targetRcount, 'ptz-step');
+      log(S, '③ ' + ROLE_R + ' 人數 → ' + S.targetRcount, 'ptz-step');
       S.phase = 'WAIT_RCOUNT'; saveS(S);
       return;
     }
     if (S.phase === 'WAIT_RCOUNT') {
-      if (getAmount('ctl01') === String(S.targetRcount)) { S.phase = 'FILL'; resetWait(S); tick(); return; }
-      waitRetry(S, 'R人數設定未生效'); return;
+      if (getAmountByRole(ROLE_R) === String(S.targetRcount)) { S.phase = 'FILL'; resetWait(S); tick(); return; }
+      waitRetry(S, ROLE_R + '人數設定未生效'); return;
     }
 
     if (S.phase === 'FILL') {
-      const rows = roleEmpRows('R或NP');
+      const rows = roleEmpRows(ROLE_R);
       if (rows.length < S.targetRcount) { waitRetry(S, 'R輸入格數不足(' + rows.length + '/' + S.targetRcount + ')'); return; }
       resetWait(S);
       for (let i = 0; i < S.oldRs.length; i++) {
@@ -247,7 +294,7 @@
     }
 
     if (S.phase === 'INSERT') {
-      const rows = roleEmpRows('R或NP');
+      const rows = roleEmpRows(ROLE_R);
       const filledCount = rows.filter(function (r) { return (r.emp.value || '').trim(); }).length;
       if (filledCount < S.targetRcount) { waitRetry(S, '新增前輸入格遺失(' + filledCount + '/' + S.targetRcount + ')'); return; }
       resetWait(S);
