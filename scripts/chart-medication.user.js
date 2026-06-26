@@ -73,7 +73,8 @@
         const tokens = complex.trim().split(/\s+/);
         for (const token of tokens) {
             if (/^[一-鿿㐀-䶿]+$/.test(token)) continue; // 純中文前綴
-            if (/^\([^)]+\)$/.test(token)) continue;                      // (PPN)、(VIT.C) 等括弧前綴
+            if (/^\([^)]+\)$/.test(token)) continue;      // (PPN)、(管1) 等括弧前綴
+            if (/^\d+$/.test(token)) continue;             // 純數字前綴
             return token;
         }
         return tokens[0] || '';
