@@ -68,13 +68,15 @@
     // "Unasyn (based on ampicillin content) 1000 mg/vial" → "Unasyn"
     // "袋 Norm-Saline Inj. 0.9% 500 mL /bag" → "Norm-Saline"
     // "(PPN) Bfluid 1000 mL /bag" → "Bfluid"
+    // "10 Morphine Inj ..." → "10 Morphine"（數字前綴保留，代表劑量）
     function cleanTradeName(complex) {
         if (!complex) return '';
         const tokens = complex.trim().split(/\s+/);
-        for (const token of tokens) {
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i];
             if (/^[一-鿿㐀-䶿]+$/.test(token)) continue; // 純中文前綴
             if (/^\([^)]+\)$/.test(token)) continue;      // (PPN)、(管1) 等括弧前綴
-            if (/^\d+$/.test(token)) continue;             // 純數字前綴
+            if (/^\d+$/.test(token)) return token + (tokens[i + 1] ? ' ' + tokens[i + 1] : ''); // 數字前綴＋下一個 token
             return token;
         }
         return tokens[0] || '';
