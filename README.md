@@ -4,7 +4,7 @@
 
 ## 📖 安裝教學
 
-> 👉 **[點此開啟互動式安裝教學](https://twb06.github.io/NTUH-helper/tutorial.html)**（含 Tampermonkey 安裝、開啟使用者指令碼、腳本安裝、書籤工具安裝）
+> 👉 **[點此開啟互動式安裝教學](https://daniel0128-tw.github.io/ntuh-helper-docs/tutorial.html)**（含 Tampermonkey 安裝、開啟使用者指令碼、腳本安裝、書籤工具安裝）
 
 ## 專案內容
 
