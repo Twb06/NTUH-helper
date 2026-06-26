@@ -11,6 +11,7 @@
 | `admission-note-filler` | 自動填入入院紀錄各欄位（主訴、病史、身體診察等），並自動帶入檢驗結果 | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
 | `op-automation` | 批次執行術前評估（估）、當日評估（當）、同意書綁定（同）；估頁面目前為無腦全填，call 入摘截取待開發 | 通用 | 開啟手術排程頁面，點擊右下角「批次執行 估・當・同」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js) |
 | `uro-performance` | 泌尿科績效填入工具：上傳對照表 CSV + 刀表病人 CSV，全自動巡檢病人、判斷已填狀態、填入主治醫師與 R 並新增 | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
+| `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色，自動處理人數設定、照抄舊 R、刪除重建 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |
 
 ## Bookmarklets
 
