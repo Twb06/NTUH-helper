@@ -11,7 +11,7 @@
 | 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|----------|
 | `NTUH-diagcertificate-filler` | 自動填入診斷書，利用背景分頁與跨網域沙盒（GM_setValue）自動擷取手術同意書回傳 | 通用 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js) |
-| `chart-antibiotic` | 讀取藥歷圖（Chart.aspx），整理任意藥物用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數；支援中文前綴（袋、針、胃…）及括弧前綴（(PPN)…）的商品名自動清理 | 通用 | 開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-antibiotic.user.js) |
+| `chart-medication` | 讀取藥歷圖（Chart.aspx），整理任意藥物用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數；支援中文前綴（袋、針、胃…）及括弧前綴（(PPN)…）的商品名自動清理 | 通用 | 開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
 | `admission-note-filler` | 自動填入入院紀錄各欄位（主訴、病史、身體診察等），並自動帶入檢驗結果 | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
 | `op-automation` | 批次執行術前評估（估）、當日評估（當）、同意書綁定（同）；估頁面目前為無腦全填，call 入摘截取待開發 | 通用 | 開啟手術排程頁面，點擊右下角「批次執行 估・當・同」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js) |
 | `uro-performance` | 泌尿科績效填入工具：上傳對照表 CSV + 刀表病人 CSV，全自動巡檢病人、判斷已填狀態、填入主治醫師與 R 並新增 | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
@@ -22,7 +22,7 @@
 
 | 書籤 | 說明 | 適用範圍 | 使用頁面 | 原始碼 |
 |------|------|----------|----------|--------|
-| `chart-antibiotic` | 在藥歷圖頁面按書籤，整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用並顯示療程天數 | 通用 | Portal 藥歷圖（Chart.aspx） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/chart-antibiotic.js) |
+| `chart-medication` | 在藥歷圖頁面按書籤，整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用並顯示療程天數 | 通用 | Portal 藥歷圖（Chart.aspx） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/chart-medication.js) |
 | `lab-trend` | 框選「綠單」檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組） | 通用 | Portal 報告頁面的綠單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-trend.js) |
 | `lab-summary` | 框選「清單」檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期 | 通用 | Portal 報告頁面的清單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-summary.js) |
 | `goto-nursing-handover` | 新開分頁跳轉到該病人的「護理交班」頁面 | 通用 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-handover.js) |
