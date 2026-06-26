@@ -12,6 +12,7 @@
 | `op-automation` | 批次執行術前評估（估）、當日評估（當）、同意書綁定（同）；估頁面目前為無腦全填，call 入摘截取待開發 | 通用 | 開啟手術排程頁面，點擊右下角「批次執行 估・當・同」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js) |
 | `uro-performance` | 泌尿科績效填入工具：上傳對照表 CSV + 刀表病人 CSV，全自動巡檢病人、判斷已填狀態、填入主治醫師與 R 並新增 | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
 | `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色，自動處理人數設定、照抄舊 R、刪除重建 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |
+| `progress-note-filler` | 從 Primary note 自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。**⚠ 需要特殊的 primary note 格式**（包含 `[Today's Events]`、`[Course]`、`[Assessment]`、`[Diagnosis]`、`[Plans]` 區塊，以 `-----[區塊名]` 分隔） | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
 
 ## Bookmarklets
 
