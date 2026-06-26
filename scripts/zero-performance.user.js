@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         NTUH 掛0%績效工具 (半自動寫入版 v1.4)
+// @name         NTUH 掛0%績效工具 (半自動寫入版 v1.4.1)
 // @namespace    ntuh-zero
-// @version      1.4.0
+// @version      1.4.1
 // @description  一鍵把指定員編以0%掛進當前病人的R角色:讀現有R→設人數(VS0/成本0/R現有+1)→照抄舊R+自己0%→刪舊R→新增。狀態機跨postback接力。不切換病人。
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js
@@ -43,20 +43,32 @@
   }
   function existingRs() { return readAllRoles().filter(function (r) { return r.role === ROLE_R; }); }
 
-  // ---------- 人數下拉（依角色名稱動態定位） ----------
-  function amountSelectByRole(roleText) {
-    const links = document.querySelectorAll('a[id$="_LinkButtonRoleName"]');
-    for (const link of links) {
-      if ((link.textContent || '').trim() !== roleText) continue;
-      // 從 link 往上找包含 VSAmount 的容器
-      let el = link.parentElement;
-      for (let i = 0; i < 8; i++) {
-        if (!el) break;
-        const sel = el.querySelector('select[id*="_VSAmount"]');
-        if (sel) return sel;
-        el = el.parentElement;
+  // ---------- 人數下拉：從 CheckBoxRole 出發，讀夾在 checkbox 與 select 之間的文字定位角色 ----------
+  function buildRoleSelectMap() {
+    const map = {};
+    const checkboxes = document.querySelectorAll('input[type="checkbox"][id*="RoleList_"][id*="_CheckBoxRole"]');
+    checkboxes.forEach(function (cb) {
+      const m = cb.id.match(/(.*RoleList_ctl\d+)_CheckBoxRole/);
+      if (!m) return;
+      const sel = document.getElementById(m[1] + '_VSAmount');
+      if (!sel) return;
+      // 讀 checkbox 到 select 之間的文字
+      let text = '';
+      let node = cb.nextSibling;
+      while (node && !(node.nodeType === 1 && node.tagName === 'SELECT')) {
+        text += (node.nodeType === 3 ? node.textContent : (node.textContent || ''));
+        node = node.nextSibling;
       }
-    }
+      const name = text.trim();
+      if (name) map[name] = sel;
+    });
+    return map;
+  }
+  function amountSelectByRole(roleText) {
+    const map = buildRoleSelectMap();
+    // 先嘗試完全比對，再嘗試 includes（容錯空白差異）
+    if (map[roleText]) return map[roleText];
+    for (const key in map) { if (key.indexOf(roleText) !== -1 || roleText.indexOf(key) !== -1) return map[key]; }
     return null;
   }
   function getAmountByRole(roleText) { const s = amountSelectByRole(roleText); return s ? s.value : null; }
@@ -69,23 +81,10 @@
     return true;
   }
 
-  // 掃描頁面所有角色+目前人數，回傳可讀字串（供 log 除錯用）
+  // 掃描頁面所有角色+目前人數（除錯用）
   function scanRoleAmounts() {
-    const links = document.querySelectorAll('a[id$="_LinkButtonRoleName"]');
-    const parts = [];
-    links.forEach(function (link) {
-      const roleName = (link.textContent || '').trim();
-      let el = link.parentElement;
-      let found = null;
-      for (let i = 0; i < 8; i++) {
-        if (!el) break;
-        const sel = el.querySelector('select[id*="_VSAmount"]');
-        if (sel) { found = sel; break; }
-        el = el.parentElement;
-      }
-      parts.push(roleName + ':' + (found ? found.value : '找不到'));
-    });
-    return parts.join(' / ');
+    const map = buildRoleSelectMap();
+    return Object.keys(map).map(function (k) { return k + ':' + map[k].value; }).join(' / ') || '（無法掃描）';
   }
 
   // ---------- 輸入框(角色名稱定位) ----------
@@ -133,7 +132,7 @@
   root.innerHTML =
     '<div id="ptz-fab" title="掛0%績效工具">0%</div>' +
     '<div id="ptz-panel" style="display:none">' +
-      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">半自動寫入 v1.4</span></span><span id="ptz-close">✕</span></div>' +
+      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">半自動寫入 v1.4.1</span></span><span id="ptz-close">✕</span></div>' +
       '<div id="ptz-body">' +
         '<label>要掛 0% 的員編(預設掛自己,可改)</label>' +
         '<input type="text" id="ptz-emp" placeholder="輸入員編" />' +
@@ -185,9 +184,10 @@
     if (rs.some(function (r) { return r.emp === emp; })) { alert('員編 ' + emp + ' 已在現有 R 名單中,無需再掛。'); return false; }
 
     // 確認三個關鍵下拉都找得到
-    if (!amountSelectByRole(ROLE_VS))   { alert('找不到「' + ROLE_VS + '」人數下拉，請確認頁面已載入完成，或角色名稱有異。'); return false; }
-    if (!amountSelectByRole(ROLE_R))    { alert('找不到「' + ROLE_R + '」人數下拉，請確認頁面已載入完成。'); return false; }
-    if (!amountSelectByRole(ROLE_COST)) { alert('找不到「' + ROLE_COST + '」人數下拉，請確認頁面已載入完成，或角色名稱有異。'); return false; }
+    const scanMsg = scanRoleAmounts();
+    if (!amountSelectByRole(ROLE_VS))   { alert('找不到「' + ROLE_VS + '」人數下拉。\n頁面偵測到角色：' + scanMsg); return false; }
+    if (!amountSelectByRole(ROLE_R))    { alert('找不到「' + ROLE_R + '」人數下拉。\n頁面偵測到角色：' + scanMsg); return false; }
+    if (!amountSelectByRole(ROLE_COST)) { alert('找不到「' + ROLE_COST + '」人數下拉。\n頁面偵測到角色：' + scanMsg); return false; }
 
     const plan = rs.map(function (r) { return r.emp + ' ' + r.weight + '%'; }).join('、');
 
@@ -197,7 +197,7 @@
       targetRcount: rs.length + 1, waitTries: 0, log: [],
     };
     saveS(S);
-    log(S, '頁面角色掃描：' + scanRoleAmounts(), 'ptz-warn');
+    log(S, '頁面角色掃描：' + scanMsg, 'ptz-warn');
     log(S, '開始:現有 R ' + plan + ' → 加掛 ' + emp + ' 0%', 'ptz-step');
     tick();
     return false;
