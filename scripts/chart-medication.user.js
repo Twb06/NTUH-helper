@@ -297,35 +297,14 @@
 
     function addButton() {
         if (!document.body) { setTimeout(addButton, 100); return; }
-        const host = document.createElement('div');
-        host.style.cssText = 'position:fixed;top:50px;right:20px;z-index:999999;';
-        const shadow = host.attachShadow({ mode: 'open' });
-        shadow.innerHTML = `
-            <style>
-                button {
-                    padding: 6px 16px;
-                    background: #507CD1;
-                    color: #fff;
-                    border: none;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-family: sans-serif;
-                    font-size: 14px;
-                    font-weight: bold;
-                    text-align: center;
-                    white-space: nowrap;
-                    box-sizing: border-box;
-                    display: block;
-                }
-                button:hover { opacity: 0.85; }
-            </style>
-            <button>整理藥物</button>
-        `;
-        shadow.querySelector('button').onclick = () => {
+        const btn = document.createElement('button');
+        btn.textContent = '整理藥物';
+        btn.style.cssText = 'position:fixed;top:50px;right:20px;z-index:999999;padding:6px 14px;background:#507CD1;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:sans-serif;font-weight:bold;';
+        btn.onclick = () => {
             const grouped = buildResults();
             showResult(formatOutput(grouped));
         };
-        document.body.appendChild(host);
+        document.body.appendChild(btn);
     }
 
     addButton();
