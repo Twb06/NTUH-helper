@@ -946,6 +946,80 @@
         };
     }
 
+    function triggerOpNameScan() {
+        try {
+            console.log('[DiagFiller] 自動觸發背景擷取手術中文名稱...');
+            const currentUrlParams = new URLSearchParams(window.location.search);
+            let session = currentUrlParams.get('SESSION') || '';
+            if (!session) { const sEl = document.querySelector('input[name*="SESSION"], input[id*="SESSION"]'); if (sEl) session = sEl.value; }
+            if (!session) { console.warn('[DiagFiller] 無法取得 SESSION，跳過背景掃描'); return; }
+
+            const rows = Array.from(document.getElementById('ntuh-diag-op-rows-container').getElementsByClassName('ntuh-diag-op-row'));
+            const scanTasks = [];
+
+            rows.forEach((row, index) => {
+                const nameInput = row.querySelector('.ntuh-diag-op-name-input');
+                const opName = nameInput ? nameInput.value.trim() : '';
+                const opScheduleIdse = row.getAttribute('data-op-idse') || '';
+                const needsScan = !opName || /[A-Za-z]/.test(opName);
+
+                if (needsScan && opScheduleIdse) {
+                    const opToken = 'ntuh_op_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '_' + index;
+                    scanTasks.push({ opScheduleIdse, opToken });
+                }
+            });
+
+            if (scanTasks.length === 0) return;
+
+            console.log('[DiagFiller] 規劃的手術背景掃描任務:', scanTasks);
+            setDiagStatus('⏳ 正在背景擷取手術中文名稱...', 'warn');
+
+            activeOpScanTokens = {};
+            scanTasks.forEach(task => {
+                const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx` +
+                                   `?SESSION=${session}&OperationIDSE=${task.opScheduleIdse}&ntuh_token=${task.opToken}`;
+
+                activeOpScanTokens[task.opToken] = task.opScheduleIdse;
+
+                if (typeof GM_openInTab !== 'undefined') {
+                    GM_openInTab(opTargetUrl, { active: false, insert: true, setParent: true });
+                } else {
+                    window.open(opTargetUrl, '_blank');
+                }
+            });
+
+            const startTime = Date.now();
+            const pollInterval = setInterval(() => {
+                if (Date.now() - startTime > 60000) {
+                    clearInterval(pollInterval);
+                    console.warn('[DiagFiller] 輪詢逾時 (60s)');
+                    if (document.getElementById('ntuh-diag-status').textContent.includes('⏳')) {
+                        setDiagStatus('⚠️ 擷取逾時，請重新整理頁面。', 'warn');
+                    }
+                    return;
+                }
+
+                for (const opToken in activeOpScanTokens) {
+                    const opNameData = getSharedData('ntuh_op_name_' + opToken);
+                    if (opNameData) {
+                        console.log(`[DiagFiller] 收到 Token ${opToken} 的手術名稱資料:`, opNameData);
+                        handleReceivedOpName(opNameData);
+                        deleteSharedData('ntuh_op_name_' + opToken);
+                        delete activeOpScanTokens[opToken];
+                    }
+                }
+
+                if (Object.keys(activeOpScanTokens).length === 0) {
+                    clearInterval(pollInterval);
+                    console.log('[DiagFiller] 所有手術名稱已成功接收，停止輪詢');
+                }
+            }, 1000);
+
+        } catch(e) {
+            console.error('[DiagFiller] 背景擷取手術名稱異常:', e);
+        }
+    }
+
     async function createDiagUI() {
         if (document.getElementById('ntuh-diag-fab')) return;
 
@@ -1006,7 +1080,6 @@
             </div>
             <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
-                <button id="ntuh-diag-scan-opname" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 背景擷取手術中文名稱</button>
                 <div id="ntuh-diag-status"></div>
                 <div id="ntuh-diag-preview"></div>
             </div>
@@ -1097,83 +1170,6 @@
         makeDraggable(panel, document.getElementById('ntuh-diag-header'));
         document.getElementById('ntuh-diag-run').onclick = () => runDiagFiller();
 
-        document.getElementById('ntuh-diag-scan-opname').onclick = () => {
-            try {
-                console.log('[DiagFiller] 點擊背景擷取手術名稱按鈕...');
-                const currentUrlParams = new URLSearchParams(window.location.search);
-                let session = currentUrlParams.get('SESSION') || '';
-                if (!session) { const sEl = document.querySelector('input[name*="SESSION"], input[id*="SESSION"]'); if (sEl) session = sEl.value; }
-                if (!session) { alert('無法取得 SESSION'); return; }
-
-                const rows = Array.from(document.getElementById('ntuh-diag-op-rows-container').getElementsByClassName('ntuh-diag-op-row'));
-                const scanTasks = [];
-
-                rows.forEach((row, index) => {
-                    const nameInput = row.querySelector('.ntuh-diag-op-name-input');
-                    const opName = nameInput ? nameInput.value.trim() : '';
-                    const opScheduleIdse = row.getAttribute('data-op-idse') || '';
-                    const needsScan = !opName || /[A-Za-z]/.test(opName);
-
-                    if (needsScan && opScheduleIdse) {
-                        const opToken = 'ntuh_op_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '_' + index;
-                        scanTasks.push({ opScheduleIdse, opToken });
-                    }
-                });
-
-                if (scanTasks.length === 0) {
-                    setDiagStatus('⚠️ 沒有需要擷取的手術（已有中文名稱或無流水號）', 'warn');
-                    return;
-                }
-
-                console.log('[DiagFiller] 規劃的手術背景掃描任務:', scanTasks);
-                setDiagStatus('⏳ 正在背景擷取手術中文名稱...', 'warn');
-
-                activeOpScanTokens = {};
-                scanTasks.forEach(task => {
-                    const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx` +
-                                       `?SESSION=${session}&OperationIDSE=${task.opScheduleIdse}&ntuh_token=${task.opToken}`;
-
-                    activeOpScanTokens[task.opToken] = task.opScheduleIdse;
-
-                    if (typeof GM_openInTab !== 'undefined') {
-                        GM_openInTab(opTargetUrl, { active: false, insert: true, setParent: true });
-                    } else {
-                        window.open(opTargetUrl, '_blank');
-                    }
-                });
-
-                const startTime = Date.now();
-                const pollInterval = setInterval(() => {
-                    if (Date.now() - startTime > 60000) {
-                        clearInterval(pollInterval);
-                        console.warn('[DiagFiller] 輪詢逾時 (60s)');
-                        if (document.getElementById('ntuh-diag-status').textContent.includes('⏳')) {
-                            setDiagStatus('⚠️ 擷取逾時，請手動確認或重新點擊。', 'warn');
-                        }
-                        return;
-                    }
-
-                    for (const opToken in activeOpScanTokens) {
-                        const opNameData = getSharedData('ntuh_op_name_' + opToken);
-                        if (opNameData) {
-                            console.log(`[DiagFiller] 收到 Token ${opToken} 的手術名稱資料:`, opNameData);
-                            handleReceivedOpName(opNameData);
-                            deleteSharedData('ntuh_op_name_' + opToken);
-                            delete activeOpScanTokens[opToken];
-                        }
-                    }
-
-                    if (Object.keys(activeOpScanTokens).length === 0) {
-                        clearInterval(pollInterval);
-                        console.log('[DiagFiller] 所有手術名稱已成功接收，停止輪詢');
-                    }
-                }, 1000);
-
-            } catch(e) {
-                console.error('[DiagFiller] 背景擷取手術名稱異常:', e);
-                setDiagStatus('✗ 開啟失敗: ' + e.message, 'err');
-            }
-        };
 
         // 啟動自動偵測與勾選
         setTimeout(autoDetectRecords, 100);
@@ -1242,8 +1238,7 @@
 
             // 自動觸發背景擷取手術中文名稱
             if (opList.length > 0) {
-                const scanBtn = document.getElementById('ntuh-diag-scan-opname');
-                if (scanBtn) scanBtn.click();
+                triggerOpNameScan();
             }
         } catch (e) {
             console.warn('[DiagFiller] 自動偵測病歷失敗：', e);
