@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.11.0
+// @version      1.12.0
 // @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -1265,26 +1265,12 @@
         return names;
     }
 
-    function formatCombinedOpName(str) {
-        if (!str || !str.trim()) return '';
-        let cleanStr = str.replace(/[\r\n\t]+/g, ' ').trim();
-        let items = [];
-
-        if (cleanStr.match(/\b\d+[\.、\s]/) || cleanStr.match(/^\d+[\.、\s]/)) {
-            const splitMarked = cleanStr.replace(/\b\d+[\.、\s]+/g, '|||').replace(/^\d+[\.、\s]+/g, '|||');
-            items = splitMarked.split('|||').map(s => s.trim()).filter(s => s.length > 0);
-        } else {
-            items = cleanStr.split(/[,，;；、]/).map(s => s.trim()).filter(s => s.length > 0);
-        }
-
-        const processedItems = items.map(item => {
-            let s = item.replace(/[,，;；、\s]+$/, '').trim();
-            s = s.replace(/(手術|術)$/, '').trim();
-            return s;
-        }).filter(s => s.length > 0);
-
-        if (processedItems.length === 0) return '';
-        return processedItems.join('併') + '手術';
+    function formatCombinedOpName(items) {
+        if (!items || items.length === 0) return '';
+        const cleaned = items.map(s => s.replace(/[\r\n\t]+/g, ' ').trim()).filter(s => s.length > 0);
+        if (cleaned.length === 0) return '';
+        if (cleaned.length === 1) return cleaned[0];
+        return cleaned.join('併');
     }
 
     async function runOpNameExtractorAndReturn() {
@@ -1293,8 +1279,7 @@
         try {
             await sleep(1200);
             const opNames = extractOpNamesFromDOM();
-            const combined = opNames.join('，');
-            const formatted = formatCombinedOpName(combined);
+            const formatted = formatCombinedOpName(opNames);
             console.log('[OpNameExtractor] 格式化後的手術名稱:', formatted);
 
             const opResult = {
