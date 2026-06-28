@@ -1,13 +1,12 @@
 // ==UserScript==
-// @name         NTUH DiagCertificate & Consent Integrated Filler
+// @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.10.0
-// @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
+// @version      1.11.0
+// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @grant        GM_openInTab
@@ -19,10 +18,8 @@
 (function () {
     'use strict';
 
-    // 記錄目前觸發背景掃描的唯一 token，用於比對 postMessage 回傳
-    let currentScanToken = null;
     let activeOpScanTokens = {};
-    let detectedOpList = []; // 儲存所有偵測到的手術資料列表
+    let detectedOpList = [];
 
     // =========================================================================
     // 路由分流控制中心
@@ -34,21 +31,6 @@
         if (currentUrl.includes('DiagCertificate')) {
             console.log("[DiagFiller] 偵測到診斷書頁面，啟動填入與連動模組...");
             setTimeout(createDiagUI, 1500);
-        }
-        else if (currentUrl.includes('PatientConsentOrderEntry')) {
-            const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
-            const hasOpener = !!window.opener;
-            const isOrchestratorWindow = !!ntuhToken;
-            console.log('[DiagFiller] 偵測到 PatientConsentOrderEntry 頁面');
-            console.log('[DiagFiller] window.opener 狀態:', hasOpener, 'ntuh_token 狀態:', ntuhToken);
-            if (isOrchestratorWindow) {
-                // 儲存 token 至 sessionStorage，避免頁面內部跳轉後遺失
-                sessionStorage.setItem('ntuh_window_token', ntuhToken);
-                console.log("[DiagFiller] 偵測到背景掃描分頁(PatientConsentOrderEntry)，啟動同意書擷取並準備回傳...");
-                runConsentExtractorAndReturn();
-            } else {
-                console.warn("[DiagFiller] 未執行掃描：isOrchestratorWindow 判定為假。原因：網址無 token 參數。");
-            }
         }
         else if (currentUrl.includes('DREnterOPOrder.aspx')) {
             const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
@@ -718,17 +700,6 @@
                 }
             }
 
-            const consentCbxs = document.querySelectorAll('.ntuh-diag-consent-cbx:checked');
-            consentCbxs.forEach(cbx => {
-                const title = cbx.getAttribute('data-title') || '';
-                const date = cbx.getAttribute('data-date') || '';
-                if (date) {
-                    const cleanName = title.replace(/(說明暨同意書|同意書|說明書)[\s\S]*$/, '').trim();
-                    const cleanDate = date.split(' ')[0].trim().replace(/-/g, '/');
-                    opEvents.push({ date: cleanDate, name: cleanName });
-                }
-            });
-
             const cleanInpatStart = inpat.inpatStartDate ? inpat.inpatStartDate.substring(0, 10).trim().replace(/-/g, '/') : '';
             const fromEmg = !!(emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
 
@@ -831,53 +802,6 @@
             setDiagStatus('✓ 填入完成！請確認後開立。', 'ok');
         } catch (e) { console.error(e); setDiagStatus('✗ 錯誤：' + e.message, 'err'); }
         const runBtn = document.getElementById('ntuh-diag-run'); if (runBtn) runBtn.disabled = false;
-    }
-
-    function handleReceivedConsent(list) {
-        const container = document.getElementById('ntuh-diag-consent-result-box');
-        if (!container) return;
-
-        container.style.display = 'block';
-        if (!list || list.length === 0) {
-            container.innerHTML = `<div style="color:#a0aec0; font-size:11px; padding:4px 0;">⚠️ 未偵測到手術/術式相關同意書。</div>`;
-            setDiagStatus('✓ 背景掃描完成，未發現手術/術式同意書', 'ok');
-            return;
-        }
-
-        const sortedList = [...list].sort((a, b) => {
-            const aSigned = a.status === '已簽署';
-            const bSigned = b.status === '已簽署';
-            if (aSigned !== bSigned) {
-                return aSigned ? -1 : 1;
-            }
-            const aDate = new Date(a.date ? a.date.replace(/-/g, '/') : '');
-            const bDate = new Date(b.date ? b.date.replace(/-/g, '/') : '');
-            if (isNaN(aDate) && isNaN(bDate)) return 0;
-            if (isNaN(aDate)) return 1;
-            if (isNaN(bDate)) return -1;
-            return bDate - aDate;
-        });
-
-        let html = `<div style="font-weight:bold; color:#ff7597; font-size:11px; margin-top:4px; border-top:1px dashed #2d3650; padding-top:6px;">📋 擷取到同意書 (勾選帶入診斷書)：</div>`;
-        html += `<ul style="margin:0; padding:0; list-style:none; font-size:12px; line-height:1.6; max-height:150px; overflow-y:auto;">`;
-        sortedList.forEach(item => {
-            const escapedTitle = item.title.replace(/"/g, '&quot;');
-            const escapedDate = (item.date || '').replace(/"/g, '&quot;');
-            html += `
-                <li style="margin-bottom: 6px; display: flex; align-items: flex-start; gap: 6px;">
-                    <input type="checkbox" class="ntuh-diag-consent-cbx" data-title="${escapedTitle}" data-date="${escapedDate}" style="margin-top: 3px; cursor: pointer;" />
-                    <div style="flex: 1;">
-                        <span style="color:#7a8aaa; font-size:11px;">[${item.date}]</span>
-                        <a href="${item.url}" target="_blank" style="color:#63b3ed; font-weight:bold; text-decoration:underline; display: block;">
-                            ${item.title}
-                        </a>
-                        <span style="color:#48bb78; font-size:11px;">(${item.status})</span>
-                    </div>
-                </li>`;
-        });
-        html += `</ul>`;
-        container.innerHTML = html;
-        setDiagStatus('✓ 同意書背景跨網讀取成功！', 'ok');
     }
 
     function handleReceivedOpName(opData) {
@@ -1079,11 +1003,10 @@
                     <div id="ntuh-diag-op-rows-container" style="display:flex;flex-direction:column;gap:6px;"></div>
                     <button id="ntuh-diag-add-op-btn" type="button" style="padding:4px; border:1px dashed #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; margin-top:4px;">➕ 新增手術</button>
                 </div>
-                <div id="ntuh-diag-consent-result-box" style="display:none;"></div>
             </div>
             <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
-                <button id="ntuh-diag-open-consent" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 背景檢查電子同意書項目</button>
+                <button id="ntuh-diag-scan-opname" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 背景擷取手術中文名稱</button>
                 <div id="ntuh-diag-status"></div>
                 <div id="ntuh-diag-preview"></div>
             </div>
@@ -1174,62 +1097,42 @@
         makeDraggable(panel, document.getElementById('ntuh-diag-header'));
         document.getElementById('ntuh-diag-run').onclick = () => runDiagFiller();
 
-        document.getElementById('ntuh-diag-open-consent').onclick = () => {
+        document.getElementById('ntuh-diag-scan-opname').onclick = () => {
             try {
-                console.log('[DiagFiller] 點擊背景掃描按鈕...');
+                console.log('[DiagFiller] 點擊背景擷取手術名稱按鈕...');
                 const currentUrlParams = new URLSearchParams(window.location.search);
                 let session = currentUrlParams.get('SESSION') || '';
-                let accountId = currentUrlParams.get('AccountIDSE') || '';
-
                 if (!session) { const sEl = document.querySelector('input[name*="SESSION"], input[id*="SESSION"]'); if (sEl) session = sEl.value; }
-                if (!accountId) { const aEl = document.querySelector('input[name*="AccountIDSE"], input[id*="AccountIDSE"]'); if (aEl) accountId = aEl.value; }
+                if (!session) { alert('無法取得 SESSION'); return; }
 
-                let personId = currentUrlParams.get('PersonID') || '';
-                if (!personId) {
-                    const idEl = document.getElementById('NTUHWeb1_lblPersonID') || document.getElementById('NTUHWeb1_tbxPersonID');
-                    if (idEl) personId = idEl.textContent.trim() || idEl.value.trim();
-                }
-                if (!personId) { alert('無法取得病人 ID'); return; }
-
-                const token = 'ntuh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-                currentScanToken = token;
-
-                const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx` +
-                                  `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0&ntuh_token=${token}`;
-
-                setDiagStatus('⏳ 正在跨網域背景開啟並撈取資料...', 'warn');
-                if (typeof GM_openInTab !== 'undefined') {
-                    GM_openInTab(targetUrl, { active: false, insert: true, setParent: true });
-                } else {
-                    window.open(targetUrl, '_blank');
-                }
-
-                // 收集目前 UI 上所有的手術列掃描任務 (只為需要翻譯成中文的手術排程開啟背景分頁)
                 const rows = Array.from(document.getElementById('ntuh-diag-op-rows-container').getElementsByClassName('ntuh-diag-op-row'));
                 const scanTasks = [];
-                
+
                 rows.forEach((row, index) => {
                     const nameInput = row.querySelector('.ntuh-diag-op-name-input');
                     const opName = nameInput ? nameInput.value.trim() : '';
                     const opScheduleIdse = row.getAttribute('data-op-idse') || '';
-                    
-                    // 第一筆一定要掃 (用來帶入主同意書清單)；其他筆若非中文且有流水號才掃
-                    const isFirst = index === 0;
-                    const needsScan = isFirst || !opName || /[A-Za-z]/.test(opName);
-                    
+                    const needsScan = !opName || /[A-Za-z]/.test(opName);
+
                     if (needsScan && opScheduleIdse) {
                         const opToken = 'ntuh_op_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '_' + index;
                         scanTasks.push({ opScheduleIdse, opToken });
                     }
                 });
 
+                if (scanTasks.length === 0) {
+                    setDiagStatus('⚠️ 沒有需要擷取的手術（已有中文名稱或無流水號）', 'warn');
+                    return;
+                }
+
                 console.log('[DiagFiller] 規劃的手術背景掃描任務:', scanTasks);
+                setDiagStatus('⏳ 正在背景擷取手術中文名稱...', 'warn');
 
                 activeOpScanTokens = {};
                 scanTasks.forEach(task => {
                     const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx` +
                                        `?SESSION=${session}&OperationIDSE=${task.opScheduleIdse}&ntuh_token=${task.opToken}`;
-                    
+
                     activeOpScanTokens[task.opToken] = task.opScheduleIdse;
 
                     if (typeof GM_openInTab !== 'undefined') {
@@ -1239,55 +1142,35 @@
                     }
                 });
 
-                // 啟動資料輪詢機制讀取背景回傳資料
                 const startTime = Date.now();
                 const pollInterval = setInterval(() => {
-                    // 檢查是否逾時 (60 秒)
                     if (Date.now() - startTime > 60000) {
                         clearInterval(pollInterval);
-                        console.warn('[DiagFiller] 輪詢逾時 (60s)，停止檢查全域資料');
+                        console.warn('[DiagFiller] 輪詢逾時 (60s)');
                         if (document.getElementById('ntuh-diag-status').textContent.includes('⏳')) {
                             setDiagStatus('⚠️ 擷取逾時，請手動確認或重新點擊。', 'warn');
                         }
                         return;
                     }
 
-                    // 1. 檢查同意書資料
-                    if (currentScanToken) {
-                        const rawConsentData = getSharedData('ntuh_consent_data_' + currentScanToken);
-                        if (rawConsentData) {
-                            try {
-                                const consentList = JSON.parse(rawConsentData);
-                                console.log('[DiagFiller] 收到同意書資料:', consentList);
-                                handleReceivedConsent(consentList);
-                            } catch (err) {
-                                console.error('[DiagFiller] 解析同意書資料失敗:', err);
-                            }
-                            deleteSharedData('ntuh_consent_data_' + currentScanToken);
-                            currentScanToken = null; // 標記已處理
-                        }
-                    }
-
-                    // 2. 檢查手術名稱資料
                     for (const opToken in activeOpScanTokens) {
                         const opNameData = getSharedData('ntuh_op_name_' + opToken);
                         if (opNameData) {
                             console.log(`[DiagFiller] 收到 Token ${opToken} 的手術名稱資料:`, opNameData);
                             handleReceivedOpName(opNameData);
                             deleteSharedData('ntuh_op_name_' + opToken);
-                            delete activeOpScanTokens[opToken]; // 標記已處理
+                            delete activeOpScanTokens[opToken];
                         }
                     }
 
-                    // 3. 如果兩者都已經處理完畢（或沒啟動的就不存在），清除輪詢
-                    if (!currentScanToken && Object.keys(activeOpScanTokens).length === 0) {
+                    if (Object.keys(activeOpScanTokens).length === 0) {
                         clearInterval(pollInterval);
-                        console.log('[DiagFiller] 所有背景資料已成功接收，停止輪詢');
+                        console.log('[DiagFiller] 所有手術名稱已成功接收，停止輪詢');
                     }
                 }, 1000);
 
             } catch(e) {
-                console.error('[DiagFiller] 點擊背景掃描觸發異常:', e);
+                console.error('[DiagFiller] 背景擷取手術名稱異常:', e);
                 setDiagStatus('✗ 開啟失敗: ' + e.message, 'err');
             }
         };
@@ -1363,131 +1246,8 @@
     }
 
     // =========================================================================
-    // 模組二：新頁面自動擷取，並使用沙盒寫入進行跨網域傳輸
+    // 模組二：背景分頁自動擷取手術名稱，透過 GM_setValue 跨網域回傳
     // =========================================================================
-    async function runConsentExtractorAndReturn() {
-        // 從 URL 讀取 token（或 sessionStorage 作為備援）
-        const token = new URLSearchParams(window.location.search).get('ntuh_token') ||
-                      sessionStorage.getItem('ntuh_window_token') || '';
-        console.log('[ConsentHelper] 開始執行 runConsentExtractorAndReturn, token:', token);
-        try {
-            console.log('[ConsentHelper] 等待 a[id*="ClickConsentShowList"] 元素加載...');
-            // 使用 Safe 版本等待，避免因查無同意書連結而拋出 exception 中斷流程
-            await waitForElSafe('a[id*="ClickConsentShowList"]', 8000);
-            console.log('[ConsentHelper] 元素等待結束，睡眠 600ms 等待 DOM 穩定...');
-            await sleep(600);
-
-            const links = Array.from(document.querySelectorAll('a[id*="ClickConsentShowList"]'));
-            console.log('[ConsentHelper] 總共找到', links.length, '個同意書連結');
-            const consentList = [];
-            const session = new URLSearchParams(window.location.search).get('SESSION') || '';
-            console.log('[ConsentHelper] 提取到的 SESSION:', session);
-
-            links.forEach((link, index) => {
-                const id = link.id;
-                console.log(`[ConsentHelper] 正在處理第 ${index + 1} 個連結: id=${id}, text=${link.textContent.trim()}`);
-                const matchCtrl = id.match(/PatientConsentDataList_(ctl\d+)_ClickConsentShowList/);
-                if (!matchCtrl) {
-                    console.log(`[ConsentHelper] 連結 id 格式不符合 EMR 規則，跳過`);
-                    return;
-                }
-                const controlName = matchCtrl[1];
-
-                const emrCodeEl = document.getElementById(`PatientConsentDataList_${controlName}_EMRCode`);
-                const emrIdseEl = document.getElementById(`PatientConsentDataList_${controlName}_EMRIDSE`);
-
-                const emrCode = emrCodeEl ? emrCodeEl.value.trim() : '';
-                const emrIdse = emrIdseEl ? emrIdseEl.value.trim() : '';
-
-                console.log(`[ConsentHelper] EMR 欄位讀取: EMRCode=${emrCode}, EMRIDSE=${emrIdse}`);
-
-                if (!emrCode || !emrIdse) {
-                    console.log(`[ConsentHelper] EMRCode 或 EMRIDSE 為空，跳過此連結`);
-                    return;
-                }
-
-                const fullTitle = link.textContent.trim();
-                let title = fullTitle;
-                let dateStr = '';
-                let statusStr = '未簽';
-
-                const bracketMatch = fullTitle.match(/^([\s\S]+?)\s*\(\s*(\d{2}\/\d{2}\/\d{2})\s+(\d{2}:\d{2})\s*(.*?)\s*\)$/);
-                if (bracketMatch) {
-                    title = bracketMatch[1].trim();
-                    const rawDate = bracketMatch[2];
-                    const rawTime = bracketMatch[3];
-                    const extra = bracketMatch[4] || '';
-
-                    const dateParts = rawDate.split('/');
-                    if (dateParts[0].length === 2) {
-                        dateParts[0] = '20' + dateParts[0];
-                    }
-                    dateStr = `${dateParts.join('/')} ${rawTime}`;
-
-                    if (extra.includes('已簽') || extra.includes('已簽署')) {
-                        statusStr = '已簽署';
-                    }
-                } else {
-                    const simpleMatch = fullTitle.match(/^([\s\S]+?)\s*\(\s*(已簽署|已簽)\s*\)$/);
-                    if (simpleMatch) {
-                        title = simpleMatch[1].trim();
-                        statusStr = '已簽署';
-                    }
-                }
-
-                console.log(`[ConsentHelper] 解析結果: title=${title}, date=${dateStr}, status=${statusStr}`);
-
-                if (title.includes('同意書') && (title.includes('術') || title.includes('檢查'))) {
-                    const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder.aspx` +
-                                      `?SESSION=${session}&Func=EMRRecordSeries&EMRIDSE=${emrIdse}&EMRRecord=${emrCode}&AllowPrint=Y`;
-
-                    console.log(`[ConsentHelper] 匹配成功！新增至同意書清單, URL:`, targetUrl);
-                    consentList.push({
-                        date: dateStr || todayStr(),
-                        title: title,
-                        status: statusStr,
-                        url: targetUrl
-                    });
-                } else {
-                    console.log(`[ConsentHelper] 此連結名稱不含「同意書」及「術/檢查」，排除`);
-                }
-            });
-
-            console.log('[ConsentHelper] 掃描完畢，即將回傳同意書項目:', consentList);
-
-            // 寫入全域資料進行跨網域共享
-            if (token) {
-                console.log('[ConsentHelper] 寫入傳遞資料, token:', token);
-                setSharedData('ntuh_consent_data_' + token, JSON.stringify(consentList));
-            }
-
-            // 透過 postMessage 將資料回傳給主視窗（備援/舊版相容）
-            if (window.opener) {
-                console.log('[ConsentHelper] 偵測到 window.opener，發送 postMessage...');
-                window.opener.postMessage(
-                    { ntuh: true, token, type: 'consent', data: consentList },
-                    'https://hisaw.ntuh.gov.tw'
-                );
-                console.log('[ConsentHelper] postMessage 發送成功，共', consentList.length, '筆');
-            } else {
-                console.log('[ConsentHelper] window.opener 為空，改以全域資料通訊機制回傳');
-            }
-
-            await sleep(100);
-            console.log('[DiagFiller] 資料發射完畢，準備自毀分頁...');
-            window.close();
-
-        } catch (e) {
-            console.error('[ConsentHelper] 背景讀取新網頁失敗或意外中斷：', e.stack || e.message);
-            // 發生異常時的保底機制：發送空陣列以結束主視窗的等待，並關閉分頁
-            if (token) {
-                setSharedData('ntuh_consent_data_' + token, JSON.stringify([]));
-            }
-            await sleep(100);
-            window.close();
-        }
-    }
-
     function extractOpNamesFromDOM() {
         const names = [];
         const spans = document.querySelectorAll('span[id*="InputOperationOrderCtrl1_OrderName"]');
