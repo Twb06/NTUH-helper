@@ -1080,6 +1080,7 @@
             </div>
             <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
+                <button id="ntuh-diag-open-consent" type="button" style="padding:6px 0; border:1px solid #5a6a8a; border-radius:6px; background:transparent; color:#7a8aaa; cursor:pointer; font-size:11px; width:100%;">📄 開啟病患同意書（手動查閱）</button>
                 <div id="ntuh-diag-status"></div>
                 <div id="ntuh-diag-preview"></div>
             </div>
@@ -1170,6 +1171,13 @@
         makeDraggable(panel, document.getElementById('ntuh-diag-header'));
         document.getElementById('ntuh-diag-run').onclick = () => runDiagFiller();
 
+        document.getElementById('ntuh-diag-open-consent').onclick = () => {
+            const params = new URLSearchParams(window.location.search);
+            const session = params.get('SESSION') || '';
+            if (!session) { alert('無法取得 SESSION'); return; }
+            const url = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}`;
+            window.open(url, '_blank');
+        };
 
         // 啟動自動偵測與勾選
         setTimeout(autoDetectRecords, 100);
