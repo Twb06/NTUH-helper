@@ -1,0 +1,611 @@
+// ==UserScript==
+// @name         NTUH Weekend Progress
+// @namespace    https://ihisaw.ntuh.gov.tw/
+// @version      1.1
+// @description  用於週末值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出
+// @author       潘岳彤
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    /* global __doPostBack, $SelectedNote, CopyNoteToNewRecord, Sys */
+
+    const STORAGE_KEY = 'ntuh_weekend_progress';
+    const PATH = window.location.pathname;
+
+    // ═══════════════════════════════════════════════════════════
+    // 共用工具
+    // ═══════════════════════════════════════════════════════════
+
+    function getState() {
+        try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY)); }
+        catch { return null; }
+    }
+    function setState(s) { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+    function clearState() { sessionStorage.removeItem(STORAGE_KEY); }
+
+    function waitForPostback(fn) {
+        if (window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
+            const prm = Sys.WebForms.PageRequestManager.getInstance();
+            const handler = function () {
+                prm.remove_endRequest(handler);
+                setTimeout(fn, 400);
+            };
+            prm.add_endRequest(handler);
+        } else {
+            setTimeout(fn, 2000);
+        }
+    }
+
+    function onReady(fn, delay) {
+        const run = () => setTimeout(fn, delay);
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', run);
+        } else {
+            run();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Phase 0: 攔截 window.open（病房清單頁面，document-start 階段）
+    // ═══════════════════════════════════════════════════════════
+
+    let capturedPopup = null;
+
+    if (PATH.includes('OpenWard.aspx')) {
+        const state = getState();
+        if (state?.running) {
+            const origOpen = window.open.bind(window);
+            window.open = function (...args) {
+                const win = origOpen(...args);
+                capturedPopup = win;
+                return win;
+            };
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 路由
+    // ═══════════════════════════════════════════════════════════
+
+    if (PATH.includes('OpenWard.aspx')) onReady(initOrchestrator, 1500);
+    if (PATH.includes('InsertProgressNoteContent.aspx')) onReady(initChild, 2000);
+
+    // ═══════════════════════════════════════════════════════════
+    // MODULE A：Orchestrator（病房清單頁面）
+    // ═══════════════════════════════════════════════════════════
+
+    function initOrchestrator() {
+        const state = getState();
+
+        if (state?.running) {
+            const origAlert = window.alert;
+            window.alert = function () { /* 靜默 */ };
+            window.addEventListener('beforeunload', () => { window.alert = origAlert; });
+
+            showOrchestratorStatus(state);
+            listenForChildMessage(state);
+
+            if (capturedPopup) {
+                startPopupTimeout(state);
+            } else {
+                setTimeout(() => {
+                    if (capturedPopup) {
+                        startPopupTimeout(state);
+                    } else {
+                        addResult(state, '未開啟');
+                        nextPatient(state);
+                    }
+                }, 5000);
+            }
+            return;
+        }
+
+        if (state && !state.running && state.results?.length > 0) {
+            showFinalResults(state);
+            clearState();
+        }
+
+        createFAB();
+    }
+
+    function listenForChildMessage(state) {
+        window.addEventListener('message', function handler(event) {
+            if (event.origin !== location.origin) return;
+            if (!event.data?.ntuh_weekend) return;
+
+            window.removeEventListener('message', handler);
+            clearTimeout(state._timeout);
+
+            addResult(state, event.data.result);
+            try { capturedPopup?.close(); } catch (e) { /* */ }
+            nextPatient(state);
+        });
+    }
+
+    function startPopupTimeout(state) {
+        state._timeout = setTimeout(() => {
+            try { capturedPopup?.close(); } catch (e) { /* */ }
+            addResult(state, '逾時');
+            nextPatient(state);
+        }, 90000);
+    }
+
+    function getPatients() {
+        const table = document.getElementById(
+            'NTUHWeb1_QueryInPatientPersonAccountControl1_DataGridAccountList'
+        );
+        if (!table) return [];
+
+        return [...table.rows].slice(1).map((tr, i) => {
+            const ctlId = `ctl${String(i + 2).padStart(2, '0')}`;
+            const nameEl = tr.querySelector(`[id$="${ctlId}_LinkPatientName"]`);
+            const progEl = tr.querySelector(`[id$="${ctlId}_LinkProgressNote"]`);
+            const roomEl = tr.querySelector(`[id$="${ctlId}_RoomLabel"]`);
+            const bedEl  = tr.querySelector(`[id$="${ctlId}_BedLabel"]`);
+            if (!nameEl || !progEl) return null;
+
+            const href = progEl.getAttribute('href') || '';
+            const m = href.match(/__doPostBack\('([^']+)'/);
+            if (!m) return null;
+
+            return {
+                name: nameEl.textContent.trim(),
+                bed: `${roomEl?.textContent?.trim() || ''}-${bedEl?.textContent?.trim() || ''}`,
+                postbackArg: m[1],
+            };
+        }).filter(Boolean);
+    }
+
+    function startBatch() {
+        const patients = getPatients();
+        if (patients.length === 0) { alert('找不到病人清單'); return; }
+
+        const state = { running: true, patients, currentIndex: 0, results: [] };
+        setState(state);
+        __doPostBack(patients[0].postbackArg, '');
+    }
+
+    function addResult(state, status) {
+        const p = state.patients[state.currentIndex];
+        state.results.push({ name: p?.name || '?', bed: p?.bed || '', status });
+    }
+
+    function nextPatient(state) {
+        state.currentIndex++;
+        if (state.currentIndex >= state.patients.length) {
+            state.running = false;
+            setState(state);
+            location.reload();
+            return;
+        }
+        setState(state);
+        __doPostBack(state.patients[state.currentIndex].postbackArg, '');
+    }
+
+    // --- Orchestrator UI ---
+
+    function createFAB() {
+        if (document.getElementById('ntuh-batch-fab')) return;
+
+        const fab = document.createElement('button');
+        fab.id = 'ntuh-batch-fab';
+        fab.textContent = '⚡ 週末病程';
+        Object.assign(fab.style, {
+            position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
+            padding: '12px 20px', background: '#e67e22', color: '#fff',
+            border: 'none', borderRadius: '8px', fontSize: '15px',
+            fontWeight: 'bold', cursor: 'pointer',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        });
+        fab.onmouseenter = () => { fab.style.background = '#d35400'; };
+        fab.onmouseleave = () => { fab.style.background = '#e67e22'; };
+        fab.onclick = () => {
+            const patients = getPatients();
+            if (confirm(
+                `即將對 ${patients.length} 位病人批次執行：\n` +
+                `　1. 複製最新 Progress Note\n` +
+                `　2. Subjective 填入 stable\n` +
+                `　3. 確認送出\n\n確定要繼續嗎？`
+            )) {
+                startBatch();
+            }
+        };
+        document.body.appendChild(fab);
+    }
+
+    function showOrchestratorStatus(state) {
+        const el = document.createElement('div');
+        const total = state.patients.length;
+        const current = state.currentIndex + 1;
+        const p = state.patients[state.currentIndex];
+        el.textContent = `[${current}/${total}] 處理中：${p?.bed} ${p?.name}`;
+        Object.assign(el.style, {
+            position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
+            background: 'rgba(0,0,0,0.85)', color: '#fff', padding: '12px 20px',
+            borderRadius: '8px', fontSize: '14px', fontWeight: 'bold',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        });
+        document.body.appendChild(el);
+    }
+
+    function showFinalResults(state) {
+        const lines = state.results.map(r => `${r.bed} ${r.name}：${r.status}`);
+        const text = lines.join('\n');
+
+        const overlay = document.createElement('div');
+        Object.assign(overlay.style, {
+            position: 'fixed', inset: '0', zIndex: '99999',
+            background: 'rgba(0,0,0,0.5)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+        });
+
+        const box = document.createElement('div');
+        Object.assign(box.style, {
+            background: '#fff', borderRadius: '12px', padding: '24px',
+            maxWidth: '480px', width: '90%', maxHeight: '80vh',
+            display: 'flex', flexDirection: 'column', gap: '12px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        });
+
+        const title = document.createElement('div');
+        title.textContent = '═══ 週末病程結果 ═══';
+        Object.assign(title.style, {
+            fontSize: '16px', fontWeight: 'bold', textAlign: 'center',
+        });
+
+        const pre = document.createElement('pre');
+        pre.textContent = text;
+        Object.assign(pre.style, {
+            margin: '0', padding: '12px', background: '#f5f5f5',
+            borderRadius: '8px', fontSize: '13px', overflowY: 'auto',
+            maxHeight: '50vh', whiteSpace: 'pre-wrap',
+        });
+
+        const btnRow = document.createElement('div');
+        Object.assign(btnRow.style, {
+            display: 'flex', gap: '8px', justifyContent: 'center',
+        });
+
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = '📋 複製結果';
+        Object.assign(copyBtn.style, {
+            padding: '8px 20px', background: '#e67e22', color: '#fff',
+            border: 'none', borderRadius: '6px', fontSize: '14px',
+            fontWeight: 'bold', cursor: 'pointer',
+        });
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(text).then(() => {
+                copyBtn.textContent = '✓ 已複製';
+                setTimeout(() => { copyBtn.textContent = '📋 複製結果'; }, 1500);
+            });
+        };
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '關閉';
+        Object.assign(closeBtn.style, {
+            padding: '8px 20px', background: '#ccc', color: '#333',
+            border: 'none', borderRadius: '6px', fontSize: '14px',
+            cursor: 'pointer',
+        });
+        closeBtn.onclick = () => overlay.remove();
+
+        btnRow.appendChild(copyBtn);
+        btnRow.appendChild(closeBtn);
+        box.appendChild(title);
+        box.appendChild(pre);
+        box.appendChild(btnRow);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // MODULE B：Child（Progress Note 頁面）
+    // ═══════════════════════════════════════════════════════════
+
+    function isAutoBatch() {
+        try {
+            const state = JSON.parse(
+                window.opener?.sessionStorage?.getItem(STORAGE_KEY)
+            );
+            return state?.running === true;
+        } catch { return false; }
+    }
+
+    function notifyOpener(result) {
+        try {
+            window.opener.postMessage(
+                { ntuh_weekend: true, result },
+                location.origin
+            );
+        } catch { /* */ }
+        setTimeout(() => window.close(), 500);
+    }
+
+    function initChild() {
+        if (!isAutoBatch()) return;
+
+        const origAlert = window.alert;
+        window.alert = function () { /* 靜默 */ };
+        window.addEventListener('beforeunload', () => { window.alert = origAlert; });
+
+        autoProcess();
+    }
+
+    function toMMDD(date) {
+        return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    }
+
+    function getTodayMMDD() { return toMMDD(new Date()); }
+
+    function getYesterdayMMDD() {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return toMMDD(d);
+    }
+
+    function isProgressNote(type, name) {
+        if (type === 'progress') return true;
+        if (type === 'blank' && /progress/i.test(name)) return true;
+        return false;
+    }
+
+    function autoProcess() {
+        const today = getTodayMMDD();
+
+        const yesterday = getYesterdayMMDD();
+
+        // Step 1：掃描所有 note，找病程相關紀錄
+        let targetIndex = -1;
+        let targetType = null;
+        let targetDate = null;
+
+        for (let i = 0; i < 60; i++) {
+            const typeEl = document.getElementById(
+                `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_Type`
+            );
+            if (!typeEl) break;
+            const type = typeEl.textContent.trim();
+            const nameEl = document.getElementById(
+                `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_NoteName`
+            );
+            const name = nameEl?.textContent?.trim() || '';
+
+            if (!isProgressNote(type, name)) continue;
+
+            const dateEl = document.getElementById(
+                `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_InsertDateTime`
+            );
+            const date = dateEl?.textContent?.trim() || '';
+
+            if (date === today) {
+                notifyOpener('已有今日病程');
+                return;
+            }
+
+            if (targetIndex < 0) {
+                targetIndex = i;
+                targetType = type;
+                targetDate = date;
+            }
+            break;
+        }
+
+        // 完全沒有 progress → 檢查 admission note
+        if (targetIndex < 0) {
+            let admissionIndex = -1;
+            let admissionDate = null;
+            for (let i = 0; i < 60; i++) {
+                const typeEl = document.getElementById(
+                    `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_Type`
+                );
+                if (!typeEl) break;
+                if (typeEl.textContent.trim() === 'admission') {
+                    admissionIndex = i;
+                    const dateEl = document.getElementById(
+                        `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_InsertDateTime`
+                    );
+                    if (dateEl) admissionDate = dateEl.textContent.trim();
+                    break;
+                }
+            }
+
+            if (admissionIndex < 0) {
+                notifyOpener('請手動處理');
+            } else if (admissionDate === today) {
+                notifyOpener('新病人不需病程');
+            } else if (admissionDate === yesterday) {
+                createFromAdmission(admissionIndex);
+            } else {
+                notifyOpener('請手動處理');
+            }
+            return;
+        }
+
+        const isYesterday = targetDate === yesterday;
+
+        // Step 2：點選該筆 note 以設定 $SelectedNote
+        const nameLink = document.getElementById(
+            `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${targetIndex}_NoteName`
+        );
+        if (!nameLink) {
+            notifyOpener('選取失敗');
+            return;
+        }
+        nameLink.click();
+
+        // Step 3：等選取完成（postback），再複製
+        waitForPostback(() => {
+            if (typeof $SelectedNote === 'undefined' || !$SelectedNote.CaseSeqNo) {
+                notifyOpener('選取失敗');
+                return;
+            }
+
+            const copyType = targetType === 'blank' ? 'blank' : 'progress';
+            const resultLabel = isYesterday ? '✓' : '✓ (非昨日)';
+
+            let filled = false;
+            const doFill = () => {
+                if (filled) return;
+                filled = true;
+                if (copyType === 'blank') {
+                    fillBlankAndConfirm(resultLabel);
+                } else {
+                    fillStableAndConfirm(resultLabel);
+                }
+            };
+
+            waitForPostback(doFill);
+            setTimeout(doFill, 8000);
+
+            CopyNoteToNewRecord(copyType);
+        });
+    }
+
+    function fillBlankAndConfirm(resultLabel) {
+        const contentField = document.getElementById(
+            'NTUHWeb1_BlankNoteMainTab_txbBlankContnt'
+        );
+        if (!contentField) {
+            notifyOpener('找不到 Blank Note 內容欄位');
+            return;
+        }
+
+        contentField.value = 'stable\n' + contentField.value;
+        contentField.dispatchEvent(new Event('input', { bubbles: true }));
+        contentField.dispatchEvent(new Event('change', { bubbles: true }));
+
+        setTimeout(() => {
+            const confirmBtn = document.getElementById(
+                'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
+            );
+            if (!confirmBtn) {
+                notifyOpener('找不到確認按鈕');
+                return;
+            }
+
+            confirmBtn.click();
+
+            setTimeout(() => {
+                notifyOpener(resultLabel);
+            }, 2000);
+        }, 500);
+    }
+
+    function fillStableAndConfirm(resultLabel) {
+        const subjectField = document.getElementById(
+            'NTUHWeb1_ProgressNoteMainTab_txbSubject'
+        );
+        if (!subjectField) {
+            notifyOpener('找不到 Subjective 欄位');
+            return;
+        }
+
+        subjectField.value = 'stable';
+        subjectField.dispatchEvent(new Event('input', { bubbles: true }));
+        subjectField.dispatchEvent(new Event('change', { bubbles: true }));
+
+        setTimeout(() => {
+            const confirmBtn = document.getElementById(
+                'NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote'
+            );
+            if (!confirmBtn) {
+                notifyOpener('找不到確認按鈕');
+                return;
+            }
+
+            confirmBtn.click();
+
+            setTimeout(() => {
+                notifyOpener(resultLabel);
+            }, 2000);
+        }, 500);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 從 Admission Note 建立新 Blank Note
+    // ═══════════════════════════════════════════════════════════
+
+    function createFromAdmission(admissionIndex) {
+        // Step A：點選 admission note
+        const nameLink = document.getElementById(
+            `NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${admissionIndex}_NoteName`
+        );
+        if (!nameLink) {
+            notifyOpener('找不到 Admission Note');
+            return;
+        }
+        nameLink.click();
+
+        // Step B：等 postback，擷取「醫療需求與治療計畫」
+        waitForPostback(() => {
+            const medicalNeeds = extractMedicalNeeds();
+
+            // Step C：點「新增Note」建立 blank note
+            const insertBtn = document.getElementById('NTUHWeb1_btnInsertBlankNote');
+            if (!insertBtn) {
+                notifyOpener('找不到新增Note按鈕');
+                return;
+            }
+            insertBtn.click();
+
+            // Step D：等 postback，填入標題和內容
+            waitForPostback(() => {
+                const titleField = document.getElementById(
+                    'NTUHWeb1_BlankNoteMainTab_txbBlankTitle'
+                );
+                const contentField = document.getElementById(
+                    'NTUHWeb1_BlankNoteMainTab_txbBlankContnt'
+                );
+                if (!titleField || !contentField) {
+                    notifyOpener('找不到 Blank Note 欄位');
+                    return;
+                }
+
+                titleField.value = 'Progress Note';
+                titleField.dispatchEvent(new Event('change', { bubbles: true }));
+
+                const body = medicalNeeds
+                    ? 'stable\n\n' + medicalNeeds
+                    : 'stable';
+                contentField.value = body;
+                contentField.dispatchEvent(new Event('change', { bubbles: true }));
+
+                setTimeout(() => {
+                    const confirmBtn = document.getElementById(
+                        'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
+                    );
+                    if (!confirmBtn) {
+                        notifyOpener('找不到確認按鈕');
+                        return;
+                    }
+                    confirmBtn.click();
+
+                    setTimeout(() => {
+                        notifyOpener('✓ (從admission建立)');
+                    }, 2000);
+                }, 500);
+            });
+        });
+    }
+
+    function extractMedicalNeeds() {
+        const tds = [...document.querySelectorAll('td.tdRecordElementBorwseSubTitle')];
+        const target = tds.find(td => /醫療需求/.test(td.textContent));
+        if (!target) return '';
+
+        const tr = target.closest('tr');
+        const nextRow = tr?.nextElementSibling;
+        if (!nextRow) return '';
+
+        return nextRow.textContent.trim();
+    }
+
+})();
