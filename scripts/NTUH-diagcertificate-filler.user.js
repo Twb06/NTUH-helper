@@ -1174,8 +1174,13 @@
         document.getElementById('ntuh-diag-open-consent').onclick = () => {
             const params = new URLSearchParams(window.location.search);
             const session = params.get('SESSION') || '';
+            const patClass = params.get('PatClass') || 'I';
+            const accountIdse = params.get('AccountIDSE') || '';
+            const personId = params.get('PersonID') || '';
+            const hosp = params.get('Hosp') || 'T0';
+            const seed = params.get('Seed') || '';
             if (!session) { alert('無法取得 SESSION'); return; }
-            const url = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}`;
+            const url = `http://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}&PatClass=${patClass}&AccountIDSE=${accountIdse}&PersonID=${personId}&Hosp=${hosp}&Seed=${seed}`;
             window.open(url, '_blank');
         };
 
