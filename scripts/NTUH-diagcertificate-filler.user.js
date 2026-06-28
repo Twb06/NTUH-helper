@@ -1072,7 +1072,7 @@
                 const container = document.getElementById('ntuh-diag-op-rows-container');
                 if (container && container.children.length === 0) {
                     if (detectedOpList && detectedOpList.length > 0) {
-                        addOpRow(detectedOpList[0].opDate, detectedOpList[0].opName, detectedOpList[0].opScheduleIdse);
+                        addOpRow(detectedOpList[0].opDate, '', detectedOpList[0].opScheduleIdse);
                     } else {
                         addOpRow(todayStr(), '', '');
                     }
@@ -1086,7 +1086,7 @@
             const container = document.getElementById('ntuh-diag-op-rows-container');
             const nextIndex = container ? container.children.length : 0;
             if (detectedOpList && nextIndex < detectedOpList.length) {
-                addOpRow(detectedOpList[nextIndex].opDate, detectedOpList[nextIndex].opName, detectedOpList[nextIndex].opScheduleIdse);
+                addOpRow(detectedOpList[nextIndex].opDate, '', detectedOpList[nextIndex].opScheduleIdse);
             } else {
                 addOpRow(todayStr(), '', '');
             }
@@ -1191,7 +1191,7 @@
             if (opList.length > 0) {
                 document.getElementById('ntuh-diag-has-op').checked = true;
                 document.getElementById('ntuh-diag-op-detail').style.display = 'flex';
-                addOpRow(opList[0].opDate, opList[0].opName, opList[0].opScheduleIdse);
+                addOpRow(opList[0].opDate, '', opList[0].opScheduleIdse);
             } else {
                 document.getElementById('ntuh-diag-has-op').checked = false;
                 document.getElementById('ntuh-diag-op-detail').style.display = 'none';
@@ -1239,6 +1239,12 @@
             }
 
             setDiagStatus('✓ 病歷自動偵測完成！', 'ok');
+
+            // 自動觸發背景擷取手術中文名稱
+            if (opList.length > 0) {
+                const scanBtn = document.getElementById('ntuh-diag-scan-opname');
+                if (scanBtn) scanBtn.click();
+            }
         } catch (e) {
             console.warn('[DiagFiller] 自動偵測病歷失敗：', e);
             setDiagStatus('⚠️ 自動偵測病歷失敗', 'warn');
