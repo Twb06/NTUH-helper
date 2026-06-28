@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate & Consent Integrated Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.9.0
+// @version      1.10.0
 // @description  自動填入診斷書，利用背景分頁與 postMessage 跨網域通訊自動擷取手術同意書回傳
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentFormManagement.aspx*
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
@@ -50,15 +50,14 @@
                 console.warn("[DiagFiller] 未執行掃描：isOrchestratorWindow 判定為假。原因：網址無 token 參數。");
             }
         }
-        else if (currentUrl.includes('ConsentFormManagement.aspx')) {
+        else if (currentUrl.includes('DREnterOPOrder.aspx')) {
             const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
-            const hasOpener = !!window.opener;
             const isOrchestratorWindow = !!ntuhToken;
-            console.log('[DiagFiller] 偵測到 ConsentFormManagement.aspx 頁面');
-            console.log('[DiagFiller] window.opener 狀態:', hasOpener, 'ntuh_token 狀態:', ntuhToken);
+            console.log('[DiagFiller] 偵測到 DREnterOPOrder.aspx 頁面');
+            console.log('[DiagFiller] ntuh_token 狀態:', ntuhToken);
             if (isOrchestratorWindow) {
                 sessionStorage.setItem('ntuh_window_token', ntuhToken);
-                console.log("[DiagFiller] 偵測到背景手術同意書管理頁面(ConsentFormManagement)，啟動手術名稱擷取並準備回傳...");
+                console.log("[DiagFiller] 偵測到背景手術醫令入帳頁面(DREnterOPOrder)，啟動手術名稱擷取並準備回傳...");
                 runOpNameExtractorAndReturn();
             } else {
                 console.warn("[DiagFiller] 未執行掃描：isOrchestratorWindow 判定為假。原因：網址無 token 參數。");
@@ -1228,8 +1227,8 @@
 
                 activeOpScanTokens = {};
                 scanTasks.forEach(task => {
-                    const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentFormManagement.aspx` +
-                                       `?SESSION=${session}&OpScheduleIdse=${task.opScheduleIdse}&ConsentType=O&RecognitionPageOpening=false&ntuh_token=${task.opToken}`;
+                    const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx` +
+                                       `?SESSION=${session}&OperationIDSE=${task.opScheduleIdse}&ntuh_token=${task.opToken}`;
                     
                     activeOpScanTokens[task.opToken] = task.opScheduleIdse;
 
@@ -1489,61 +1488,15 @@
         }
     }
 
-    function extractOpNameFromDOM() {
-        // 優先邏輯：從電子同意書綁定表格中，找尋狀態包含「不可取消綁定」的列，並取出其手術名稱
-        const tbody = document.getElementById('tbBodyConsentFormInfo');
-        if (tbody) {
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            for (const tr of rows) {
-                const tds = tr.querySelectorAll('td');
-                if (tds.length >= 5) {
-                    const statusText = tds[2]?.textContent || '';
-                    if (statusText.includes('不可取消綁定')) {
-                        const opName = tds[4]?.textContent.trim();
-                        if (opName) {
-                            console.log('[OpNameExtractor] 從綁定表格中偵測到不可取消綁定的列，手術名稱:', opName);
-                            return opName;
-                        }
-                    }
-                }
-            }
+    function extractOpNamesFromDOM() {
+        const names = [];
+        const spans = document.querySelectorAll('span[id*="InputOperationOrderCtrl1_OrderName"]');
+        for (const span of spans) {
+            const name = span.textContent.trim();
+            if (name) names.push(name);
         }
-
-        const selectors = [
-            'span[id*="lblOPMode"]',
-            'span[id*="lblOpName"]',
-            'span[id*="lblMainOPMode"]',
-            'span[id*="lblMainOpName"]',
-            'span[id*="lblOPName"]',
-            'span[id*="lblMainOP"]',
-            'span[id*="lblOpMode"]'
-        ];
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && el.textContent.trim()) {
-                return el.textContent.trim();
-            }
-        }
-
-        const tds = Array.from(document.querySelectorAll('td, th, span, label'));
-        for (const td of tds) {
-            const text = td.textContent.trim();
-            if (text === '手術名稱' || text === '預定手術' || text === '術式' || text === '手術名稱/術式' || text === '手術/處置名稱') {
-                const nextEl = td.nextElementSibling;
-                if (nextEl && nextEl.textContent.trim()) {
-                    return nextEl.textContent.trim();
-                }
-                const row = td.closest('tr');
-                if (row) {
-                    const cells = Array.from(row.cells);
-                    const idx = cells.indexOf(td);
-                    if (idx !== -1 && cells[idx + 1]) {
-                        return cells[idx + 1].textContent.trim();
-                    }
-                }
-            }
-        }
-        return '';
+        console.log('[OpNameExtractor] 從手術醫令入帳頁面擷取到', names.length, '筆手術名稱:', names);
+        return names;
     }
 
     function formatCombinedOpName(str) {
@@ -1568,58 +1521,29 @@
         return processedItems.join('併') + '手術';
     }
 
-    function extractOtherOpScheduleNames() {
-        const otherOpMaps = {};
-        const tbody = document.getElementById('tbBodyConsentFormInfo');
-        if (tbody) {
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            for (const tr of rows) {
-                const tds = tr.querySelectorAll('td');
-                if (tds.length >= 6) {
-                    const statusText = tds[2]?.textContent || '';
-                    const match = statusText.match(/([A-Za-z0-9]+[-–—][A-Za-z0-9]+[-–—][A-Za-z0-9]+)/);
-                    if (match) {
-                        const otherIdse = match[1].trim();
-                        let otherOpName = tds[4]?.textContent.trim();
-                        if (otherIdse && otherOpName) {
-                            const formatted = formatCombinedOpName(otherOpName);
-                            otherOpMaps[otherIdse] = formatted || otherOpName;
-                        }
-                    }
-                }
-            }
-        }
-        return otherOpMaps;
-    }
-
     async function runOpNameExtractorAndReturn() {
         const token = new URLSearchParams(window.location.search).get('ntuh_token') || '';
-        const opScheduleIdse = new URLSearchParams(window.location.search).get('OpScheduleIdse') || '';
+        const opScheduleIdse = new URLSearchParams(window.location.search).get('OperationIDSE') || '';
         try {
-            await sleep(600);
-            const rawOpName = extractOpNameFromDOM();
-            console.log('[OpNameExtractor] 擷取到原始手術名稱:', rawOpName);
-            const formatted = formatCombinedOpName(rawOpName);
+            await sleep(1200);
+            const opNames = extractOpNamesFromDOM();
+            const combined = opNames.join('，');
+            const formatted = formatCombinedOpName(combined);
             console.log('[OpNameExtractor] 格式化後的手術名稱:', formatted);
-
-            const otherOpMaps = extractOtherOpScheduleNames();
-            console.log('[OpNameExtractor] 擷取到其他手術名稱映射:', otherOpMaps);
 
             const opResult = {
                 opScheduleIdse: opScheduleIdse,
                 mainOpName: formatted,
-                otherOpMaps: otherOpMaps
+                otherOpMaps: {}
             };
 
             const resultString = JSON.stringify(opResult);
 
-            // 寫入全域資料進行跨網域共享
             if (token) {
                 console.log('[OpNameExtractor] 寫入傳遞資料, token:', token);
                 setSharedData('ntuh_op_name_' + token, resultString);
             }
 
-            // 透過 postMessage 將資料回傳給主視窗（備援/舊版相容）
             if (window.opener) {
                 window.opener.postMessage(
                     { ntuh: true, token, type: 'opName', data: opResult },
