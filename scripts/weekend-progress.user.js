@@ -1,15 +1,16 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.1
-// @description  用於週末值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出
+// @version      1.2
+// @description  用於例假日值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js
 // @run-at       document-start
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      cdn.jsdelivr.net
 // ==/UserScript==
 
 (function () {
@@ -113,7 +114,12 @@
             clearState();
         }
 
-        createFAB();
+        // 強制顯示：在 console 輸入 sessionStorage.setItem('forceWeekend','1') 後重新整理
+        if (sessionStorage.getItem('forceWeekend') === '1') {
+            createFAB('手動啟用');
+        } else {
+            checkHolidayAndShowFAB();
+        }
     }
 
     function listenForChildMessage(state) {
@@ -190,9 +196,69 @@
         __doPostBack(state.patients[state.currentIndex].postbackArg, '');
     }
 
+    // --- 假日判斷 ---
+
+    function getTodayYYYYMMDD() {
+        const d = new Date();
+        return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function isWeekend() {
+        const day = new Date().getDay();
+        return day === 0 || day === 6;
+    }
+
+    // 內建 fallback：固定國定假日（月-日）
+    const FIXED_HOLIDAYS = [
+        '01-01', // 元旦
+        '02-28', // 和平紀念日
+        '10-10', // 國慶日
+    ];
+
+    function isFixedHoliday() {
+        const today = getTodayMMDD();
+        return FIXED_HOLIDAYS.includes(today);
+    }
+
+    function checkHolidayAndShowFAB() {
+        const year = new Date().getFullYear();
+        const url = `https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${year}.json`;
+        const todayStr = getTodayYYYYMMDD();
+
+        // 先用 GM_xmlhttpRequest 抓 API
+        try {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                onload(res) {
+                    try {
+                        const data = JSON.parse(res.responseText);
+                        const today = data.find(d => d.date === todayStr);
+                        if (today?.isHoliday) {
+                            createFAB(today.description || '例假日');
+                        }
+                    } catch {
+                        fallbackCheck();
+                    }
+                },
+                onerror() { fallbackCheck(); },
+                ontimeout() { fallbackCheck(); },
+                timeout: 5000,
+            });
+        } catch {
+            fallbackCheck();
+        }
+    }
+
+    function fallbackCheck() {
+        if (isWeekend() || isFixedHoliday()) {
+            createFAB('例假日');
+        }
+    }
+
     // --- Orchestrator UI ---
 
-    function createFAB() {
+    function createFAB(holidayLabel) {
         if (document.getElementById('ntuh-batch-fab')) return;
 
         const fab = document.createElement('button');
