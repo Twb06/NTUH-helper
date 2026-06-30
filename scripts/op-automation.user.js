@@ -663,12 +663,16 @@
             const panel = document.createElement('div');
             panel.id = 'ntuhOpBatchPanel';
             panel.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:8px;">估・當・同批次搜尋</div>
-                <label style="margin-right:10px;"><input type="radio" name="ntuh-op-batch-mode" value="room" checked> 手術房</label>
-                <label><input type="radio" name="ntuh-op-batch-mode" value="doctor"> 主治醫師</label>
-                <textarea id="ntuhOpBatchTerms" placeholder="每行一筆，例如：梁金銅&#10;或手術房：53、55" style="width:100%;height:72px;margin-top:8px;resize:vertical;"></textarea>
-                <button type="button" id="ntuhOpBatchStart" style="width:100%;margin-top:8px;padding:7px 10px;border:0;border-radius:6px;background:#0d6efd;color:#fff;font-weight:bold;cursor:pointer;">搜尋並執行</button>
-                <button type="button" id="ntuhOpCurrentPage" style="width:100%;margin-top:8px;padding:7px 10px;border:1px solid #6c757d;border-radius:6px;background:#fff;color:#343a40;font-weight:bold;cursor:pointer;">目前頁面執行</button>
+                <button type="button" id="ntuhOpPanelToggle" title="收合" style="position:absolute;top:8px;right:8px;width:28px;height:28px;border:0;border-radius:6px;background:#f1f3f5;color:#343a40;font-weight:bold;cursor:pointer;">-</button>
+                <button type="button" id="ntuhOpPanelIcon" title="展開估當同工具" style="display:none;width:48px;height:48px;border:0;border-radius:50%;background:#0d6efd;color:#fff;font-size:24px;font-weight:bold;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.25);">⚡</button>
+                <div id="ntuhOpPanelBody">
+                    <div style="font-weight:bold;margin:0 34px 8px 0;">估・當・同批次搜尋</div>
+                    <label style="margin-right:10px;"><input type="radio" name="ntuh-op-batch-mode" value="room" checked> 手術房</label>
+                    <label><input type="radio" name="ntuh-op-batch-mode" value="doctor"> 主治醫師</label>
+                    <textarea id="ntuhOpBatchTerms" placeholder="每行一筆，例如：梁金銅&#10;或手術房：53、55" style="width:100%;height:72px;margin-top:8px;resize:vertical;"></textarea>
+                    <button type="button" id="ntuhOpBatchStart" style="width:100%;margin-top:8px;padding:7px 10px;border:0;border-radius:6px;background:#0d6efd;color:#fff;font-weight:bold;cursor:pointer;">搜尋並執行</button>
+                    <button type="button" id="ntuhOpCurrentPage" style="width:100%;margin-top:8px;padding:7px 10px;border:1px solid #6c757d;border-radius:6px;background:#fff;color:#343a40;font-weight:bold;cursor:pointer;">目前頁面執行</button>
+                </div>
             `;
             Object.assign(panel.style, {
                 position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
@@ -680,6 +684,25 @@
 
             panel.querySelector('#ntuhOpBatchStart').addEventListener('click', () => runSearchBatches(panel, statusEl));
             panel.querySelector('#ntuhOpCurrentPage').addEventListener('click', () => runCurrentPage(panel, statusEl));
+            const toggleBtn = panel.querySelector('#ntuhOpPanelToggle');
+            const iconBtn = panel.querySelector('#ntuhOpPanelIcon');
+            const body = panel.querySelector('#ntuhOpPanelBody');
+
+            function setCollapsed(collapsed) {
+                panel.dataset.collapsed = collapsed ? '1' : '0';
+                iconBtn.style.display = collapsed ? 'block' : 'none';
+                body.style.display = collapsed ? 'none' : 'block';
+                toggleBtn.style.display = collapsed ? 'none' : 'block';
+                panel.style.width = collapsed ? '48px' : '260px';
+                panel.style.padding = collapsed ? '0' : '12px';
+                panel.style.border = collapsed ? '0' : '1px solid rgba(0,0,0,0.2)';
+                panel.style.background = collapsed ? 'transparent' : '#fff';
+                panel.style.boxShadow = collapsed ? 'none' : '0 4px 12px rgba(0,0,0,0.25)';
+                statusEl.style.bottom = collapsed ? '90px' : '230px';
+            }
+
+            toggleBtn.addEventListener('click', () => setCollapsed(true));
+            iconBtn.addEventListener('click', () => setCollapsed(false));
             return panel;
         }
 
