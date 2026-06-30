@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 手術排程自動化
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.1.2
-// @description  批次執行術前評估、當日評估、同意書綁定
+// @version      1.2.0
+// @description  批次執行術前評估、當日評估、同意書綁定，支援依主治醫師或手術房依序查詢執行
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/SimpleQueryOpSchedule_New.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/PreOperativeAssessment_New.aspx*
@@ -244,24 +244,47 @@
             return result;
         }
 
-        async function runAll(fab, statusEl) {
-            const rows = Array.from(
+        const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+        function getScheduleRows() {
+            return Array.from(
                 document.querySelectorAll('#tbBodyOpSchedule tr[opscheduleidse]')
             ).filter(row => !row.classList.contains('disabled'));
+        }
+
+        function getRowsSignature() {
+            return getScheduleRows()
+                .map(row => row.getAttribute('opscheduleidse'))
+                .join('|');
+        }
+
+        async function processCurrentRows(statusEl, batchLabel) {
+            const rows = getScheduleRows();
 
             if (rows.length === 0) {
-                fab.innerText = '⚠️ 查無病人資料';
-                fab.style.background = '#fd7e14';
                 statusEl.innerText = '請先執行查詢';
-                return;
+                return { rows, summary: [] };
             }
 
             const summary = [];
             for (let i = 0; i < rows.length; i++) {
-                statusEl.innerText = `第 ${i + 1} / ${rows.length} 位...`;
+                statusEl.innerText = `${batchLabel}：第 ${i + 1} / ${rows.length} 位...`;
                 const result = await processOnePatient(rows[i], statusEl);
-                if (result) summary.push(result);
-                await new Promise(r => setTimeout(r, 500));
+                if (result) summary.push({ ...result, batch: batchLabel });
+                await delay(500);
+            }
+
+            return { rows, summary };
+        }
+
+        async function runAll(fab, statusEl, options = {}) {
+            const { reload = true, batchLabel = '目前列表' } = options;
+            const { rows, summary } = await processCurrentRows(statusEl, batchLabel);
+
+            if (rows.length === 0) {
+                fab.innerText = '⚠️ 查無病人資料';
+                fab.style.background = '#fd7e14';
+                return summary;
             }
 
             fab.innerText = `✅ 全部完成（${rows.length} 位）`;
@@ -271,23 +294,336 @@
             const lines = summary.map(r =>
                 `${r.name}　估（${r.preop}）、當（${r.day}）、同（${r.consent}）`
             );
-            alert('═══ 批次執行結果 ═══\n\n' + lines.join('\n'));
+            if (reload) {
+                alert('═══ 批次執行結果 ═══\n\n' + lines.join('\n'));
+                location.reload();
+            }
+            return summary;
+        }
+
+        function parseBatchTerms(text) {
+            return text
+                .split(/[\n,，;；]+/)
+                .map(term => term.trim())
+                .filter(Boolean);
+        }
+
+        function normalizeRoomText(text) {
+            const value = String(text || '').trim();
+            if (/^\d+$/.test(value)) return String(Number(value));
+            return value.toUpperCase();
+        }
+
+        function findRoomOption(term) {
+            const select = document.getElementById('ddlOpRoom');
+            if (!select) return null;
+
+            const target = normalizeRoomText(term);
+            return Array.from(select.options).find(option => {
+                const text = normalizeRoomText(option.textContent);
+                const valueParts = String(option.value || '').split(':');
+                const valueTail = normalizeRoomText(valueParts[valueParts.length - 1]);
+                return text === target || valueTail === target || option.value === term;
+            }) || null;
+        }
+
+        function syncRoomSelect(select) {
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+
+            if (window.jQuery?.fn?.multiselect) {
+                try { window.jQuery(select).multiselect('refresh'); } catch (e) {}
+            } else if (typeof $ === 'function' && $.fn?.multiselect) {
+                try { $(select).multiselect('refresh'); } catch (e) {}
+            }
+        }
+
+        function setOnlySelectedOption(select, option) {
+            Array.from(select.options).forEach(item => { item.selected = item === option; });
+            select.value = option.value;
+            syncRoomSelect(select);
+        }
+
+        function getRoomMultiselectParts(select) {
+            const wrapper = select.closest('.multiselect-native-select') || select.parentElement || document;
+            const toggle = wrapper.querySelector('button.multiselect') ||
+                           select.parentElement?.querySelector('button.multiselect') ||
+                           document.querySelector('button.multiselect');
+            const menu = wrapper.querySelector('.multiselect-container') ||
+                         document.querySelector('.multiselect-container');
+            return { wrapper, toggle, menu };
+        }
+
+        function isVisible(el) {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
+        }
+
+        function setNativeValue(el, value) {
+            el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: value.slice(-1) || '0' }));
+        }
+
+        function findRoomButton(menu, term) {
+            const target = normalizeRoomText(term);
+            return Array.from(menu.querySelectorAll('button.multiselect-option, button.dropdown-item'))
+                .filter(isVisible)
+                .find(item => {
+                    const text = normalizeRoomText(item.innerText);
+                    return text === target || text.endsWith(target.padStart(3, '0'));
+                }) || null;
+        }
+
+        async function selectRoomsByUi(terms, statusEl) {
+            const select = document.getElementById('ddlOpRoom');
+            if (!select) throw new Error('找不到手術房欄位');
+
+            const options = terms.map(term => {
+                const option = findRoomOption(term);
+                if (!option) throw new Error(`找不到手術房：${term}`);
+                return { term, option };
+            });
+
+            const { toggle, menu } = getRoomMultiselectParts(select);
+            if (!toggle || !menu) {
+                Array.from(select.options).forEach(item => { item.selected = false; });
+                options.forEach(item => { item.option.selected = true; });
+                syncRoomSelect(select);
+                return;
+            }
+
+            if (!isVisible(menu)) {
+                toggle.click();
+                await delay(250);
+            }
+
+            const allButton = menu.querySelector('.multiselect-all.active');
+            if (allButton) {
+                allButton.click();
+                await delay(250);
+            }
+
+            const searchInput = menu.querySelector('input[type="search"], input.multiselect-search, input[type="text"]');
+            for (const item of options) {
+                if (searchInput) {
+                    statusEl.innerText = `手術房搜尋欄輸入：${item.term}`;
+                    setNativeValue(searchInput, item.term);
+                    await delay(350);
+                }
+
+                const roomButton = findRoomButton(menu, item.term);
+                if (roomButton) {
+                    roomButton.click();
+                    await delay(250);
+                } else {
+                    item.option.selected = true;
+                    syncRoomSelect(select);
+                }
+
+                if (searchInput) {
+                    setNativeValue(searchInput, '');
+                    await delay(200);
+                }
+            }
+        }
+
+        function waitForSearchRefresh() {
+            return new Promise(resolve => {
+                let done = false;
+                let observer = null;
+                let ajaxStopHandler = null;
+                let endRequestHandler = null;
+
+                function cleanup() {
+                    if (observer) observer.disconnect();
+                    if (ajaxStopHandler && typeof $ === 'function') {
+                        try { $(document).off('ajaxStop', ajaxStopHandler); } catch (e) {}
+                    }
+                    if (endRequestHandler && window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
+                        try {
+                            Sys.WebForms.PageRequestManager.getInstance().remove_endRequest(endRequestHandler);
+                        } catch (e) {}
+                    }
+                }
+
+                function finish() {
+                    if (done) return;
+                    done = true;
+                    cleanup();
+                    resolve();
+                }
+
+                const tbody = document.getElementById('tbBodyOpSchedule');
+                if (tbody) {
+                    observer = new MutationObserver(finish);
+                    observer.observe(tbody, { childList: true, subtree: true, characterData: true });
+                }
+
+                if (typeof $ === 'function') {
+                    ajaxStopHandler = finish;
+                    try { $(document).one('ajaxStop', ajaxStopHandler); } catch (e) {}
+                }
+
+                if (window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
+                    endRequestHandler = finish;
+                    try {
+                        Sys.WebForms.PageRequestManager.getInstance().add_endRequest(endRequestHandler);
+                    } catch (e) {}
+                }
+
+                setTimeout(finish, 15000);
+            });
+        }
+
+        async function waitForRowsStable() {
+            let stableCount = 0;
+            let lastSignature = getRowsSignature();
+
+            while (stableCount < 2) {
+                await delay(400);
+                const signature = getRowsSignature();
+                if (signature === lastSignature) stableCount++;
+                else stableCount = 0;
+                lastSignature = signature;
+            }
+        }
+
+        async function clickAndWaitForSearch(button, statusEl) {
+            const refreshPromise = waitForSearchRefresh();
+            button.click();
+            statusEl.innerText = '等待列表更新...';
+            await refreshPromise;
+            await waitForRowsStable();
+        }
+
+        async function searchByDoctor(term, statusEl) {
+            const input = document.getElementById('txtQueryEmpInfoByNo');
+            const button = document.getElementById('btnSearchOpDoctor');
+            if (!input || !button) throw new Error('找不到主治查詢欄位或按鈕');
+
+            input.value = term;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            await clickAndWaitForSearch(button, statusEl);
+        }
+
+        async function searchByRooms(terms, statusEl) {
+            const button = document.getElementById('btnSearchByDateAndRoom');
+            if (!button) throw new Error('找不到手術房查詢按鈕');
+
+            await selectRoomsByUi(terms, statusEl);
+            await clickAndWaitForSearch(button, statusEl);
+        }
+
+        async function runSearchBatches(panel, statusEl) {
+            const mode = panel.querySelector('[name="ntuh-op-batch-mode"]:checked')?.value || 'room';
+            const terms = parseBatchTerms(panel.querySelector('#ntuhOpBatchTerms').value);
+            const startBtn = panel.querySelector('#ntuhOpBatchStart');
+
+            if (terms.length === 0) {
+                statusEl.style.display = 'block';
+                statusEl.innerText = '請先輸入搜尋條件';
+                return;
+            }
+
+            startBtn.disabled = true;
+            startBtn.innerText = '執行中...';
+            statusEl.style.display = 'block';
+
+            const allSummary = [];
+            if (mode === 'room') {
+                const batchLabel = `手術房 ${terms.join('、')}`;
+
+                try {
+                    statusEl.innerText = `搜尋：${batchLabel}`;
+                    await searchByRooms(terms, statusEl);
+
+                    const { rows, summary } = await processCurrentRows(statusEl, batchLabel);
+                    if (rows.length === 0) {
+                        allSummary.push({ batch: batchLabel, name: '查無資料', preop: '-', day: '-', consent: '-' });
+                    } else {
+                        allSummary.push(...summary);
+                    }
+                } catch (e) {
+                    allSummary.push({ batch: batchLabel, name: '搜尋失敗', preop: e.message || '失敗', day: '-', consent: '-' });
+                    statusEl.innerText = `${batchLabel} 失敗：${e.message || e}`;
+                    await delay(800);
+                }
+
+                startBtn.innerText = '完成';
+                statusEl.innerText = '手術房搜尋處理完畢';
+
+                const lines = allSummary.map(r =>
+                    `[${r.batch}] ${r.name}　估（${r.preop}）、當（${r.day}）、同（${r.consent}）`
+                );
+                alert('═══ 批次搜尋執行結果 ═══\n\n' + lines.join('\n'));
+                location.reload();
+                return;
+            }
+
+            for (let i = 0; i < terms.length; i++) {
+                const term = terms[i];
+                const batchLabel = `主治 ${term}`;
+
+                try {
+                    statusEl.innerText = `搜尋 ${i + 1} / ${terms.length}：${batchLabel}`;
+                    await searchByDoctor(term, statusEl);
+
+                    const { rows, summary } = await processCurrentRows(statusEl, batchLabel);
+                    if (rows.length === 0) {
+                        allSummary.push({ batch: batchLabel, name: '查無資料', preop: '-', day: '-', consent: '-' });
+                    } else {
+                        allSummary.push(...summary);
+                    }
+                } catch (e) {
+                    allSummary.push({ batch: batchLabel, name: '搜尋失敗', preop: e.message || '失敗', day: '-', consent: '-' });
+                    statusEl.innerText = `${batchLabel} 失敗：${e.message || e}`;
+                    await delay(800);
+                }
+            }
+
+            startBtn.innerText = '完成';
+            statusEl.innerText = `全部 ${terms.length} 組搜尋處理完畢`;
+
+            const lines = allSummary.map(r =>
+                `[${r.batch}] ${r.name}　估（${r.preop}）、當（${r.day}）、同（${r.consent}）`
+            );
+            alert('═══ 批次搜尋執行結果 ═══\n\n' + lines.join('\n'));
             location.reload();
+        }
+
+        function makeBatchPanel(statusEl) {
+            const panel = document.createElement('div');
+            panel.id = 'ntuhOpBatchPanel';
+            panel.innerHTML = `
+                <div style="font-weight:bold;margin-bottom:8px;">估・當・同批次搜尋</div>
+                <label style="margin-right:10px;"><input type="radio" name="ntuh-op-batch-mode" value="room" checked> 手術房</label>
+                <label><input type="radio" name="ntuh-op-batch-mode" value="doctor"> 主治醫師</label>
+                <textarea id="ntuhOpBatchTerms" placeholder="每行一筆，例如：梁金銅&#10;或手術房：53、55" style="width:100%;height:72px;margin-top:8px;resize:vertical;"></textarea>
+                <button type="button" id="ntuhOpBatchStart" style="width:100%;margin-top:8px;padding:7px 10px;border:0;border-radius:6px;background:#0d6efd;color:#fff;font-weight:bold;cursor:pointer;">搜尋並執行</button>
+            `;
+            Object.assign(panel.style, {
+                position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
+                width: '260px', background: '#fff', color: '#212529',
+                border: '1px solid rgba(0,0,0,0.2)', borderRadius: '8px',
+                padding: '12px', fontSize: '13px', boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            });
+            document.body.appendChild(panel);
+
+            panel.querySelector('#ntuhOpBatchStart').addEventListener('click', () => runSearchBatches(panel, statusEl));
+            return panel;
         }
 
         const statusEl = document.createElement('div');
         Object.assign(statusEl.style, {
-            position: 'fixed', bottom: '90px', right: '30px', zIndex: '99999',
+            position: 'fixed', bottom: '190px', right: '30px', zIndex: '99999',
             background: 'rgba(0,0,0,0.7)', color: '#fff', padding: '6px 12px',
             borderRadius: '6px', fontSize: '13px', maxWidth: '260px', display: 'none',
         });
         document.body.appendChild(statusEl);
-
-        makeFAB({
-            label: '⚡ 批次執行 估・當・同',
-            color: '#dc3545', hoverColor: '#b02a37',
-            onClick: (fab) => { statusEl.style.display = 'block'; runAll(fab, statusEl); }
-        });
+        makeBatchPanel(statusEl);
     }
 
     // ═══════════════════════════════════════════════════════════
