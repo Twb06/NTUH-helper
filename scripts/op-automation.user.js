@@ -258,6 +258,15 @@
                 .join('|');
         }
 
+        function getCellText(row, index) {
+            return row.children[index]?.innerText?.trim().replace(/\s+/g, ' ') || '';
+        }
+
+        function isNoDataShown() {
+            const tbody = document.getElementById('tbBodyOpSchedule');
+            return !!tbody && /查無|無資料|No data/i.test(tbody.innerText || '');
+        }
+
         async function processCurrentRows(statusEl, batchLabel) {
             const rows = getScheduleRows();
 
@@ -429,12 +438,13 @@
             }
         }
 
-        function waitForSearchRefresh() {
+        function waitForSearchRefresh(rowValidator = null) {
             return new Promise(resolve => {
                 let done = false;
                 let observer = null;
                 let ajaxStopHandler = null;
                 let endRequestHandler = null;
+                let firstChangeAt = 0;
 
                 function cleanup() {
                     if (observer) observer.disconnect();
@@ -455,25 +465,54 @@
                     resolve();
                 }
 
+                function hasAcceptableResult() {
+                    const rows = getScheduleRows();
+                    if (rows.length > 0 && (!rowValidator || rows.some(rowValidator))) return true;
+                    return isNoDataShown() && firstChangeAt && Date.now() - firstChangeAt > 1200;
+                }
+
+                function maybeFinish(markChanged = false) {
+                    if (markChanged && !firstChangeAt) firstChangeAt = Date.now();
+                    if (!firstChangeAt) return;
+                    if (hasAcceptableResult()) finish();
+                }
+
                 const tbody = document.getElementById('tbBodyOpSchedule');
                 if (tbody) {
-                    observer = new MutationObserver(finish);
+                    observer = new MutationObserver(() => maybeFinish(true));
                     observer.observe(tbody, { childList: true, subtree: true, characterData: true });
                 }
 
                 if (typeof $ === 'function') {
-                    ajaxStopHandler = finish;
+                    ajaxStopHandler = () => {
+                        if (!firstChangeAt) firstChangeAt = Date.now();
+                        setTimeout(finish, 700);
+                    };
                     try { $(document).one('ajaxStop', ajaxStopHandler); } catch (e) {}
                 }
 
                 if (window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
-                    endRequestHandler = finish;
+                    endRequestHandler = () => {
+                        if (!firstChangeAt) firstChangeAt = Date.now();
+                        setTimeout(finish, 700);
+                    };
                     try {
                         Sys.WebForms.PageRequestManager.getInstance().add_endRequest(endRequestHandler);
                     } catch (e) {}
                 }
 
-                setTimeout(finish, 15000);
+                const poll = setInterval(() => {
+                    if (done) {
+                        clearInterval(poll);
+                        return;
+                    }
+                    maybeFinish();
+                }, 500);
+
+                setTimeout(() => {
+                    clearInterval(poll);
+                    finish();
+                }, 15000);
             });
         }
 
@@ -490,8 +529,8 @@
             }
         }
 
-        async function clickAndWaitForSearch(button, statusEl) {
-            const refreshPromise = waitForSearchRefresh();
+        async function clickAndWaitForSearch(button, statusEl, rowValidator = null) {
+            const refreshPromise = waitForSearchRefresh(rowValidator);
             button.click();
             statusEl.innerText = '等待列表更新...';
             await refreshPromise;
@@ -506,7 +545,7 @@
             input.value = term;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
-            await clickAndWaitForSearch(button, statusEl);
+            await clickAndWaitForSearch(button, statusEl, row => getCellText(row, 15).includes(term));
         }
 
         async function searchByRooms(terms, statusEl) {
@@ -514,7 +553,8 @@
             if (!button) throw new Error('找不到手術房查詢按鈕');
 
             await selectRoomsByUi(terms, statusEl);
-            await clickAndWaitForSearch(button, statusEl);
+            const roomSet = new Set(terms.map(term => normalizeRoomText(term)));
+            await clickAndWaitForSearch(button, statusEl, row => roomSet.has(normalizeRoomText(getCellText(row, 5))));
         }
 
         async function runSearchBatches(panel, statusEl) {
@@ -594,6 +634,31 @@
             location.reload();
         }
 
+        async function runCurrentPage(panel, statusEl) {
+            const currentBtn = panel.querySelector('#ntuhOpCurrentPage');
+
+            currentBtn.disabled = true;
+            currentBtn.innerText = '執行中...';
+            statusEl.style.display = 'block';
+
+            const { rows, summary } = await processCurrentRows(statusEl, '目前頁面');
+            if (rows.length === 0) {
+                currentBtn.innerText = '目前頁面執行';
+                currentBtn.disabled = false;
+                statusEl.innerText = '目前頁面查無病人資料';
+                return;
+            }
+
+            currentBtn.innerText = '完成';
+            statusEl.innerText = `目前頁面 ${rows.length} 位處理完畢`;
+
+            const lines = summary.map(r =>
+                `${r.name}　估（${r.preop}）、當（${r.day}）、同（${r.consent}）`
+            );
+            alert('═══ 目前頁面執行結果 ═══\n\n' + lines.join('\n'));
+            location.reload();
+        }
+
         function makeBatchPanel(statusEl) {
             const panel = document.createElement('div');
             panel.id = 'ntuhOpBatchPanel';
@@ -603,6 +668,7 @@
                 <label><input type="radio" name="ntuh-op-batch-mode" value="doctor"> 主治醫師</label>
                 <textarea id="ntuhOpBatchTerms" placeholder="每行一筆，例如：梁金銅&#10;或手術房：53、55" style="width:100%;height:72px;margin-top:8px;resize:vertical;"></textarea>
                 <button type="button" id="ntuhOpBatchStart" style="width:100%;margin-top:8px;padding:7px 10px;border:0;border-radius:6px;background:#0d6efd;color:#fff;font-weight:bold;cursor:pointer;">搜尋並執行</button>
+                <button type="button" id="ntuhOpCurrentPage" style="width:100%;margin-top:8px;padding:7px 10px;border:1px solid #6c757d;border-radius:6px;background:#fff;color:#343a40;font-weight:bold;cursor:pointer;">目前頁面執行</button>
             `;
             Object.assign(panel.style, {
                 position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
@@ -613,12 +679,13 @@
             document.body.appendChild(panel);
 
             panel.querySelector('#ntuhOpBatchStart').addEventListener('click', () => runSearchBatches(panel, statusEl));
+            panel.querySelector('#ntuhOpCurrentPage').addEventListener('click', () => runCurrentPage(panel, statusEl));
             return panel;
         }
 
         const statusEl = document.createElement('div');
         Object.assign(statusEl.style, {
-            position: 'fixed', bottom: '190px', right: '30px', zIndex: '99999',
+            position: 'fixed', bottom: '230px', right: '30px', zIndex: '99999',
             background: 'rgba(0,0,0,0.7)', color: '#fff', padding: '6px 12px',
             borderRadius: '6px', fontSize: '13px', maxWidth: '260px', display: 'none',
         });
