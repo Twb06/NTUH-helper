@@ -18,15 +18,13 @@
 | `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色，自動處理人數設定、照抄舊 R、刪除重建 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |
 | `progress-note-filler` | 從 Primary note 自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。**⚠ 需要特殊的 primary note 格式**（包含 `[Today's Events]`、`[Course]`、`[Assessment]`、`[Diagnosis]`、`[Plans]` 區塊，以 `-----[區塊名]` 分隔） | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
 | `weekend-progress` | 週末病程批次撰寫：在病房列表頁一鍵對所有病人自動複製最新 progress note、填入 stable 並確認。支援正規 progress 與 free note 形式；無既有 progress 時自動從 admission note 擷取「醫療需求與治療計畫」建立新 note；自動判斷今日已有病程、新病人不需病程等情境 | 通用 | 開啟病房列表頁面，點擊右下角橘色「⚡ 週末病程」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js) |
-| `lab-summary` | 檢驗整理工具：整合原 lab-summary + lab-trend bookmarklet，直接讀取 DOM 不需框選。清單模式輸出單日 summary，綠單模式輸出多日趨勢（→ 連接 + 日期軸）。自動分類 Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine / Culture，過濾不重要項目，異常值標記 ↑↓ | 通用 | Portal 報告頁面（MedicalReportContent.aspx），點擊右下角橘色「整理檢驗」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
+| `lab-summary` | 檢驗整理工具：整合原 lab-summary + lab-trend bookmarklet，直接讀取 DOM 不需框選。支援清單與綠單模式，自動分類 Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine / Culture，各分組獨立顯示日期與 → 趨勢。支援 Blood/Urine/Sputum/通用 Culture 格式化、PCR 結果、抗藥性標註（CR/ESBL/MRSA/VRE）、VRE/CRE screening，過濾不重要項目，Hemogram 延伸項目僅異常時顯示 | 通用 | Portal 報告頁面（MedicalReportContent.aspx），點擊右下角橘色「整理檢驗」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
 
 ## Bookmarklets
 
 | 書籤 | 說明 | 適用範圍 | 使用頁面 | 原始碼 |
 |------|------|----------|----------|--------|
 | `chart-medication` | 在藥歷圖頁面按書籤，整理抗生素用藥成「商品名 起日-迄日」，自動區分進行中與已停用並顯示療程天數 | 通用 | Portal 藥歷圖（Chart.aspx） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/chart-medication.js) |
-| `lab-trend` | 框選「綠單」檢驗表格後按書籤，將多日資料以趨勢方式呈現（Hemogram / Liver/Renal / Electrolytes / Coagulation / Gas / Urine 等自動分組） | 通用 | Portal 報告頁面的綠單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-trend.js) |
-| `lab-summary` | 框選「清單」檢驗數值後按書籤，將數值依臨床分組整理成段落，自動標記異常值（↑↓），Culture 附採檢日期 | 通用 | Portal 報告頁面的清單 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/lab-summary.js) |
 | `goto-nursing-handover` | 新開分頁跳轉到該病人的「護理交班」頁面 | 通用 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-handover.js) |
 | `goto-nursing-notes` | 新開分頁跳轉到該病人的「護理紀錄」頁面 | 通用 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-notes.js) |
 | `goto-emergency` | 新開分頁跳轉到「急診」頁面 | 通用 | Portal 任一網域 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-emergency.js) |

@@ -15,18 +15,24 @@
 
     // ====== 分類定義 ======
 
-    const IGNORE = ['HCT', 'Hct', 'MCH', 'MCHC', 'RDW-CV', 'PS', 'RBC'];
+    const IGNORE = ['HCT', 'Hct', 'MCH', 'MCHC', 'RDW-CV', 'PS', 'RBC', 'Sugar'];
 
     const RARE_DIFF = ['Blast', 'Promyl.', 'Myelo.', 'Meta', 'Aty.Lym.', 'PlasmaCell', 'Normobl.'];
 
     const HEMOGRAM_MAIN = ['WBC', 'HB', 'PLT', 'Seg'];
     const HEMOGRAM_EXT = ['Eos.', 'Baso.', 'Band', 'Lym.', 'Mono.'];
-    const LIVER_RENAL = ['ALT', 'AST', 'ALP', 'T-BIL', 'D-BIL', 'GGT', 'ALB', 'CRE', 'BUN', 'eGFR'];
+    const LIVER_RENAL = ['ALT', 'AST', 'ALP', 'T-BIL', 'D-BIL', 'GGT', 'ALB', 'CRE', 'BUN', 'eGFR', 'Ammonia N', 'CK'];
     const ELECTROLYTES = ['Na', 'K', 'Mg', 'Ca', 'P', 'Cl'];
     const OTHERS = ['UA', 'CRP', 'hsCRP', 'Glucose', 'HbA1c', 'VIT. B12', 'Folic Acid', 'NT-pro BNP', 'BNP', 'LA', 'TP', 'LDH'];
     const GAS = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
-    const COAG = ['PT', 'INR', 'PTT', 'D-dimer', 'Fibrinogen'];
-    const CULTURE_KEYS = ["Gram's", 'ID+DS'];
+    const COAG = ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen'];
+    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.', 'VRE screening', 'CRE screening', 'MRSA screening'];
+    const PCR_MAP = {
+        'SARS-CoV-2 RNA PCR': 'COVID PCR',
+        'Influenza A RT-PCR Detection': 'Influenza A PCR',
+        'Influenza B RT-PCR Detection': 'Influenza B PCR',
+        'RSV RT-PCR Detection': 'RSV PCR',
+    };
 
     const ALL_KNOWN = [
         ...HEMOGRAM_MAIN, ...HEMOGRAM_EXT, ...RARE_DIFF,
@@ -36,6 +42,11 @@
 
     const ATTACH = { WBC: 'Seg', HB: 'MCV', CRE: 'eGFR' };
     const ATTACHED = new Set(['Seg', 'MCV', 'eGFR']);
+
+    const HEMO_EXT_RANGE = {
+        'Eos.': [0, 8], 'Baso.': [0, 2], 'Band': [0, 5],
+        'Lym.': [20, 45], 'Mono.': [2, 10],
+    };
 
     const URINE_ALWAYS_SHOW = ['RBC', 'WBC', 'Bac'];
 
@@ -51,6 +62,7 @@
         'NT-pro BNP': 'NT-pro BNP', 'BNP': 'BNP',
         'PT': 'PT', 'PT INR': 'INR', 'PTT': 'PTT',
         'D-dimer': 'D-dimer', 'Fibrinogen': 'Fibrinogen',
+        'aPTT': 'aPTT', 'Ammonia N': 'Ammonia N', 'CK': 'CK',
         'TP': 'TP', 'LDH': 'LDH',
     };
 
@@ -71,12 +83,12 @@
         'Bacteria (Sediment)': 'Bac', 'Others (Sediment)': 'Others', 'Others(S)': 'Others',
         'Sp. Gr.(Dipstick)': 'Sp.Gr.', 'Sp. Gr.(C)': 'Sp.Gr.',
         'pH(Dipstick)': 'pH', 'pH(C)': 'pH',
-        'Alb.(Dipstick)': 'Albumin',
+        'Alb.(Dipstick)': 'Albumin', 'Albumin(Dipstick)': 'Albumin',
         'Creatinine(Dipstick)': 'Creatinine',
         'Alb./Cre.(Dipstick)': 'ACR', 'Albumin/Creatinine(Dipstick)': 'ACR',
     };
 
-    const URINE_SKIP = ['Creatinine(Dipstick)', 'Albumin/Creatinine(Dipstick)', 'Albumin(Dipstick)'];
+    const URINE_SKIP = ['Creatinine(Dipstick)', 'Albumin/Creatinine(Dipstick)', 'Albumin(Dipstick)', 'Alb.(Dipstick)', 'Alb./Cre.(Dipstick)'];
 
     const SKIP_KEYWORDS = [
         '檢驗項目', '計算', '採檢', '登入', '最後', '本尿',
@@ -129,15 +141,23 @@
 
         const dates = [];
         const trendData = {};
+        const urineData = {};
+        const urineDates = [];
         const cultureItems = [];
+        const structuredCultures = [];
         let collectDate = '';
+        let headerText = '';
 
         tables.forEach(table => {
             let prev = table.previousElementSibling;
             while (prev && prev.tagName !== 'TABLE') {
                 const txt = prev.textContent || '';
                 const dm = txt.match(/採檢:(\d{4})\/(\d{2})\/(\d{2})/);
-                if (dm) { collectDate = dm[2] + '/' + dm[3]; break; }
+                if (dm) {
+                    collectDate = dm[2] + '/' + dm[3];
+                    headerText = txt;
+                    break;
+                }
                 prev = prev.previousElementSibling;
             }
 
@@ -152,30 +172,102 @@
                 if (cells.length < 2) return;
 
                 const rawName = (cells[0].textContent || '').trim();
-                const val = (cells[1].textContent || '').trim();
-                const unit = cells[2] ? cells[2].textContent.trim() : '';
-                const ref = cells[3] ? cells[3].textContent.trim() : '';
+                const rawVal = (cells[1].textContent || '').trim();
 
-                if (!rawName || !val) return;
+                if (!rawName || !rawVal) return;
+
+                if (/^\d{2}:\d{2}/.test(rawName)) return;
 
                 const shouldSkip = SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1);
                 if (shouldSkip) return;
 
-                if (IGNORE.includes(rawName)) return;
+                const cleanName = parseGreenItemName(rawName);
+                if (IGNORE.includes(cleanName)) return;
+
+                const val = cleanGreenValue(rawVal);
 
                 const isCulture = CULTURE_KEYS.some(ck => rawName.indexOf(ck) > -1);
                 if (isCulture) {
-                    cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
+                    if (/Epithelial cell|PMN/i.test(val)) return;
+                    if (/No bacteria visible/i.test(val)) return;
+                    const isNeg = /no growth|no aerobic\s+pathogen|no anaerobic\s+pathogen/i.test(val);
+                    const remark = cells[4] ? (cells[4].textContent || '').trim() : '';
+                    let cResult = isNeg ? '-' : val;
+                    if (!isNeg && remark) {
+                        const rMap = {
+                            'Carbapenem-resistant': 'CR', 'ESBL': 'ESBL',
+                            'MRSA': 'MRSA', 'VRE': 'VRE', 'MDR': 'MDR',
+                        };
+                        for (const [pattern, abbr] of Object.entries(rMap)) {
+                            if (remark.indexOf(pattern) > -1) { cResult += ' (' + abbr + ')'; break; }
+                        }
+                    }
+                    if (/screening/i.test(rawName)) {
+                        const scrType = rawName.match(/^(\S+)\s+screening/i);
+                        const scrName = scrType ? scrType[1].toUpperCase() : rawName;
+                        const scrRef = cells[3] ? (cells[3].textContent || '').trim() : '';
+                        const scrNeg = scrRef && val.toLowerCase() === scrRef.toLowerCase();
+                        const specM2 = headerText.match(/No:\S+\s+(.*?)\s*採檢/);
+                        let scrLabel = 'Swab';
+                        if (specM2) {
+                            const raw2 = specM2[1].trim();
+                            const words2 = raw2.split(/\s+/).filter(w => /^[A-Z]+$/.test(w));
+                            if (words2.length) scrLabel = words2[words2.length - 1].charAt(0).toUpperCase() + words2[words2.length - 1].slice(1).toLowerCase();
+                        }
+                        structuredCultures.push({ date: collectDate, label: scrLabel, result: scrName + ' (' + (scrNeg ? '-' : '+') + ')' });
+                    } else if (/ID\+DS Blood/i.test(rawName)) {
+                        const srcM = headerText.match(/BLOOD\s+(\S+)\s+採檢/);
+                        const src = srcM ? srcM[1].toLowerCase() : 'blood';
+                        structuredCultures.push({ date: collectDate, label: 'B/C (' + src + ')', result: cResult });
+                    } else if (/ID\+DS Urine/i.test(rawName)) {
+                        const srcM = headerText.match(/URINE\s+(.*?)\s+採檢/);
+                        let src = 'urine';
+                        if (srcM) {
+                            const s = srcM[1].toLowerCase();
+                            if (s.indexOf('void') > -1) src = 'void';
+                            else if (s.indexOf('cath') > -1) src = 'cath';
+                            else src = s;
+                        }
+                        structuredCultures.push({ date: collectDate, label: 'U/C (' + src + ')', result: cResult });
+                    } else if (/ID\+DS Sputum/i.test(rawName)) {
+                        structuredCultures.push({ date: collectDate, label: 'Spu/C', result: cResult });
+                    } else if (/ID\+DS|ID C\.|ID Campy\.|^Anaerobic/i.test(rawName)) {
+                        const specM = headerText.match(/No:\S+\s+(.*?)\s*採檢/);
+                        let specDesc = '';
+                        if (specM) {
+                            const raw = specM[1].trim();
+                            const hasChinese = /[一-鿿]/.test(raw);
+                            if (hasChinese) {
+                                specDesc = raw.replace(/^[A-Z()\s\/]+/, '').trim() || raw;
+                            } else {
+                                const words = raw.split(/\s+/).filter(w => /^[A-Z]+$/.test(w));
+                                const last = words.length ? words[words.length - 1] : raw.split(/\s+/)[0];
+                                specDesc = last.charAt(0).toUpperCase() + last.slice(1).toLowerCase();
+                            }
+                        }
+                        const label = specDesc ? specDesc + '/C' : 'Other/C';
+                        structuredCultures.push({ date: collectDate, label: label, result: cResult });
+                    } else {
+                        cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
+                    }
+                    return;
+                }
+
+                const pcrName = PCR_MAP[rawName];
+                if (pcrName) {
+                    const pcrResult = (val === 'Not Detected' || val === 'Negative') ? '-' : '+';
+                    cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + pcrName + ' ' + pcrResult);
                     return;
                 }
 
                 const urineName = URINE_NAME_MAP[rawName];
                 if (urineName !== undefined) {
                     if (!URINE_SKIP.includes(rawName)) {
-                        const nm = urineName;
-                        if (!trendData[nm]) trendData[nm] = [];
-                        while (trendData[nm].length <= dateIdx) trendData[nm].push('');
-                        if (!trendData[nm][dateIdx]) trendData[nm][dateIdx] = val;
+                        if (!urineDates.includes(collectDate)) urineDates.push(collectDate);
+                        const uDateIdx = urineDates.indexOf(collectDate);
+                        if (!urineData[urineName]) urineData[urineName] = [];
+                        while (urineData[urineName].length <= uDateIdx) urineData[urineName].push('');
+                        if (!urineData[urineName][uDateIdx]) urineData[urineName][uDateIdx] = val;
                     }
                     return;
                 }
@@ -193,6 +285,9 @@
                 const nm = normalizeName(rawName);
                 if (nm === '__SKIP__') return;
 
+                const isG2 = RARE_DIFF.includes(nm);
+                if (isG2 && (parseFloat(val) === 0 || !val)) return;
+
                 if (!trendData[nm]) trendData[nm] = [];
                 while (trendData[nm].length <= dateIdx) trendData[nm].push('');
                 if (!trendData[nm][dateIdx]) trendData[nm][dateIdx] = val;
@@ -204,28 +299,40 @@
         for (const nm of Object.keys(trendData)) {
             while (trendData[nm].length < dates.length) trendData[nm].push('');
         }
-
-        if (dates.length === 1) {
-            const data = {};
-            const gasData = {};
-            const urineItems = [];
-            for (const [nm, vals] of Object.entries(trendData)) {
-                const v = vals[0];
-                if (!v) continue;
-                if (GAS.includes(nm)) {
-                    gasData[nm] = { v, u: nm === 'pH' ? '' : '', f: '' };
-                } else if (URINE_ALWAYS_SHOW.includes(nm) || Object.values(URINE_NAME_MAP).includes(nm)) {
-                    urineItems.push({ name: nm, val: v, ref: '' });
-                } else {
-                    data[nm] = { v, u: '', f: '' };
-                }
-            }
-            return formatSingleDay(data, gasData, urineItems, cultureItems);
+        for (const nm of Object.keys(urineData)) {
+            while (urineData[nm].length < urineDates.length) urineData[nm].push('');
         }
 
-        let result = formatTrend(dates, trendData, null);
+        const specialGroups = {};
+        if (Object.keys(urineData).length) {
+            specialGroups.Urine = { dates: urineDates, data: urineData };
+        }
+
+        const cGroups = [];
+        const cGroupMap = {};
+        for (const c of structuredCultures) {
+            const key = c.date + '||' + c.label;
+            if (!cGroupMap[key]) {
+                cGroupMap[key] = { date: c.date, label: c.label, results: [] };
+                cGroups.push(cGroupMap[key]);
+            }
+            cGroupMap[key].results.push(c.result);
+        }
+        const cByDate = {};
+        const cDateOrder = [];
+        for (const g of cGroups) {
+            if (!cByDate[g.date]) { cByDate[g.date] = []; cDateOrder.push(g.date); }
+            const allNeg = g.results.every(r => r === '-');
+            const display = allNeg ? '-' : g.results.filter(r => r !== '-').join('; ');
+            cByDate[g.date].push(g.label + ': ' + display);
+        }
+        for (const dt of cDateOrder) {
+            cultureItems.push('[' + dt + '] ' + cByDate[dt].join(' ; '));
+        }
+
+        let result = formatTrendParagraph(dates, trendData, Object.keys(specialGroups).length ? specialGroups : null);
         if (cultureItems.length) {
-            result = (result || '') + (result ? '\n\n' : '') + 'Culture:\n' + cultureItems.join('\n');
+            result = (result || '') + (result ? '\n' : '') + '#. Culture:\n' + cultureItems.join('\n');
         }
         return result;
     }
@@ -527,7 +634,7 @@
 
         if (!dates.length && !Object.keys(specialGroups).length) return null;
 
-        return formatTrend(dates, data, specialGroups);
+        return formatTrendParagraph(dates, data, specialGroups);
     }
 
     // ====== 多日趨勢格式化 ======
@@ -687,6 +794,153 @@
         if (gas) output.push(gas);
 
         return output.length ? output.join('\n\n') : null;
+    }
+
+    // ====== 段落式趨勢格式化（清單風格 + → 趨勢） ======
+
+    function formatTrendParagraph(dates, data, specialGroups) {
+        function compactTrend(vals) {
+            const filled = vals.filter(x => x);
+            if (filled.length === 0) return null;
+            if (filled.length === 1) return filled[0];
+            const parts = [];
+            for (let i = 0; i < vals.length; i++) {
+                if (!vals[i]) continue;
+                if (parts.length > 0) {
+                    const prevIdx = vals.lastIndexOf(parts[parts.length - 1].val, i - 1);
+                    const gap = i - prevIdx - 1;
+                    parts.push({ val: vals[i], arrow: '→'.repeat(gap + 1) });
+                } else {
+                    parts.push({ val: vals[i], arrow: '' });
+                }
+            }
+            return parts.map((p, i) => i === 0 ? p.val : p.arrow + p.val).join('');
+        }
+
+        function isAbnormal(nm, vals) {
+            const range = HEMO_EXT_RANGE[nm];
+            if (!range) return true;
+            for (const v of vals) {
+                if (!v) continue;
+                const n = parseFloat(v);
+                if (isNaN(n)) continue;
+                if (n < range[0] || n > range[1]) return true;
+            }
+            return false;
+        }
+
+        function fmtItem(nm, dd2) {
+            const v = dd2[nm];
+            if (!v) return null;
+            if (HEMO_EXT_RANGE[nm] && !isAbnormal(nm, v)) return null;
+            const trend = compactTrend(v);
+            if (!trend) return null;
+            let s = nm + ' ' + trend;
+            if (ATTACH[nm]) {
+                const ank = ATTACH[nm];
+                const av = dd2[ank];
+                if (av) {
+                    const aTrend = compactTrend(av);
+                    if (aTrend) s += ' (' + ank + ' ' + aTrend + ')';
+                }
+            }
+            return s;
+        }
+
+        function buildGroup(title, keys, extKeys, dt) {
+            const dd2 = dt || data;
+            const allKeys = [...keys, ...(extKeys || [])];
+            const activeIdx = [];
+            for (let i = 0; i < dates.length; i++) {
+                for (const nm of allKeys) {
+                    if (dd2[nm] && dd2[nm][i]) { activeIdx.push(i); break; }
+                }
+            }
+            if (!activeIdx.length) return null;
+
+            const filtered = {};
+            for (const nm of allKeys) {
+                if (!dd2[nm]) continue;
+                filtered[nm] = activeIdx.map(i => dd2[nm][i] || '');
+            }
+
+            const items = [];
+            for (const nm of keys) {
+                if (ATTACHED.has(nm)) continue;
+                const s = fmtItem(nm, filtered);
+                if (s) items.push(s);
+            }
+            if (extKeys) {
+                for (const nm of extKeys) {
+                    if (ATTACHED.has(nm)) continue;
+                    const s = fmtItem(nm, filtered);
+                    if (s) items.push(s);
+                }
+            }
+            if (!items.length) return null;
+            const gd = activeIdx.map(i => dates[i]);
+            return title + ' [' + gd.join(', ') + ']: ' + items.join(', ');
+        }
+
+        function buildUrinePara(sg) {
+            const dt = sg.data;
+            const items = [];
+            for (const k of Object.keys(dt)) {
+                const always = URINE_ALWAYS_SHOW.includes(k);
+                const vals = dt[k];
+                const pts = vals.map(v => {
+                    if (always) return v || '-';
+                    return (v && isUrineAbnormal(v)) ? displayUrineVal(v) : '-';
+                });
+                if (pts.every(p => p === '-')) continue;
+                items.push(k + ' ' + pts.join('→'));
+            }
+            if (!items.length) return null;
+            const ud = sg.dates || [];
+            return 'Urine [' + ud.join(', ') + ']: ' + items.join(', ');
+        }
+
+        const groups = [];
+
+        const hemo = buildGroup('Hemogram', HEMOGRAM_MAIN, [...HEMOGRAM_EXT, ...RARE_DIFF]);
+        if (hemo) groups.push(hemo);
+
+        const lr = buildGroup('Liver/Renal', LIVER_RENAL);
+        if (lr) groups.push(lr);
+
+        const el = buildGroup('Electrolytes', ELECTROLYTES);
+        if (el) groups.push(el);
+
+        const unknowns = Object.keys(data).filter(k => !ALL_KNOWN.includes(k) && !IGNORE.includes(k));
+        const ot = buildGroup('Others', OTHERS, unknowns);
+        if (ot) groups.push(ot);
+
+        const coag = buildGroup('Coagulation', COAG);
+        if (coag) groups.push(coag);
+
+        if (specialGroups) {
+            for (const [sgName, sgData] of Object.entries(specialGroups)) {
+                if (sgName === 'Urine') {
+                    const u = buildUrinePara(sgData);
+                    if (u) groups.push(u);
+                } else {
+                    const items = [];
+                    for (const [k, vals] of Object.entries(sgData.data)) {
+                        const trend = compactTrend(vals);
+                        if (trend) items.push(k + ' ' + trend);
+                    }
+                    if (items.length) groups.push(sgName + ' [' + sgData.dates.join(', ') + ']: ' + items.join(', '));
+                }
+            }
+        }
+
+        const gas = buildGroup('Gas', GAS);
+        if (gas) groups.push(gas);
+
+        if (!groups.length) return null;
+
+        const prefixed = groups.map(g => '#. ' + g);
+        return prefixed.join('\n');
     }
 
     // ====== 偵測目前的樣式（清單/橫式/直式/綠單） ======
