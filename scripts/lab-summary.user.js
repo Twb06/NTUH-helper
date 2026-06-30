@@ -127,9 +127,8 @@
         const tables = document.querySelectorAll('table.DetailedSheet');
         if (!tables.length) return null;
 
-        const data = {};
-        const gasData = {};
-        const urineItems = [];
+        const dates = [];
+        const trendData = {};
         const cultureItems = [];
         let collectDate = '';
 
@@ -141,6 +140,11 @@
                 if (dm) { collectDate = dm[2] + '/' + dm[3]; break; }
                 prev = prev.previousElementSibling;
             }
+
+            if (collectDate && !dates.includes(collectDate)) {
+                dates.push(collectDate);
+            }
+            const dateIdx = dates.indexOf(collectDate);
 
             const rows = table.querySelectorAll('tr');
             rows.forEach(row => {
@@ -168,7 +172,10 @@
                 const urineName = URINE_NAME_MAP[rawName];
                 if (urineName !== undefined) {
                     if (!URINE_SKIP.includes(rawName)) {
-                        urineItems.push({ name: urineName, val, ref });
+                        const nm = urineName;
+                        if (!trendData[nm]) trendData[nm] = [];
+                        while (trendData[nm].length <= dateIdx) trendData[nm].push('');
+                        if (!trendData[nm][dateIdx]) trendData[nm][dateIdx] = val;
                     }
                     return;
                 }
@@ -177,18 +184,50 @@
                     const gasName = rawName === 'PH' ? 'pH'
                         : rawName === 'BaseExcess' ? 'BE'
                         : rawName;
-                    gasData[gasName] = { v: val, u: gasName === 'pH' ? '' : unit, f: flagValue(val, ref) };
+                    if (!trendData[gasName]) trendData[gasName] = [];
+                    while (trendData[gasName].length <= dateIdx) trendData[gasName].push('');
+                    if (!trendData[gasName][dateIdx]) trendData[gasName][dateIdx] = val;
                     return;
                 }
 
                 const nm = normalizeName(rawName);
                 if (nm === '__SKIP__') return;
 
-                data[nm] = { v: val, u: unit, f: flagValue(val, ref) };
+                if (!trendData[nm]) trendData[nm] = [];
+                while (trendData[nm].length <= dateIdx) trendData[nm].push('');
+                if (!trendData[nm][dateIdx]) trendData[nm][dateIdx] = val;
             });
         });
 
-        return formatSingleDay(data, gasData, urineItems, cultureItems);
+        if (!dates.length) return null;
+
+        for (const nm of Object.keys(trendData)) {
+            while (trendData[nm].length < dates.length) trendData[nm].push('');
+        }
+
+        if (dates.length === 1) {
+            const data = {};
+            const gasData = {};
+            const urineItems = [];
+            for (const [nm, vals] of Object.entries(trendData)) {
+                const v = vals[0];
+                if (!v) continue;
+                if (GAS.includes(nm)) {
+                    gasData[nm] = { v, u: nm === 'pH' ? '' : '', f: '' };
+                } else if (URINE_ALWAYS_SHOW.includes(nm) || Object.values(URINE_NAME_MAP).includes(nm)) {
+                    urineItems.push({ name: nm, val: v, ref: '' });
+                } else {
+                    data[nm] = { v, u: '', f: '' };
+                }
+            }
+            return formatSingleDay(data, gasData, urineItems, cultureItems);
+        }
+
+        let result = formatTrend(dates, trendData, null);
+        if (cultureItems.length) {
+            result = (result || '') + (result ? '\n\n' : '') + 'Culture:\n' + cultureItems.join('\n');
+        }
+        return result;
     }
 
     // ====== 單日格式化（summary 風格） ======
