@@ -26,7 +26,7 @@
     const OTHERS = ['UA', 'CRP', 'hsCRP', 'Glucose', 'HbA1c', 'VIT. B12', 'Folic Acid', 'NT-pro BNP', 'BNP', 'LA', 'TP', 'LDH'];
     const GAS = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
     const COAG = ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen'];
-    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.', 'VRE screening', 'CRE screening', 'MRSA screening'];
+    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.', 'VRE screening', 'CRE screening', 'MRSA screening', 'CRAB screening'];
     const PCR_MAP = {
         'SARS-CoV-2 RNA PCR': 'COVID PCR',
         'Influenza A RT-PCR Detection': 'Influenza A PCR',
@@ -99,6 +99,22 @@
         'RH', 'ABO Typing', 'antibody screen',
     ];
 
+    const GENUS_ABBR = [
+        'Enterococcus', 'Staphylococcus', 'Streptococcus', 'Klebsiella',
+        'Pseudomonas', 'Escherichia', 'Acinetobacter', 'Stenotrophomonas',
+        'Bacteroides', 'Eggerthella', 'Eubacterium', 'Clostridioides',
+        'Candida', 'Serratia', 'Proteus', 'Citrobacter', 'Morganella',
+    ];
+
+    function abbrGenus(text) {
+        for (const g of GENUS_ABBR) {
+            if (text.indexOf(g) > -1) {
+                text = text.split(g).join(g.charAt(0) + '.');
+            }
+        }
+        return text;
+    }
+
     // ====== 工具函式 ======
 
     function normalizeName(raw) {
@@ -143,10 +159,22 @@
         const trendData = {};
         const urineData = {};
         const urineDates = [];
+        const gasData = {};
+        const gasDates = [];
+        let gasLabel = 'Gas';
         const cultureItems = [];
         const structuredCultures = [];
         let collectDate = '';
         let headerText = '';
+
+        const AGAS_NAME_MAP = {
+            'LacticAcid': 'LA', 'Hb': 'HB', 'Cl-': 'Cl',
+            'K+': 'K', 'Na+': 'Na', 'Free Ca2+': 'iCa',
+            'pH': 'pH', 'pCO2': 'PCO2', 'pO2': 'PO2',
+            'HCO3-': 'HCO3', 'HCO3': 'HCO3', 'Base Excess': 'BE', 'BaseExcess': 'BE',
+            'FiO2': 'FiO2', 'SO2': 'SO2', 'Glucose': 'Glucose',
+        };
+        const AGAS_SKIP = ['Hct'];
 
         tables.forEach(table => {
             let prev = table.previousElementSibling;
@@ -159,6 +187,33 @@
                     break;
                 }
                 prev = prev.previousElementSibling;
+            }
+
+            const isArterialGas = /Arterial Blood/i.test(headerText);
+
+            if (isArterialGas) {
+                gasLabel = 'A gas';
+                if (!gasDates.includes(collectDate)) gasDates.push(collectDate);
+                const gDateIdx = gasDates.indexOf(collectDate);
+
+                const rows = table.querySelectorAll('tr');
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length < 2) return;
+                    const rawName = (cells[0].textContent || '').trim();
+                    const rawVal = (cells[1].textContent || '').trim();
+                    if (!rawName || !rawVal) return;
+                    const shouldSkip = SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1);
+                    if (shouldSkip) return;
+                    const cleanName = parseGreenItemName(rawName);
+                    if (AGAS_SKIP.includes(cleanName) || IGNORE.includes(cleanName)) return;
+                    const gasName = AGAS_NAME_MAP[cleanName] || cleanName;
+                    const val = cleanGreenValue(rawVal);
+                    if (!gasData[gasName]) gasData[gasName] = [];
+                    while (gasData[gasName].length <= gDateIdx) gasData[gasName].push('');
+                    if (!gasData[gasName][gDateIdx]) gasData[gasName][gDateIdx] = val;
+                });
+                return;
             }
 
             if (collectDate && !dates.includes(collectDate)) {
@@ -206,7 +261,7 @@
                         const scrType = rawName.match(/^(\S+)\s+screening/i);
                         const scrName = scrType ? scrType[1].toUpperCase() : rawName;
                         const scrRef = cells[3] ? (cells[3].textContent || '').trim() : '';
-                        const scrNeg = scrRef && val.toLowerCase() === scrRef.toLowerCase();
+                        const scrNeg = (scrRef && val.toLowerCase() === scrRef.toLowerCase()) || /^No\s/i.test(val);
                         const specM2 = headerText.match(/No:\S+\s+(.*?)\s*採檢/);
                         let scrLabel = 'Swab';
                         if (specM2) {
@@ -276,9 +331,11 @@
                     const gasName = rawName === 'PH' ? 'pH'
                         : rawName === 'BaseExcess' ? 'BE'
                         : rawName;
-                    if (!trendData[gasName]) trendData[gasName] = [];
-                    while (trendData[gasName].length <= dateIdx) trendData[gasName].push('');
-                    if (!trendData[gasName][dateIdx]) trendData[gasName][dateIdx] = val;
+                    if (!gasDates.includes(collectDate)) gasDates.push(collectDate);
+                    const gDateIdx = gasDates.indexOf(collectDate);
+                    if (!gasData[gasName]) gasData[gasName] = [];
+                    while (gasData[gasName].length <= gDateIdx) gasData[gasName].push('');
+                    if (!gasData[gasName][gDateIdx]) gasData[gasName][gDateIdx] = val;
                     return;
                 }
 
@@ -294,7 +351,7 @@
             });
         });
 
-        if (!dates.length) return null;
+        if (!dates.length && !gasDates.length && !cultureItems.length && !structuredCultures.length) return null;
 
         for (const nm of Object.keys(trendData)) {
             while (trendData[nm].length < dates.length) trendData[nm].push('');
@@ -302,10 +359,16 @@
         for (const nm of Object.keys(urineData)) {
             while (urineData[nm].length < urineDates.length) urineData[nm].push('');
         }
+        for (const nm of Object.keys(gasData)) {
+            while (gasData[nm].length < gasDates.length) gasData[nm].push('');
+        }
 
         const specialGroups = {};
         if (Object.keys(urineData).length) {
             specialGroups.Urine = { dates: urineDates, data: urineData };
+        }
+        if (Object.keys(gasData).length) {
+            specialGroups[gasLabel] = { dates: gasDates, data: gasData };
         }
 
         const cGroups = [];
@@ -323,11 +386,11 @@
         for (const g of cGroups) {
             if (!cByDate[g.date]) { cByDate[g.date] = []; cDateOrder.push(g.date); }
             const allNeg = g.results.every(r => r === '-');
-            const display = allNeg ? '-' : g.results.filter(r => r !== '-').join('; ');
+            const display = allNeg ? '-' : abbrGenus(g.results.filter(r => r !== '-').join('; '));
             cByDate[g.date].push(g.label + ': ' + display);
         }
         for (const dt of cDateOrder) {
-            cultureItems.push('[' + dt + '] ' + cByDate[dt].join(' ; '));
+            cultureItems.push('[' + dt + '] ' + cByDate[dt].join('\n[' + dt + '] '));
         }
 
         let result = formatTrendParagraph(dates, trendData, Object.keys(specialGroups).length ? specialGroups : null);
@@ -847,11 +910,12 @@
             return s;
         }
 
-        function buildGroup(title, keys, extKeys, dt) {
+        function buildGroup(title, keys, extKeys, dt, customDates) {
             const dd2 = dt || data;
+            const refDates = customDates || dates;
             const allKeys = [...keys, ...(extKeys || [])];
             const activeIdx = [];
-            for (let i = 0; i < dates.length; i++) {
+            for (let i = 0; i < refDates.length; i++) {
                 for (const nm of allKeys) {
                     if (dd2[nm] && dd2[nm][i]) { activeIdx.push(i); break; }
                 }
@@ -878,7 +942,7 @@
                 }
             }
             if (!items.length) return null;
-            const gd = activeIdx.map(i => dates[i]);
+            const gd = activeIdx.map(i => refDates[i]);
             return title + ' [' + gd.join(', ') + ']: ' + items.join(', ');
         }
 
@@ -923,6 +987,10 @@
                 if (sgName === 'Urine') {
                     const u = buildUrinePara(sgData);
                     if (u) groups.push(u);
+                } else if (sgName === 'Gas' || sgName === 'A gas') {
+                    const gasKeys = sgName === 'Gas' ? GAS : Object.keys(sgData.data);
+                    const g = buildGroup(sgName, gasKeys, [], sgData.data, sgData.dates);
+                    if (g) groups.push(g);
                 } else {
                     const items = [];
                     for (const [k, vals] of Object.entries(sgData.data)) {
@@ -933,9 +1001,6 @@
                 }
             }
         }
-
-        const gas = buildGroup('Gas', GAS);
-        if (gas) groups.push(gas);
 
         if (!groups.length) return null;
 
