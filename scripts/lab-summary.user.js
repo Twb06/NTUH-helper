@@ -26,7 +26,7 @@
     const OTHERS = ['UA', 'CRP', 'hsCRP', 'Glucose', 'HbA1c', 'VIT. B12', 'Folic Acid', 'NT-pro BNP', 'BNP', 'LA', 'TP', 'LDH'];
     const GAS = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
     const COAG = ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen'];
-    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.', 'VRE screening', 'CRE screening', 'MRSA screening', 'CRAB screening', 'CMV viral load', 'CMV Viral Load', 'Aspergillus Ag', 'EBV Viral Load', 'EBV viral load', 'Fungus'];
+    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.', 'VRE screening', 'CRE screening', 'MRSA screening', 'CRAB screening', 'CMV viral load', 'CMV Viral Load', 'Aspergillus Ag', 'EBV Viral Load', 'EBV viral load', 'Fungus', 'AFS+Culture', 'AFS +Culture'];
     const PCR_MAP = {
         'SARS-CoV-2 RNA PCR': 'COVID PCR',
         'Influenza A RT-PCR Detection': 'Influenza A PCR',
@@ -307,11 +307,12 @@
                         }
                         const label = specDesc ? specDesc + '/C' : 'Other/C';
                         structuredCultures.push({ date: collectDate, label: label, result: cResult });
-                    } else if (/CMV|EBV|Aspergillus|Fungus/i.test(rawName)) {
+                    } else if (/CMV|EBV|Aspergillus|Fungus|AFS/i.test(rawName)) {
                         let vName = rawName;
                         if (/CMV/i.test(rawName)) vName = 'CMV';
                         else if (/EBV/i.test(rawName)) vName = 'EBV';
                         else if (/Aspergillus/i.test(rawName)) vName = 'Aspergillus Ag';
+                        else if (/AFS/i.test(rawName)) vName = 'AFS';
                         else if (/Fungus/i.test(rawName)) vName = 'Fungus';
                         structuredCultures.push({ date: collectDate, label: vName, result: cResult });
                     } else {
