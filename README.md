@@ -8,18 +8,37 @@
 
 ## 專案內容
 
+### 呈現資料型
+
+從頁面擷取資料並整理成易讀格式。
+
+| 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
+|------|------|----------|----------|----------|
+| `chart-medication` | 讀取藥歷圖（Chart.aspx），整理任意藥物用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數；支援中文前綴（袋、針、胃…）及括弧前綴（(PPN)…）的商品名自動清理 | 通用 | 開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
+| `lab-summary` | 檢驗整理工具：支援清單與綠單，自動分類（ex. Hemogram, BCS）獨立顯示日期與趨勢。支援 Culture 、PCR 、特殊抗藥性標註、VRE/CRE screening，過濾不重要項目 | 通用 | Portal 報告頁面（MedicalReportContent.aspx），點擊右下角橘色「整理檢驗」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
+| `nursing-handover-summary` | 護理交班摘要工具：在護理交班頁面擷取飲食、管路、照會等資訊，整理成精簡 note 格式 | 通用 | 開啟護理交班頁面（OffDutyNurV2.aspx），點擊右下角浮動按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/nursing-handover-summary.user.js) |
+
+### 自動執行型
+
+自動完成重複性行政操作。
+
 | 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|----------|
 | `NTUH-diagcertificate-filler` | 自動診斷書工具：自動判斷住院、急診、ICU出入時間，利用背景分頁自動擷取手術名稱 | 通用 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js) |
-| `chart-medication` | 讀取藥歷圖（Chart.aspx），整理任意藥物用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數；支援中文前綴（袋、針、胃…）及括弧前綴（(PPN)…）的商品名自動清理 | 通用 | 開啟藥歷圖頁面，點擊右上角「整理抗生素」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
-| `admission-note-filler` | 自動入摘工具：自動填入紀錄各欄位（主訴、病史、身體診察等），並帶入檢驗結果 | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
-| `discharge-note-filler` | 自動出摘工具：自動填入出院病摘各欄位（出院診斷、住院治療經過、併發症等），並帶入檢驗結果。**⚠ 需要特殊的 primary note 格式**（包含 `[Diagnosis]`、`[Course]` 區塊） | 通用 | 開啟出院病摘頁面，點擊右下角 📄 浮動按鈕，貼入筆記後點擊「填入出院病摘」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js) |
 | `op-automation` | 自動估當同工具：批次執行估、當、同；支援多筆主治醫師或手術房執行 | 通用 | 開啟手術排程頁面，可直接點擊右下角「批次執行 估・當・同」，或在批次搜尋面板輸入多筆主治醫師 / 手術房後依序執行 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js) |
-| `uro-performance` | 泌尿科績效填入工具：上傳刀表病人 CSV，自動填入主治醫師與 R （每月更新工作表）  | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
+| `uro-performance` | 泌尿科績效填入工具：上傳刀表病人 CSV，自動填入主治醫師與 R （每月更新工作表） | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
 | `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |
-| `progress-note-filler` | 從 Primary note 解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。**⚠ 需要特殊的 primary note 格式**（包含 `[Today's Events]`、`[Course]`、`[Assessment]`、`[Diagnosis]`、`[Plans]` 區塊，以 `-----[區塊名]` 分隔） | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
-| `weekend-progress` | 週末病程批次撰寫：在病房列表頁一鍵對所有病人自動複製最新 progress note、填入 stable 並確認。支援不同形式；無既有progress可自動從 admission note 抓取 | 通用 | 開啟病房列表頁面，點擊右下角橘色「⚡ 週末病程」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js) |
-| `lab-summary` | 檢驗整理工具：支援清單與綠單，自動分類（ex. Hemogram, BCS）獨立顯示日期與趨勢。支援 Culture 、PCR 、特殊抗藥性標註、VRE/CRE screening，過濾不重要項目 | 通用 | Portal 報告頁面（MedicalReportContent.aspx），點擊右下角橘色「整理檢驗」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
+| `weekend-progress` | 週末病程批次撰寫：在病房列表頁一鍵對所有病人自動複製最新 progress note、填入 stable 並確認。支援不同形式；無既有 progress 可自動從 admission note 抓取 | 通用 | 開啟病房列表頁面，點擊右下角橘色「⚡ 週末病程」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js) |
+
+### Note 撰寫相關
+
+從 Primary Note 解析內容並自動填入對應欄位。**需要特殊的筆記格式**，請參考 [Primary Note 格式範本](./scripts/template/primary-note-format.md)。
+
+| 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
+|------|------|----------|----------|----------|
+| `admission-note-filler` | 自動入摘工具：自動填入紀錄各欄位（主訴、病史、身體診察等），並帶入檢驗結果 | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
+| `discharge-note-filler` | 自動出摘工具：自動填入出院病摘各欄位（出院診斷、住院治療經過、併發症等），並帶入檢驗結果 | 通用 | 開啟出院病摘頁面，點擊右下角 📄 浮動按鈕，貼入筆記後點擊「填入出院病摘」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js) |
+| `progress-note-filler` | 從 Primary note 解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存 | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
 
 ## Bookmarklets
 
