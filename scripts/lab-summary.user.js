@@ -366,6 +366,22 @@
 
         if (!dates.length && !gasDates.length && !cultureItems.length && !structuredCultures.length) return null;
 
+        function sortByDate(dArr, dataMap) {
+            if (dArr.length <= 1) return;
+            const order = dArr.map((d, i) => i);
+            order.sort((a, b) => {
+                const [am, ad] = dArr[a].split('/').map(Number);
+                const [bm, bd] = dArr[b].split('/').map(Number);
+                return am !== bm ? am - bm : ad - bd;
+            });
+            const sortedDates = order.map(i => dArr[i]);
+            for (let i = 0; i < sortedDates.length; i++) dArr[i] = sortedDates[i];
+            for (const nm of Object.keys(dataMap)) {
+                const old = dataMap[nm].slice();
+                for (let i = 0; i < order.length; i++) dataMap[nm][i] = old[order[i]] || '';
+            }
+        }
+
         for (const nm of Object.keys(trendData)) {
             while (trendData[nm].length < dates.length) trendData[nm].push('');
         }
@@ -375,6 +391,10 @@
         for (const nm of Object.keys(gasData)) {
             while (gasData[nm].length < gasDates.length) gasData[nm].push('');
         }
+
+        sortByDate(dates, trendData);
+        sortByDate(gasDates, gasData);
+        sortByDate(urineDates, urineData);
 
         const specialGroups = {};
         if (Object.keys(urineData).length) {
@@ -396,6 +416,11 @@
         }
         const cByDate = {};
         const cDateOrder = [];
+        cGroups.sort((a, b) => {
+            const [am, ad] = a.date.split('/').map(Number);
+            const [bm, bd] = b.date.split('/').map(Number);
+            return am !== bm ? am - bm : ad - bd;
+        });
         for (const g of cGroups) {
             if (!cByDate[g.date]) { cByDate[g.date] = []; cDateOrder.push(g.date); }
             const allNeg = g.results.every(r => r === '-');
