@@ -1070,9 +1070,9 @@
         const box = document.createElement('div');
         box.id = 'lab-summary-box';
         box.style.cssText = [
-            'position:fixed', 'top:80px', 'right:20px', 'z-index:999999',
+            'position:fixed', 'bottom:20px', 'right:20px', 'z-index:999999',
             'background:#fff', 'border:2px solid #1a6fa8', 'border-radius:6px',
-            'box-shadow:0 4px 16px rgba(0,0,0,.25)', 'padding:0', 'width:500px',
+            'box-shadow:0 4px 16px rgba(0,0,0,.25)', 'padding:0', 'width:60%',
             'font-family:sans-serif', 'font-size:13px', 'overflow:hidden',
         ].join(';');
 
