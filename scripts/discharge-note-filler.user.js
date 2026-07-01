@@ -1,92 +1,121 @@
 // ==UserScript==
-// @name         NTUH Admission Note Filler
+// @name         NTUH Discharge Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  自動填入入院紀錄各欄位，並自動帶入檢驗結果
-// @author       YT
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertAdmissionNoteContent.aspx*
+// @version      1.1
+// @description  自動填入出院病摘各欄位，並自動帶入檢驗結果
+// @author       潘岳彤
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertDisChargeNoteContent.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DWHistoricalLabReport.aspx*
-// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js
-// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js
 // @grant        none
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const PREFIX = 'NTUHWeb1_AdmissionNoteTab_TabContainer1_';
+    const PREFIX = 'NTUHWeb1_DischargeNoteTab1_TabContainer1_';
 
     // ─────────────────────────────────────────────
     // 填入欄位
     // ─────────────────────────────────────────────
     function fillField(id, value) {
         const el = document.getElementById(id);
-        if (!el) { console.warn('[AdmFiller] 找不到欄位：', id); return false; }
+        if (!el) { console.warn('[DischFiller] 找不到欄位：', id); return false; }
         el.value = value;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return true;
     }
 
+    function appendField(id, appendText) {
+        const el = document.getElementById(id);
+        if (!el) { console.warn('[DischFiller] 找不到欄位：', id); return false; }
+        el.value = el.value.trimEnd() + '\n\n' + appendText;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    }
+
     // ─────────────────────────────────────────────
-    // 解析筆記
+    // 解析筆記（與 Progress Note 相同格式）
     // ─────────────────────────────────────────────
     function parseNote(text) {
-        const getBlock = (chineseTitle) => {
+        const getSection = (label) => {
+            const escapedLabel = label.replace(/'/g, "[’']");
             const re = new RegExp(
-                `${chineseTitle}[^\\n]*\\n([\\s\\S]*?)(?=\\n[\\u4e00-\\u9fff]{2,}[（(\\s]|$)`
+                `-*\\s*\\[${escapedLabel}\\]\\s*-*\\n([\\s\\S]*?)(?=\\n-{5,}\\[|$)`, 'i'
             );
             const m = text.match(re);
             return m ? m[1].trim() : '';
         };
 
-        const pt = getBlock('醫療需求與治療計畫');
-
-        let cc = '';
-        const ccMatch = pt.match(/CC:\s*(.+)/);
-        if (ccMatch) cc = ccMatch[1].trim();
-
-        let diagnosis = '';
-        const diagMatch = pt.match(/={3,}Diagnosis={3,}\n([\s\S]*?)(?=\n={3,}|$)/i);
-        if (diagMatch) diagnosis = diagMatch[1].trim();
-
         return {
-            cc,
-            ph: getBlock('病史'),
-            rs: getBlock('系統性回顧'),
-            pe: getBlock('身體診察'),
-            pt,
-            diagnosis,
+            diagnosis: getSection('Diagnosis'),
+            course:    getSection('Course'),
         };
     }
 
     // ─────────────────────────────────────────────
-    // 填入入院紀錄
+    // 填入出院病摘
     // ─────────────────────────────────────────────
-    function fillAdmissionNote(noteText) {
+    function fillDischargeNote(noteText) {
         const p = parseNote(noteText);
         const results = [];
 
-        const f = (label, suffix, value) => {
+        const f = (label, suffix, value) =>
             results.push({ field: label, ok: fillField(PREFIX + suffix, value) });
+
+        const fNilIfEmpty = (label, suffix) => {
+            const el = document.getElementById(PREFIX + suffix);
+            if (el && !el.value.trim()) {
+                results.push({ field: label, ok: fillField(PREFIX + suffix, 'nil') });
+            }
         };
 
-        f('主訴',               'tplCC_txbCC', p.cc        || '');
-        f('病史',               'tplPH_txbPH', p.ph        || '');
-        f('系統性回顧',         'tplRS_txbRS', p.rs        || '');
-        f('身體診察',           'tplPE_txbPE', p.pe        || '');
+        // 出院診斷 ← Diagnosis
+        if (p.diagnosis) {
+            f('出院診斷', 'tplCD_txbCD', p.diagnosis);
+        }
 
-        const irEl = document.getElementById(PREFIX + 'tplIR_txbIR');
-        if (irEl && !irEl.value.trim()) f('檢查紀錄', 'tplIR_txbIR', 'nil');
-        const rrEl = document.getElementById(PREFIX + 'tplRR_txbRR');
-        if (rrEl && !rrEl.value.trim()) f('影像報告', 'tplRR_txbRR', 'nil');
-        const paEl = document.getElementById(PREFIX + 'tplPA_txbPA');
-        if (paEl && !paEl.value.trim()) f('病理報告', 'tplPA_txbPA', 'nil');
+        // 轉出加護病房診斷 ← nil
+        f('轉出加護病房診斷', 'tplCI_txbCI', 'nil');
 
-        f('臆斷',               'tplTD_txbTD', p.diagnosis || '');
-        f('醫療需求與治療計畫', 'tplPT_txbPT', p.pt       || '');
-        // 檢驗結果：填完欄位後自動帶入
-        setTimeout(() => autoImportLab(), 1000);
+        // 手術 ← 空白填 nil
+        fNilIfEmpty('手術', 'tplOP_txbOP');
+
+        // 住院治療經過 ← prompt + Course 整段
+        if (p.course) {
+            const coursePrompt = 'please write a course note according to the following data, with correct time sequence. Write like NEJM in 3 paragraphs, and use date format as YYYY/MM/DD\n\n';
+            f('住院治療經過', 'tplCM_txbCM', coursePrompt + p.course);
+        }
+
+        // 併發症 ← nil
+        f('併發症', 'tplCO_txbCO', 'nil');
+
+        // 檢查紀錄 ← 空白填 nil
+        fNilIfEmpty('檢查紀錄', 'tplSI_txbSI');
+
+        // 影像報告 ← 空白填 nil
+        fNilIfEmpty('影像報告', 'tplRR_txbRR');
+
+        // 病理報告 ← 空白填 nil
+        fNilIfEmpty('病理報告', 'tplPA_txbPA');
+
+        // 其他 + 轉出：等所有欄位填完後再依序點擊
+        results.push({ field: '其他（隔離醫囑）', ok: !!document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN') });
+        results.push({ field: '轉出/出院情況', ok: !!document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus') });
+
+         setTimeout(() => {
+            const otBtn = document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN');
+            if (otBtn) otBtn.click();
+            setTimeout(() => {
+                const dsBtn = document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus');
+                if (dsBtn) dsBtn.click();
+            }, 1000);
+            setTimeout(() => autoImportLab(), 1500);
+        }, 500);
+
         return results;
     }
 
@@ -109,7 +138,7 @@
             .filter(cb => !cb.getAttribute('group') && !cb.getAttribute('key'));
 
         if (deptCbs.length === 0) {
-            console.log('[AdmFiller] 找不到科別 checkbox');
+            console.log('[DischFiller] 找不到科別 checkbox');
             return;
         }
 
@@ -119,50 +148,46 @@
         });
 
         setTimeout(() => {
-            // eslint-disable-next-line no-undef
             if (typeof OnClientClick_GetSelectedLabData === 'function') {
-                OnClientClick_GetSelectedLabData(); // eslint-disable-line no-undef
+                OnClientClick_GetSelectedLabData();
             }
-            setTimeout(() => window.close(), 500);
+            setTimeout(() => window.close(), 1000);
         }, 1000);
     }
 
     // ─────────────────────────────────────────────
-    // 入院紀錄頁面：點按鈕觸發查詢（開新頁面）
+    // 出院病摘頁面：點按鈕觸發查詢（開新頁面）
     // ─────────────────────────────────────────────
     function autoImportLab() {
         setLabStatus('⏳ 開啟檢驗結果頁面中…', 'warn');
         const queryBtn = document.getElementById(
-            'NTUHWeb1_AdmissionNoteTab_TabContainer1_tplLR_btnGetDefaultLR_2W'
+            'NTUHWeb1_DischargeNoteTab1_TabContainer1_tplGI_btnPop4thReport'
         );
         if (!queryBtn) {
-            setLabStatus('⚠ 找不到查詢按鈕，請確認已開啟檢驗結果頁籤', 'err');
+            setLabStatus('⚠ 找不到查詢按鈕，請確認已開啟檢驗紀錄頁籤', 'err');
             return;
         }
         simulateClick(queryBtn);
-        setLabStatus('⏳ 新頁面開啟中，自動勾選後會關閉…', 'warn');
-        // 新頁面由 autoSelectAndImport 接手，完成後會自動關閉
         setTimeout(() => setLabStatus('✓ 完成，請確認檢驗結果已帶入', 'ok'), 6000);
     }
 
     // ─────────────────────────────────────────────
-    // UI（入院紀錄頁面）
+    // UI
     // ─────────────────────────────────────────────
     function createUI() {
-        if (document.getElementById('ntuh-adm-fab')) return;
+        if (document.getElementById('ntuh-disch-fab')) return;
 
         const style = document.createElement('style');
         style.textContent = `
-            /* 收合狀態：圓形 FAB */
-            #ntuh-adm-fab {
+            #ntuh-disch-fab {
                 position: fixed;
                 bottom: 24px;
                 right: 24px;
                 width: 48px;
                 height: 48px;
                 border-radius: 50%;
-                background: #1e3a2f;
-                border: 2px solid #3fb950;
+                background: #2a1f3a;
+                border: 2px solid #9a7cdc;
                 box-shadow: 0 4px 16px rgba(0,0,0,0.4);
                 z-index: 99999;
                 cursor: pointer;
@@ -173,13 +198,11 @@
                 transition: transform 0.15s, box-shadow 0.15s;
                 user-select: none;
             }
-            #ntuh-adm-fab:hover {
+            #ntuh-disch-fab:hover {
                 transform: scale(1.1);
                 box-shadow: 0 6px 20px rgba(0,0,0,0.5);
             }
-
-            /* 展開狀態：面板 */
-            #ntuh-adm-panel {
+            #ntuh-disch-panel {
                 position: fixed;
                 bottom: 24px;
                 right: 24px;
@@ -195,123 +218,121 @@
                 overflow: hidden;
                 display: none;
             }
-            #ntuh-adm-header {
+            #ntuh-disch-header {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 10px 14px; background: #1e3a2f; border-bottom: 1px solid #2d3650;
+                padding: 10px 14px; background: #2a1f3a; border-bottom: 1px solid #2d3650;
                 cursor: move; user-select: none; font-size: 13px; font-weight: 600;
             }
-            #ntuh-adm-close {
+            #ntuh-disch-close {
                 background: none; border: none; color: #7a8aaa;
                 cursor: pointer; font-size: 16px; padding: 0 4px; line-height: 1;
             }
-            #ntuh-adm-close:hover { color: #e05c5c; }
-            #ntuh-adm-body {
+            #ntuh-disch-close:hover { color: #e05c5c; }
+            #ntuh-disch-body {
                 padding: 12px; display: flex; flex-direction: column; gap: 8px;
             }
-            #ntuh-adm-input {
+            #ntuh-disch-input {
                 width: 100%; height: 140px; background: #0f1420;
                 border: 1px solid #2d3650; border-radius: 6px; color: #c8d3e8;
                 font-family: 'Consolas',monospace; font-size: 11px; padding: 8px;
                 resize: vertical; box-sizing: border-box; line-height: 1.5;
             }
-            #ntuh-adm-input:focus { outline: none; border-color: #3fb950; }
-            #ntuh-adm-fill {
+            #ntuh-disch-input:focus { outline: none; border-color: #9a7cdc; }
+            #ntuh-disch-fill {
                 padding: 8px 0; border: none; border-radius: 6px;
                 cursor: pointer; font-size: 12px; font-weight: 600;
-                background: #238636; color: #fff; transition: opacity 0.15s;
+                background: #6a3cac; color: #fff; transition: opacity 0.15s;
             }
-            #ntuh-adm-fill:hover { opacity: 0.85; }
-            #ntuh-adm-lab-btn {
+            #ntuh-disch-fill:hover { opacity: 0.85; }
+            #ntuh-disch-lab-btn {
                 padding: 8px 0; border: none; border-radius: 6px;
                 cursor: pointer; font-size: 12px; font-weight: 600;
                 background: #2d4a6e; color: #8fa8d8; transition: opacity 0.15s;
             }
-            #ntuh-adm-lab-btn:hover { opacity: 0.85; }
-            #ntuh-adm-status { font-size: 11px; min-height: 16px; }
-            #ntuh-adm-lab-status { font-size: 11px; min-height: 16px; }
-            #ntuh-adm-preview {
+            #ntuh-disch-lab-btn:hover { opacity: 0.85; }
+            #ntuh-disch-status { font-size: 11px; min-height: 16px; }
+            #ntuh-disch-lab-status { font-size: 11px; min-height: 16px; }
+            #ntuh-disch-preview {
                 display: none; background: #0f1420; border: 1px solid #2d3650;
                 border-radius: 6px; padding: 8px; font-size: 10.5px;
                 line-height: 1.6; max-height: 200px; overflow-y: auto;
             }
-            .adm-ok   { color: #3fb950; }
-            .adm-err  { color: #e05c5c; }
-            .adm-warn { color: #f0a030; }
-            .adm-row  {
+            .disch-ok   { color: #3fb950; }
+            .disch-err  { color: #e05c5c; }
+            .disch-warn { color: #f0a030; }
+            .disch-row  {
                 display: flex; justify-content: space-between;
                 padding: 2px 0; border-bottom: 1px solid #1e2638;
             }
-            .adm-divider { border: none; border-top: 1px solid #2d3650; margin: 2px 0; }
+            .disch-divider { border: none; border-top: 1px solid #2d3650; margin: 2px 0; }
         `;
         document.head.appendChild(style);
 
-        // 圓形 FAB
         const fab = document.createElement('div');
-        fab.id = 'ntuh-adm-fab';
-        fab.textContent = '🏥';
-        fab.title = '入院紀錄填入';
+        fab.id = 'ntuh-disch-fab';
+        fab.textContent = '📄';
+        fab.title = '出院病摘填入';
         document.body.appendChild(fab);
 
-        // 展開面板
         const panel = document.createElement('div');
-        panel.id = 'ntuh-adm-panel';
+        panel.id = 'ntuh-disch-panel';
         panel.innerHTML = `
-            <div id="ntuh-adm-header">
-                <span>🏥 入院紀錄填入</span>
-                <button id="ntuh-adm-close">✕</button>
+            <div id="ntuh-disch-header">
+                <span>📄 出院病摘填入</span>
+                <button id="ntuh-disch-close">✕</button>
             </div>
-            <div id="ntuh-adm-body">
-                <textarea id="ntuh-adm-input" placeholder="貼入入院筆記內容…"></textarea>
-                <button id="ntuh-adm-fill">✨ 填入入院紀錄</button>
-                <div id="ntuh-adm-status"></div>
-                <div id="ntuh-adm-preview"></div>
+            <div id="ntuh-disch-body">
+                <textarea id="ntuh-disch-input" placeholder="貼入出院病摘筆記內容…"></textarea>
+                <button id="ntuh-disch-fill">✨ 填入出院病摘</button>
+                <div id="ntuh-disch-status"></div>
+                <div id="ntuh-disch-preview"></div>
             </div>
         `;
         document.body.appendChild(panel);
 
-        // FAB 點擊展開
         fab.onclick = () => {
             fab.style.display = 'none';
             panel.style.display = 'block';
         };
 
-        // 關閉按鈕收合
-        document.getElementById('ntuh-adm-close').onclick = () => {
+        document.getElementById('ntuh-disch-close').onclick = () => {
             panel.style.display = 'none';
             fab.style.display = 'flex';
         };
 
-        makeDraggable(panel, document.getElementById('ntuh-adm-header'));
+        makeDraggable(panel, document.getElementById('ntuh-disch-header'));
 
-        document.getElementById('ntuh-adm-fill').onclick = () => {
-            const text = document.getElementById('ntuh-adm-input').value.trim();
+        document.getElementById('ntuh-disch-fill').onclick = () => {
+            const text = document.getElementById('ntuh-disch-input').value.trim();
             if (!text) { setStatus('⚠ 請先貼入筆記內容', 'err'); return; }
-            showResults(fillAdmissionNote(text));
+            showResults(fillDischargeNote(text));
         };
+
+
     }
 
     function setStatus(msg, type) {
-        const el = document.getElementById('ntuh-adm-status');
+        const el = document.getElementById('ntuh-disch-status');
         if (!el) return;
         el.textContent = msg;
-        el.className = type === 'ok' ? 'adm-ok' : type === 'err' ? 'adm-err' : 'adm-warn';
+        el.className = type === 'ok' ? 'disch-ok' : type === 'err' ? 'disch-err' : 'disch-warn';
     }
 
     function setLabStatus(msg, type) {
-        const el = document.getElementById('ntuh-adm-lab-status');
+        const el = document.getElementById('ntuh-disch-lab-status');
         if (!el) return;
         el.textContent = msg;
-        el.className = type === 'ok' ? 'adm-ok' : type === 'err' ? 'adm-err' : 'adm-warn';
+        el.className = type === 'ok' ? 'disch-ok' : type === 'err' ? 'disch-err' : 'disch-warn';
     }
 
     function showResults(results) {
-        const preview = document.getElementById('ntuh-adm-preview');
+        const preview = document.getElementById('ntuh-disch-preview');
         if (!preview) return;
         preview.style.display = 'block';
         preview.innerHTML = results.map(r =>
-            `<div class="adm-row">
+            `<div class="disch-row">
                 <span>${r.field}</span>
-                <span class="${r.ok ? 'adm-ok' : 'adm-err'}">${r.ok ? '✓ 填入' : '✗ ' + (r.reason || '找不到欄位')}</span>
+                <span class="${r.ok ? 'disch-ok' : 'disch-err'}">${r.ok ? '✓ 填入' : '✗ ' + (r.reason || '找不到欄位')}</span>
             </div>`
         ).join('');
         const allOk = results.every(r => r.ok);
@@ -344,10 +365,10 @@
     // 初始化
     // ─────────────────────────────────────────────
     function init() {
-        if (window.location.href.includes('InsertAdmissionNoteContent.aspx')) {
+        if (window.location.href.includes('InsertDisChargeNoteContent.aspx')) {
             setTimeout(createUI, 1500);
         } else if (window.location.href.includes('DWHistoricalLabReport.aspx')) {
-            setTimeout(autoSelectAndImport, 1500);
+            setTimeout(autoSelectAndImport, 2000);
         }
     }
 
