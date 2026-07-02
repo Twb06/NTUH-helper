@@ -24,7 +24,7 @@
 
 | 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|----------|
-| `NTUH-diagcertificate-filler` | 自動診斷書工具：自動判斷住院、急診、ICU出入時間，利用背景分頁自動擷取手術名稱 | 通用 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js) |
+| `NTUH-diagcertificate-filler` | 自動診斷書工具：自動判斷住院、急診、ICU出入時間，利用背景分頁自動擷取手術名稱；手術入帳多項目可勾選（費用/材料類預設排除）、手術名自動補「術」字 | 通用 | 開啟診斷書頁面，點擊右下角 📋 浮動按鈕，輸入出院日期後點擊「自動填入囑言」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js) |
 | `op-automation` | 自動估當同工具：批次執行估、當、同；支援多筆主治醫師或手術房執行 | 通用 | 開啟手術排程頁面，可直接點擊右下角「批次執行 估・當・同」，或在批次搜尋面板輸入多筆主治醫師 / 手術房後依序執行 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js) |
 | `uro-performance` | 泌尿科績效填入工具：上傳刀表病人 CSV，自動填入主治醫師與 R （每月更新工作表） | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
 | `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |

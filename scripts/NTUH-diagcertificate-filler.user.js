@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.12.0
-// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱
+// @version      1.15.0
+// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱（適配 DiagCertificate_New.aspx 改版；入帳項目可勾選；手術名補術字）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -115,6 +115,15 @@
         const d = new Date(s.trim().replace(/-/g, '/'));
         if (isNaN(d)) return s.trim();
         return `西元${d.getFullYear()}年${String(d.getMonth()+1).padStart(2,'0')}月${String(d.getDate()).padStart(2,'0')}日${String(d.getHours()).padStart(2,'0')}時${String(d.getMinutes()).padStart(2,'0')}分`;
+    }
+
+    // 手術名稱一律以「術」收尾：中文結尾但未以「術」結束者補上「術」；英文或已含「術/手術」者不動
+    function ensureOpSuffix(name) {
+        const s = (name || '').trim();
+        if (!s) return s;
+        if (/術$/.test(s)) return s;
+        if (/[一-鿿]$/.test(s)) return s + '術';
+        return s;
     }
 
     function parseDate(dateStr) {
@@ -257,39 +266,33 @@
     }
 
     function fetchInpatData() {
+        // 適配 DiagCertificate_New.aspx：床號在 lblRegisterDate、以 lblAccountID 分組本次住院
         const rows = [];
         const trs = Array.from(document.querySelectorAll('#NTUHWeb1_gvwLogPatTransferBed tr.tableText, #NTUHWeb1_gvwLogPatTransferBed tr.tableText2'));
         for (const tr of trs) {
-            const tds = tr.querySelectorAll('td');
-            if (tds.length < 5) continue;
-            const deptSpan = tds[0].querySelector('span[id*="lblDeptName"]');
-            if (!deptSpan) continue;
-            const fullTitle = deptSpan.getAttribute('title') || '';
-            const deptMatch = fullTitle.match(/科別：\s*([^\s\n]+)/);
-            let dept = deptMatch ? deptMatch[1].trim() : '';
-            if (!dept) {
-                const hfDept = tds[0].querySelector('span[id*="lblHfDeptName"]');
-                if (hfDept && hfDept.textContent.trim()) dept = hfDept.textContent.trim();
-            }
-            const wardMatch = fullTitle.match(/病房：\s*([^\s\n]+)/);
-            const startMatch = fullTitle.match(/起日：\s*([^\s\n]+)/);
-            const endMatch = fullTitle.match(/迄日：\s*([^\s\n]*)/);
-            const bed = wardMatch ? wardMatch[1].trim() : '';
-            const sd = startMatch ? startMatch[1].trim() : '';
-            let ed = endMatch ? endMatch[1].trim() : '';
+            const deptSpan = tr.querySelector('span[id$="lblDeptName"]');
+            const title = deptSpan ? (deptSpan.getAttribute('title') || '') : '';
+            let dept = '';
+            const hfDept = tr.querySelector('span[id$="lblHfDeptName"]');
+            if (hfDept && hfDept.textContent.trim()) dept = hfDept.textContent.trim();
+            else { const m = title.match(/科別：\s*([^\n]+)/); if (m) dept = m[1].trim(); }
+            // 床號/病房：優先讀 lblRegisterDate（顯示 04A1、08C），退而解析 title 的「床：T0-XXXX-…」
+            let ward = '';
+            const bedSpan = tr.querySelector('span[id$="lblRegisterDate"]');
+            if (bedSpan && bedSpan.textContent.trim()) ward = bedSpan.textContent.trim();
+            if (!ward) { const m = title.match(/床：\s*([^\n]+)/); if (m) ward = (m[1].trim().split('-')[1] || '').trim(); }
+            const sd = (tr.querySelector('span[id$="lblTranferInDate"]')?.textContent || '').trim();
+            let ed = (tr.querySelector('span[id$="lblTranferOutDate"]')?.textContent || '').trim();
             if (ed === '0001/01/01') ed = '';
-            if (sd) rows.push({ bed, start: sd, end: ed, dept });
+            const acct = (tr.querySelector('span[id$="lblAccountID"]')?.textContent || '').trim();
+            if (sd) rows.push({ bed: ward, start: sd, end: ed, dept, acct });
         }
         if (rows.length === 0) return { inpatStartDate: '', timeline: [] };
-        let inpatStartDate = rows[0].start;
-        const validTimeline = [rows[0]];
-        for (let i = 1; i < rows.length; i++) {
-            const currentEvent = rows[i - 1]; const historicalEvent = rows[i];
-            if (historicalEvent.end && historicalEvent.end === currentEvent.start) {
-                inpatStartDate = historicalEvent.start; validTimeline.unshift(historicalEvent);
-            } else { break; }
-        }
-        return { inpatStartDate, timeline: validTimeline };
+        // 列為新→舊，以最新一列的帳號框出「本次住院」，再依起日由舊到新排序
+        const latestAcct = rows[0].acct;
+        const timeline = rows.filter(r => r.acct === latestAcct)
+            .sort((a, b) => new Date(a.start.replace(/-/g, '/')) - new Date(b.start.replace(/-/g, '/')));
+        return { inpatStartDate: timeline[0].start, timeline };
     }
 
     function fetchOpDataList() {
@@ -311,7 +314,7 @@
             else { const opModeMatch = fullTitle.match(/術式：\s*([\s\S]+)$/); currentOpName = opModeMatch ? opModeMatch[1].trim() : tds[3].textContent.trim(); }
             if (currentOpName.includes('\n')) { currentOpName = currentOpName.split('\n')[0].replace(/^\d+\.\s*/, '').trim(); }
 
-            const opBtn = tds[0].querySelector('[id*="btnSetOpDateInfo_"]');
+            const opBtn = tr.querySelector('[id^="btnSetOpDateInfo_"]');
             let opScheduleIdse = '';
             if (opBtn) {
                 const match = opBtn.id.match(/btnSetOpDateInfo_([\s\S]+)$/);
@@ -376,16 +379,20 @@
     }
 
     function fetchEmgData() {
+        // 適配 DiagCertificate_New.aspx：檢傷=lblTriageDate、離部=lblDischargeDate（隱藏 span，text 含 HH:mm）
         let arrivalDT = '', leaveDT = '', leaveDate = '';
         const emgRows = Array.from(document.querySelectorAll('#NTUHWeb1_gvwEmgHistory tr.tableText, #NTUHWeb1_gvwEmgHistory tr.tableText2'));
         if (emgRows.length === 0) return { arrivalDT, leaveDT, leaveDate };
-        const latestRow = emgRows[0]; const tds = latestRow.querySelectorAll('td');
-        if (tds.length >= 2) {
-            const registerSpan = tds[0].querySelector('span[id*="lblRegisterDate"]');
-            if (registerSpan) { const regTitle = registerSpan.getAttribute('title'); arrivalDT = (regTitle && regTitle.match(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/)) ? regTitle.trim() : registerSpan.textContent.trim(); }
-            const dischargeSpan = tds[1].querySelector('span[id*="lblDischargeDate"]');
-            if (dischargeSpan) { const disTitle = dischargeSpan.getAttribute('title'); leaveDT = (disTitle && disTitle.match(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/)) ? disTitle.trim() : dischargeSpan.textContent.trim(); }
-        }
+        const tr = emgRows[0]; // 最新一筆急診
+        const pickDT = (span) => {
+            if (!span) return '';
+            const t = (span.getAttribute('title') || '').trim();
+            // title 為純日期(時間)才採用，避免抓到多行 tooltip；否則用 text（此頁完整時間在 text）
+            if (/^\d{4}[/-]\d{2}[/-]\d{2}(\s+\d{2}:\d{2})?$/.test(t)) return t;
+            return span.textContent.trim();
+        };
+        arrivalDT = pickDT(tr.querySelector('span[id$="lblTriageDate"]'));
+        leaveDT   = pickDT(tr.querySelector('span[id$="lblDischargeDate"]'));
         if (leaveDT) leaveDate = leaveDT.substring(0, 10).trim().replace(/-/g, '/');
         return { arrivalDT, leaveDT, leaveDate };
     }
@@ -533,7 +540,7 @@
                     inpatSubEvents.push({
                         date: evtDateObj,
                         priority: 2,
-                        text: `於${fmtDate(evt.date)}接受${evt.name || '手術'}`
+                        text: `於${fmtDate(evt.date)}接受${ensureOpSuffix(evt.name) || '手術'}`
                     });
                 });
             }
@@ -590,7 +597,7 @@
                     events.push({
                         type: 'op',
                         date: dObj,
-                        text: `於${fmtDate(evt.date)}接受${evt.name || '手術'}`
+                        text: `於${fmtDate(evt.date)}接受${ensureOpSuffix(evt.name) || '手術'}`
                     });
                 }
             });
@@ -811,6 +818,7 @@
         let mainOpName = '';
         let mainIdse = '';
         let otherOpMaps = {};
+        let opNames = [];
 
         if (opData) {
             if (typeof opData === 'string') {
@@ -820,6 +828,7 @@
                         mainOpName = parsed.mainOpName || '';
                         mainIdse = parsed.opScheduleIdse || '';
                         otherOpMaps = parsed.otherOpMaps || {};
+                        opNames = parsed.opNames || [];
                     } catch (e) {
                         mainOpName = opData;
                     }
@@ -830,6 +839,7 @@
                 mainOpName = opData.mainOpName || '';
                 mainIdse = opData.opScheduleIdse || '';
                 otherOpMaps = opData.otherOpMaps || {};
+                opNames = opData.opNames || [];
             }
         }
 
@@ -920,6 +930,18 @@
             }
         }
 
+        // 若該手術有多筆入帳項目，列出讓使用者勾選要納入的項目
+        if (opNames && opNames.length > 1) {
+            const normMainIdse = normalizeIdse(mainIdse);
+            const allRows = container.getElementsByClassName('ntuh-diag-op-row');
+            let targetRow = null;
+            for (const r of allRows) {
+                if (normMainIdse && normalizeIdse(r.getAttribute('data-op-idse')) === normMainIdse) { targetRow = r; break; }
+            }
+            if (!targetRow && allRows.length > 0) targetRow = allRows[0];
+            if (targetRow) renderOpNameChoices(targetRow, opNames);
+        }
+
         const cbxOp = document.getElementById('ntuh-diag-has-op');
         if (cbxOp && !cbxOp.checked) {
             cbxOp.checked = true;
@@ -928,6 +950,55 @@
         }
 
         setDiagStatus('✓ 手術名稱背景讀取成功！', 'ok');
+    }
+
+    // 多筆入帳項目時，在該手術列下方列出勾選清單；勾選內容即時重組手術名稱
+    function renderOpNameChoices(row, opNames) {
+        if (!row || !opNames || opNames.length === 0) return;
+        const nameInput = row.querySelector('.ntuh-diag-op-name-input');
+        const old = row.querySelector('.ntuh-diag-op-choices');
+        if (old) old.remove();
+
+        // 單筆直接填入，不需勾選 UI
+        if (opNames.length === 1) {
+            if (nameInput) {
+                nameInput.value = ensureOpSuffix(opNames[0]);
+                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return;
+        }
+
+        const box = document.createElement('div');
+        box.className = 'ntuh-diag-op-choices';
+        box.style.cssText = 'display:flex;flex-direction:column;gap:2px;margin-top:2px;padding:4px 6px;border:1px dashed #2d3650;border-radius:6px;background:#0f1420;';
+
+        const recompute = () => {
+            const picked = Array.from(box.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.value);
+            if (nameInput) {
+                nameInput.value = picked.map(ensureOpSuffix).join('併');
+                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        };
+
+        opNames.forEach(name => {
+            const isFee = /費|材料|器材/.test(name); // 儀器使用費等非術式項目，預設不勾
+            const label = document.createElement('label');
+            label.style.cssText = 'display:flex;align-items:flex-start;gap:4px;font-size:10px;line-height:1.3;color:#a8c0e8;cursor:pointer;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.value = name; cb.checked = !isFee;
+            cb.style.marginTop = '2px'; cb.style.flexShrink = '0';
+            cb.addEventListener('change', recompute);
+            const span = document.createElement('span');
+            span.textContent = name;
+            label.appendChild(cb); label.appendChild(span);
+            box.appendChild(label);
+        });
+
+        if (nameInput && nameInput.parentNode) nameInput.parentNode.insertBefore(box, nameInput.nextSibling);
+        else row.appendChild(box);
+        recompute();
     }
 
     function makeDraggable(panel, handle) {
@@ -1287,12 +1358,14 @@
         try {
             await sleep(1200);
             const opNames = extractOpNamesFromDOM();
+            const cleanedNames = opNames.map(s => s.replace(/[\r\n\t]+/g, ' ').trim()).filter(s => s.length > 0);
             const formatted = formatCombinedOpName(opNames);
-            console.log('[OpNameExtractor] 格式化後的手術名稱:', formatted);
+            console.log('[OpNameExtractor] 格式化後的手術名稱:', formatted, '｜原始項目:', cleanedNames);
 
             const opResult = {
                 opScheduleIdse: opScheduleIdse,
                 mainOpName: formatted,
+                opNames: cleanedNames,   // 原始入帳項目清單，供主頁勾選
                 otherOpMaps: {}
             };
 
