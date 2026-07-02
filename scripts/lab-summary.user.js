@@ -26,7 +26,19 @@
     const OTHERS = ['UA', 'CRP', 'hsCRP', 'Glucose', 'HbA1c', 'VIT. B12', 'Folic Acid', 'NT-pro BNP', 'BNP', 'LA', 'TP', 'LDH'];
     const GAS = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
     const COAG = ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen'];
-    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.', 'VRE screening', 'CRE screening', 'MRSA screening', 'CRAB screening', 'CMV viral load', 'CMV Viral Load', 'Aspergillus Ag', 'EBV Viral Load', 'EBV viral load', 'Fungus', 'AFS+Culture', 'AFS +Culture'];
+
+    const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.',
+        'VRE screening', 'CRE screening', 'MRSA screening', 'CRAB screening',
+        'CMV viral load', 'Aspergillus Ag', 'EBV viral load',
+        'Fungus', 'AFS+Culture', 'AFS +Culture',
+        'SARS-CoV-2 Antigen', 'Influenza A+B'];
+
+    const SPECIAL_CULTURE_MAP = {
+        'CMV': 'CMV', 'EBV': 'EBV', 'Aspergillus': 'Aspergillus Ag',
+        'AFS': 'AFS', 'Fungus': 'Fungus',
+        'SARS-CoV-2 Antigen': 'SARS-CoV-2', 'Influenza A+B': 'Influenza A+B',
+    };
+
     const PCR_MAP = {
         'SARS-CoV-2 RNA PCR': 'COVID PCR',
         'Influenza A RT-PCR Detection': 'Influenza A PCR',
@@ -113,9 +125,7 @@
             if (text.indexOf(full) > -1) text = text.split(full).join(abbr);
         }
         for (const g of GENUS_ABBR) {
-            if (text.indexOf(g) > -1) {
-                text = text.split(g).join(g.charAt(0) + '.');
-            }
+            if (text.indexOf(g) > -1) text = text.split(g).join(g.charAt(0) + '.');
         }
         return text;
     }
@@ -127,6 +137,14 @@
         if (raw.indexOf('eGFR (CKD-EPI)') > -1) return 'eGFR';
         const clean = raw.replace(/\(.*?\)/g, '').trim();
         return NAME_MAP[clean] || clean;
+    }
+
+    function parseGreenItemName(raw) {
+        return raw.replace(/\(.*?\)/g, '').trim();
+    }
+
+    function cleanGreenValue(val) {
+        return val.replace(/\(Manual\s*checked\)/i, '').replace(/\(Manual\)/i, '').trim();
     }
 
     function isUrineAbnormal(val) {
@@ -154,6 +172,71 @@
         return '';
     }
 
+    function pushToStore(store, name, idx, val) {
+        if (!store[name]) store[name] = [];
+        while (store[name].length <= idx) store[name].push('');
+        if (!store[name][idx]) store[name][idx] = val;
+    }
+
+    function padData(dataMap, len) {
+        for (const nm of Object.keys(dataMap)) {
+            while (dataMap[nm].length < len) dataMap[nm].push('');
+        }
+    }
+
+    function sortByDate(dArr, dataMap) {
+        if (dArr.length <= 1) return;
+        const order = dArr.map((d, i) => i);
+        order.sort((a, b) => {
+            const [am, ad] = dArr[a].split('/').map(Number);
+            const [bm, bd] = dArr[b].split('/').map(Number);
+            return am !== bm ? am - bm : ad - bd;
+        });
+        const sortedDates = order.map(i => dArr[i]);
+        for (let i = 0; i < sortedDates.length; i++) dArr[i] = sortedDates[i];
+        for (const nm of Object.keys(dataMap)) {
+            const old = dataMap[nm].slice();
+            for (let i = 0; i < order.length; i++) dataMap[nm][i] = old[order[i]] || '';
+        }
+    }
+
+    function specimenLabel(headerText) {
+        if (/BLOOD/i.test(headerText)) {
+            const srcM = headerText.match(/BLOOD\s+(\S+)\s+採檢/);
+            return 'B/C (' + (srcM ? srcM[1].toLowerCase() : 'blood') + ')';
+        }
+        if (/URINE/i.test(headerText)) {
+            const srcM = headerText.match(/URINE\s+(.*?)\s+採檢/);
+            let src = 'urine';
+            if (srcM) {
+                const s = srcM[1].toLowerCase();
+                if (s.indexOf('void') > -1) src = 'void';
+                else if (s.indexOf('cath') > -1) src = 'cath';
+                else src = s;
+            }
+            return 'U/C (' + src + ')';
+        }
+        if (/SPUTUM/i.test(headerText)) return 'Spu/C';
+        const specM = headerText.match(/No:\S+\s+(.*?)\s*採檢/);
+        let specDesc = '';
+        if (specM) {
+            const raw = specM[1].trim();
+            if (/[一-鿿]/.test(raw)) {
+                specDesc = raw.replace(/^[A-Z()\s\/]+/, '').trim() || raw;
+            } else {
+                const words = raw.split(/\s+/).filter(w => /^[A-Z]+$/.test(w));
+                const last = words.length ? words[words.length - 1] : raw.split(/\s+/)[0];
+                specDesc = last.charAt(0).toUpperCase() + last.slice(1).toLowerCase();
+            }
+        }
+        return specDesc ? specDesc + '/C' : 'Other/C';
+    }
+
+    function cultureKeysMatch(rawName) {
+        const lower = rawName.toLowerCase();
+        return CULTURE_KEYS.some(ck => lower.indexOf(ck.toLowerCase()) > -1);
+    }
+
     // ====== 清單版 DOM 讀取 ======
 
     function readListView() {
@@ -164,9 +247,10 @@
         const trendData = {};
         const urineData = {};
         const urineDates = [];
-        const gasData = {};
-        const gasDates = [];
-        let gasLabel = 'Gas';
+        const aGasData = {};
+        const aGasDates = [];
+        const vGasData = {};
+        const vGasDates = [];
         const cultureItems = [];
         const structuredCultures = [];
         let collectDate = '';
@@ -197,9 +281,8 @@
             const isArterialGas = /Arterial Blood/i.test(headerText);
 
             if (isArterialGas) {
-                gasLabel = 'A gas';
-                if (!gasDates.includes(collectDate)) gasDates.push(collectDate);
-                const gDateIdx = gasDates.indexOf(collectDate);
+                if (!aGasDates.includes(collectDate)) aGasDates.push(collectDate);
+                const gDateIdx = aGasDates.indexOf(collectDate);
 
                 const rows = table.querySelectorAll('tr');
                 rows.forEach(row => {
@@ -208,22 +291,16 @@
                     const rawName = (cells[0].textContent || '').trim();
                     const rawVal = (cells[1].textContent || '').trim();
                     if (!rawName || !rawVal) return;
-                    const shouldSkip = SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1);
-                    if (shouldSkip) return;
+                    if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) return;
                     const cleanName = parseGreenItemName(rawName);
                     if (AGAS_SKIP.includes(cleanName) || IGNORE.includes(cleanName)) return;
                     const gasName = AGAS_NAME_MAP[cleanName] || cleanName;
-                    const val = cleanGreenValue(rawVal);
-                    if (!gasData[gasName]) gasData[gasName] = [];
-                    while (gasData[gasName].length <= gDateIdx) gasData[gasName].push('');
-                    if (!gasData[gasName][gDateIdx]) gasData[gasName][gDateIdx] = val;
+                    pushToStore(aGasData, gasName, gDateIdx, cleanGreenValue(rawVal));
                 });
                 return;
             }
 
-            if (collectDate && !dates.includes(collectDate)) {
-                dates.push(collectDate);
-            }
+            if (collectDate && !dates.includes(collectDate)) dates.push(collectDate);
             const dateIdx = dates.indexOf(collectDate);
 
             const rows = table.querySelectorAll('tr');
@@ -235,24 +312,20 @@
                 const rawVal = (cells[1].textContent || '').trim();
 
                 if (!rawName || !rawVal) return;
-
                 if (/^\d{2}:\d{2}/.test(rawName)) return;
-
-                const shouldSkip = SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1);
-                if (shouldSkip) return;
+                if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) return;
 
                 const cleanName = parseGreenItemName(rawName);
                 if (IGNORE.includes(cleanName)) return;
 
                 const val = cleanGreenValue(rawVal);
 
-                const isCulture = CULTURE_KEYS.some(ck => rawName.indexOf(ck) > -1);
-                if (isCulture) {
+                if (cultureKeysMatch(rawName)) {
                     if (/Epithelial cell|PMN/i.test(val)) return;
                     if (/No bacteria visible/i.test(val)) return;
                     const isNeg = /no growth|no aerobic\s+pathogen|no anaerobic\s+pathogen|^Undetectable$|^Negative$|^No Fungus$/i.test(val);
                     const remark = cells[4] ? (cells[4].textContent || '').trim() : '';
-                    let cResult = isNeg ? '-' : val;
+                    let cResult = isNeg ? '-' : val.replace(/Multiple colonial morphotypes present[;,]\s*/i, '');
                     if (!isNeg && remark) {
                         const rMap = {
                             'Carbapenem-resistant': 'CR', 'ESBL': 'ESBL',
@@ -275,48 +348,20 @@
                             if (words2.length) scrLabel = words2[words2.length - 1].charAt(0).toUpperCase() + words2[words2.length - 1].slice(1).toLowerCase();
                         }
                         structuredCultures.push({ date: collectDate, label: scrLabel, result: scrName + ' (' + (scrNeg ? '-' : '+') + ')' });
-                    } else if (/ID\+DS Blood/i.test(rawName)) {
-                        const srcM = headerText.match(/BLOOD\s+(\S+)\s+採檢/);
-                        const src = srcM ? srcM[1].toLowerCase() : 'blood';
-                        structuredCultures.push({ date: collectDate, label: 'B/C (' + src + ')', result: cResult });
-                    } else if (/ID\+DS Urine/i.test(rawName)) {
-                        const srcM = headerText.match(/URINE\s+(.*?)\s+採檢/);
-                        let src = 'urine';
-                        if (srcM) {
-                            const s = srcM[1].toLowerCase();
-                            if (s.indexOf('void') > -1) src = 'void';
-                            else if (s.indexOf('cath') > -1) src = 'cath';
-                            else src = s;
-                        }
-                        structuredCultures.push({ date: collectDate, label: 'U/C (' + src + ')', result: cResult });
-                    } else if (/ID\+DS Sputum/i.test(rawName)) {
-                        structuredCultures.push({ date: collectDate, label: 'Spu/C', result: cResult });
-                    } else if (/ID\+DS|ID C\.|ID Campy\.|^Anaerobic/i.test(rawName)) {
-                        const specM = headerText.match(/No:\S+\s+(.*?)\s*採檢/);
-                        let specDesc = '';
-                        if (specM) {
-                            const raw = specM[1].trim();
-                            const hasChinese = /[一-鿿]/.test(raw);
-                            if (hasChinese) {
-                                specDesc = raw.replace(/^[A-Z()\s\/]+/, '').trim() || raw;
-                            } else {
-                                const words = raw.split(/\s+/).filter(w => /^[A-Z]+$/.test(w));
-                                const last = words.length ? words[words.length - 1] : raw.split(/\s+/)[0];
-                                specDesc = last.charAt(0).toUpperCase() + last.slice(1).toLowerCase();
+                    } else if (/ID\+DS Blood/i.test(rawName) || /ID\+DS Urine/i.test(rawName) || /ID\+DS Sputum/i.test(rawName) || /ID\+DS|ID C\.|ID Campy\.|^Anaerobic/i.test(rawName) || /^Gram's/i.test(rawName)) {
+                        structuredCultures.push({ date: collectDate, label: specimenLabel(headerText), result: cResult });
+                    } else {
+                        let matched = false;
+                        for (const [key, label] of Object.entries(SPECIAL_CULTURE_MAP)) {
+                            if (rawName.toLowerCase().indexOf(key.toLowerCase()) > -1) {
+                                structuredCultures.push({ date: collectDate, label: label, result: cResult });
+                                matched = true;
+                                break;
                             }
                         }
-                        const label = specDesc ? specDesc + '/C' : 'Other/C';
-                        structuredCultures.push({ date: collectDate, label: label, result: cResult });
-                    } else if (/CMV|EBV|Aspergillus|Fungus|AFS/i.test(rawName)) {
-                        let vName = rawName;
-                        if (/CMV/i.test(rawName)) vName = 'CMV';
-                        else if (/EBV/i.test(rawName)) vName = 'EBV';
-                        else if (/Aspergillus/i.test(rawName)) vName = 'Aspergillus Ag';
-                        else if (/AFS/i.test(rawName)) vName = 'AFS';
-                        else if (/Fungus/i.test(rawName)) vName = 'Fungus';
-                        structuredCultures.push({ date: collectDate, label: vName, result: cResult });
-                    } else {
-                        cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
+                        if (!matched) {
+                            cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
+                        }
                     }
                     return;
                 }
@@ -333,9 +378,7 @@
                     if (!URINE_SKIP.includes(rawName)) {
                         if (!urineDates.includes(collectDate)) urineDates.push(collectDate);
                         const uDateIdx = urineDates.indexOf(collectDate);
-                        if (!urineData[urineName]) urineData[urineName] = [];
-                        while (urineData[urineName].length <= uDateIdx) urineData[urineName].push('');
-                        if (!urineData[urineName][uDateIdx]) urineData[urineName][uDateIdx] = val;
+                        pushToStore(urineData, urineName, uDateIdx, val);
                     }
                     return;
                 }
@@ -344,11 +387,9 @@
                     const gasName = rawName === 'PH' ? 'pH'
                         : rawName === 'BaseExcess' ? 'BE'
                         : rawName;
-                    if (!gasDates.includes(collectDate)) gasDates.push(collectDate);
-                    const gDateIdx = gasDates.indexOf(collectDate);
-                    if (!gasData[gasName]) gasData[gasName] = [];
-                    while (gasData[gasName].length <= gDateIdx) gasData[gasName].push('');
-                    if (!gasData[gasName][gDateIdx]) gasData[gasName][gDateIdx] = val;
+                    if (!vGasDates.includes(collectDate)) vGasDates.push(collectDate);
+                    const gDateIdx = vGasDates.indexOf(collectDate);
+                    pushToStore(vGasData, gasName, gDateIdx, val);
                     return;
                 }
 
@@ -358,50 +399,31 @@
                 const isG2 = RARE_DIFF.includes(nm);
                 if (isG2 && (parseFloat(val) === 0 || !val)) return;
 
-                if (!trendData[nm]) trendData[nm] = [];
-                while (trendData[nm].length <= dateIdx) trendData[nm].push('');
-                if (!trendData[nm][dateIdx]) trendData[nm][dateIdx] = val;
+                pushToStore(trendData, nm, dateIdx, val);
             });
         });
 
-        if (!dates.length && !gasDates.length && !cultureItems.length && !structuredCultures.length) return null;
+        if (!dates.length && !aGasDates.length && !vGasDates.length && !cultureItems.length && !structuredCultures.length) return null;
 
-        function sortByDate(dArr, dataMap) {
-            if (dArr.length <= 1) return;
-            const order = dArr.map((d, i) => i);
-            order.sort((a, b) => {
-                const [am, ad] = dArr[a].split('/').map(Number);
-                const [bm, bd] = dArr[b].split('/').map(Number);
-                return am !== bm ? am - bm : ad - bd;
-            });
-            const sortedDates = order.map(i => dArr[i]);
-            for (let i = 0; i < sortedDates.length; i++) dArr[i] = sortedDates[i];
-            for (const nm of Object.keys(dataMap)) {
-                const old = dataMap[nm].slice();
-                for (let i = 0; i < order.length; i++) dataMap[nm][i] = old[order[i]] || '';
-            }
-        }
-
-        for (const nm of Object.keys(trendData)) {
-            while (trendData[nm].length < dates.length) trendData[nm].push('');
-        }
-        for (const nm of Object.keys(urineData)) {
-            while (urineData[nm].length < urineDates.length) urineData[nm].push('');
-        }
-        for (const nm of Object.keys(gasData)) {
-            while (gasData[nm].length < gasDates.length) gasData[nm].push('');
-        }
+        padData(trendData, dates.length);
+        padData(urineData, urineDates.length);
+        padData(aGasData, aGasDates.length);
+        padData(vGasData, vGasDates.length);
 
         sortByDate(dates, trendData);
-        sortByDate(gasDates, gasData);
+        sortByDate(aGasDates, aGasData);
+        sortByDate(vGasDates, vGasData);
         sortByDate(urineDates, urineData);
 
         const specialGroups = {};
         if (Object.keys(urineData).length) {
             specialGroups.Urine = { dates: urineDates, data: urineData };
         }
-        if (Object.keys(gasData).length) {
-            specialGroups[gasLabel] = { dates: gasDates, data: gasData };
+        if (Object.keys(aGasData).length) {
+            specialGroups['A gas'] = { dates: aGasDates, data: aGasData };
+        }
+        if (Object.keys(vGasData).length) {
+            specialGroups['V gas'] = { dates: vGasDates, data: vGasData };
         }
 
         const cGroups = [];
@@ -470,9 +492,6 @@
         // Hemogram
         const hemo = buildGroup(HEMOGRAM_MAIN);
         if (hemo.length) {
-            const ext = [...HEMOGRAM_EXT, ...RARE_DIFF]
-                .map(fmt)
-                .filter(s => s && data[s.split(' ')[0]]?.f);
             const extActual = [...HEMOGRAM_EXT, ...RARE_DIFF]
                 .filter(k => data[k] && data[k].f)
                 .map(fmt)
@@ -519,77 +538,6 @@
         return output.length ? output.join('\n') : null;
     }
 
-    // ====== 橫式版 DOM 讀取 ======
-    // 橫式：項目名當欄頭（含單位），日期當列
-    // 每個 section 有自己的小表格，如 CBC+PLT(1/2), Biochemistry(1/1) 等
-
-    function readHorizontalView() {
-        const allTables = document.querySelectorAll('table');
-        if (!allTables.length) return null;
-
-        const dates = [];
-        const data = {};
-        const specialGroups = {};
-        const datesSet = new Set();
-
-        allTables.forEach(table => {
-            const rows = table.querySelectorAll('tr');
-            if (rows.length < 2) return;
-
-            const headerCells = rows[0].querySelectorAll('td, th');
-            if (headerCells.length < 2) return;
-
-            const firstHeader = (headerCells[0].textContent || '').trim();
-            if (!firstHeader.match(/\(\d+\/\d+\)/)) return;
-
-            const itemNames = [];
-            for (let j = 1; j < headerCells.length; j++) {
-                const raw = (headerCells[j].textContent || '').trim();
-                itemNames.push(raw);
-            }
-
-            for (let i = 1; i < rows.length; i++) {
-                const cells = rows[i].querySelectorAll('td, th');
-                if (cells.length < 2) continue;
-
-                const dateCell = (cells[0].textContent || '').trim();
-                const dm = dateCell.match(/\d{4}\/(\d{2})\/(\d{2})/);
-                if (!dm) continue;
-                const dateLabel = dm[1] + '/' + dm[2];
-
-                if (!datesSet.has(dateLabel)) {
-                    datesSet.add(dateLabel);
-                    dates.push(dateLabel);
-                }
-                const dateIdx = dates.indexOf(dateLabel);
-
-                for (let j = 1; j < cells.length && j <= itemNames.length; j++) {
-                    const rawItemName = itemNames[j - 1];
-                    const val = cleanGreenValue((cells[j].textContent || '').trim());
-                    if (!val) continue;
-
-                    const cleanName = parseGreenItemName(rawItemName);
-                    if (IGNORE.includes(cleanName)) continue;
-
-                    const nm = normalizeName(rawItemName);
-                    if (nm === '__SKIP__') continue;
-
-                    if (!data[nm]) data[nm] = [];
-                    while (data[nm].length <= dateIdx) data[nm].push('');
-                    if (!data[nm][dateIdx]) data[nm][dateIdx] = val;
-                }
-            }
-        });
-
-        if (!dates.length) return null;
-
-        for (const nm of Object.keys(data)) {
-            while (data[nm].length < dates.length) data[nm].push('');
-        }
-
-        return formatTrend(dates, data, Object.keys(specialGroups).length ? specialGroups : null);
-    }
-
     // ====== 綠單版 DOM 讀取 ======
 
     const GREEN_SECTION_MAP = {
@@ -602,15 +550,6 @@
         'Stool examination': 'Stool',
         'Punctate examination': 'Punctate',
     };
-
-    function parseGreenItemName(raw) {
-        const clean = raw.replace(/\(.*?\)/g, '').trim();
-        return clean;
-    }
-
-    function cleanGreenValue(val) {
-        return val.replace(/\(Manual\s*checked\)/i, '').replace(/\(Manual\)/i, '').trim();
-    }
 
     function readGreenSheetView() {
         const fieldsets = document.querySelectorAll('fieldset');
@@ -680,12 +619,9 @@
                     if (!rawName) continue;
 
                     if (/^\d{2}:\d{2}/.test(rawName)) continue;
-
-                    const shouldSkip = SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1);
-                    if (shouldSkip) continue;
+                    if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) continue;
 
                     const cleanName = parseGreenItemName(rawName);
-
                     if (IGNORE.includes(cleanName)) continue;
 
                     if (isSpecial && specialName === 'Urine') {
@@ -738,186 +674,37 @@
         return formatTrendParagraph(dates, data, specialGroups);
     }
 
-    // ====== 多日趨勢格式化 ======
+    // ====== 段落式趨勢格式化 ======
 
-    function formatTrend(dates, data, specialGroups) {
-        function buildBlock(title, keys, extKeys, dts, dt) {
-            const dd = dts || dates;
-            const dd2 = dt || data;
-            const allKeys = extKeys ? keys.concat(extKeys) : keys;
-
-            const activeIdx = [];
-            for (let j = 0; j < dd.length; j++) {
-                let hasAny = false;
-                for (const k of allKeys) {
-                    if (dd2[k] && dd2[k][j]) hasAny = true;
-                }
-                if (hasAny) activeIdx.push(j);
-            }
-            if (!activeIdx.length) return null;
-
-            const rows = [];
-            for (const nm of allKeys) {
-                const v = dd2[nm];
-                if (!v) continue;
-                if (ATTACHED.has(nm)) continue;
-
-                if (extKeys && extKeys.includes(nm)) {
-                    let hasVal = false;
-                    for (const idx of activeIdx) {
-                        if (v[idx]) hasVal = true;
-                    }
-                    if (!hasVal) continue;
-                }
-
-                const pts = activeIdx.map(idx => v[idx] || '-');
-                let row = '  ' + nm + ': ' + pts.join(' → ');
-
-                if (ATTACH[nm]) {
-                    const ank = ATTACH[nm];
-                    const av = dd2[ank];
-                    if (av) {
-                        const apts = activeIdx.map(idx => av[idx] || '-');
-                        row += ' (' + ank + ': ' + apts.join(' → ') + ')';
-                    }
-                }
-                rows.push(row);
-            }
-            if (!rows.length) return null;
-
-            const dateLabels = activeIdx.map(idx => dd[idx]);
-            return title + ': [' + dateLabels.join(', ') + ']\n' + rows.join('\n');
-        }
-
-        function buildUrine(sg) {
-            const dd = sg.dates;
-            const dt = sg.data;
-            if (!dd.length) return null;
-
-            const activeIdx = [];
-            for (let j = 0; j < dd.length; j++) {
-                let hasAny = false;
-                for (const k of Object.keys(dt)) {
-                    if (dt[k] && dt[k][j]) hasAny = true;
-                }
-                if (hasAny) activeIdx.push(j);
-            }
-            if (!activeIdx.length) return null;
-
-            const rows = [];
-            for (const k of Object.keys(dt)) {
-                const always = URINE_ALWAYS_SHOW.includes(k);
-                const vals = dt[k];
-                const pts = [];
-                let hasAny = false;
-                for (const idx of activeIdx) {
-                    const v = vals[idx] || '';
-                    if (always) {
-                        pts.push(v || '-');
-                        if (v) hasAny = true;
-                    } else {
-                        if (v && isUrineAbnormal(v)) {
-                            pts.push(displayUrineVal(v));
-                            hasAny = true;
-                        } else {
-                            pts.push('-');
-                        }
-                    }
-                }
-                if (!hasAny) continue;
-                if (pts.every(p => p === '-')) continue;
-                rows.push('  ' + k + ': ' + pts.join(' → '));
-            }
-            if (!rows.length) return null;
-
-            const dateLabels = activeIdx.map(idx => dd[idx]);
-            return 'Urine: [' + dateLabels.join(', ') + ']\n' + rows.join('\n');
-        }
-
-        function buildSpecial(name, sg) {
-            const dd = sg.dates;
-            const dt = sg.data;
-            if (!dd.length) return null;
-
-            const activeIdx = [];
-            for (let j = 0; j < dd.length; j++) {
-                let hasAny = false;
-                for (const k of Object.keys(dt)) {
-                    if (dt[k] && dt[k][j]) hasAny = true;
-                }
-                if (hasAny) activeIdx.push(j);
-            }
-            if (!activeIdx.length) return null;
-
-            const rows = [];
-            for (const k of Object.keys(dt)) {
-                const vals = dt[k];
-                const pts = activeIdx.map(idx => vals[idx] || '-');
-                rows.push('  ' + k + ': ' + pts.join(' → '));
-            }
-            if (!rows.length) return null;
-
-            const dateLabels = activeIdx.map(idx => dd[idx]);
-            return name + ': [' + dateLabels.join(', ') + ']\n' + rows.join('\n');
-        }
-
-        const output = [];
-
-        const hemo = buildBlock('Hemogram', HEMOGRAM_MAIN, [...HEMOGRAM_EXT, ...RARE_DIFF]);
-        if (hemo) output.push(hemo);
-
-        const lr = buildBlock('Liver/Renal', LIVER_RENAL);
-        if (lr) output.push(lr);
-
-        const el = buildBlock('Electrolytes', ELECTROLYTES);
-        if (el) output.push(el);
-
-        const unknowns = Object.keys(data).filter(k => !ALL_KNOWN.includes(k) && !IGNORE.includes(k));
-        const ot = buildBlock('Others', OTHERS, unknowns);
-        if (ot) output.push(ot);
-
-        const coag = buildBlock('Coagulation', COAG);
-        if (coag) output.push(coag);
-
-        if (specialGroups) {
-            for (const [sgName, sgData] of Object.entries(specialGroups)) {
-                if (sgName === 'Urine') {
-                    const u = buildUrine(sgData);
-                    if (u) output.push(u);
-                } else {
-                    const sp = buildSpecial(sgName, sgData);
-                    if (sp) output.push(sp);
-                }
+    function compactTrend(vals) {
+        const filled = vals.filter(x => x);
+        if (filled.length === 0) return null;
+        if (filled.length === 1) return filled[0];
+        const parts = [];
+        for (let i = 0; i < vals.length; i++) {
+            if (!vals[i]) continue;
+            if (parts.length > 0) {
+                const prevIdx = vals.lastIndexOf(parts[parts.length - 1].val, i - 1);
+                const gap = i - prevIdx - 1;
+                parts.push({ val: vals[i], arrow: '→'.repeat(gap + 1) });
+            } else {
+                parts.push({ val: vals[i], arrow: '' });
             }
         }
-
-        const gas = buildBlock('Gas', GAS);
-        if (gas) output.push(gas);
-
-        return output.length ? output.join('\n\n') : null;
+        return parts.map((p, i) => i === 0 ? p.val : p.arrow + p.val).join('');
     }
 
-    // ====== 段落式趨勢格式化（清單風格 + → 趨勢） ======
+    function findActiveIdx(refDates, allKeys, dd2) {
+        const activeIdx = [];
+        for (let i = 0; i < refDates.length; i++) {
+            for (const nm of allKeys) {
+                if (dd2[nm] && dd2[nm][i]) { activeIdx.push(i); break; }
+            }
+        }
+        return activeIdx;
+    }
 
     function formatTrendParagraph(dates, data, specialGroups) {
-        function compactTrend(vals) {
-            const filled = vals.filter(x => x);
-            if (filled.length === 0) return null;
-            if (filled.length === 1) return filled[0];
-            const parts = [];
-            for (let i = 0; i < vals.length; i++) {
-                if (!vals[i]) continue;
-                if (parts.length > 0) {
-                    const prevIdx = vals.lastIndexOf(parts[parts.length - 1].val, i - 1);
-                    const gap = i - prevIdx - 1;
-                    parts.push({ val: vals[i], arrow: '→'.repeat(gap + 1) });
-                } else {
-                    parts.push({ val: vals[i], arrow: '' });
-                }
-            }
-            return parts.map((p, i) => i === 0 ? p.val : p.arrow + p.val).join('');
-        }
-
         function isAbnormal(nm, vals) {
             const range = HEMO_EXT_RANGE[nm];
             if (!range) return true;
@@ -952,12 +739,7 @@
             const dd2 = dt || data;
             const refDates = customDates || dates;
             const allKeys = [...keys, ...(extKeys || [])];
-            const activeIdx = [];
-            for (let i = 0; i < refDates.length; i++) {
-                for (const nm of allKeys) {
-                    if (dd2[nm] && dd2[nm][i]) { activeIdx.push(i); break; }
-                }
-            }
+            const activeIdx = findActiveIdx(refDates, allKeys, dd2);
             if (!activeIdx.length) return null;
 
             const filtered = {};
@@ -967,17 +749,10 @@
             }
 
             const items = [];
-            for (const nm of keys) {
+            for (const nm of [...keys, ...(extKeys || [])]) {
                 if (ATTACHED.has(nm)) continue;
                 const s = fmtItem(nm, filtered);
                 if (s) items.push(s);
-            }
-            if (extKeys) {
-                for (const nm of extKeys) {
-                    if (ATTACHED.has(nm)) continue;
-                    const s = fmtItem(nm, filtered);
-                    if (s) items.push(s);
-                }
             }
             if (!items.length) return null;
             const gd = activeIdx.map(i => refDates[i]);
@@ -1025,7 +800,7 @@
                 if (sgName === 'Urine') {
                     const u = buildUrinePara(sgData);
                     if (u) groups.push(u);
-                } else if (sgName === 'Gas' || sgName === 'A gas') {
+                } else if (sgName === 'Gas' || sgName === 'A gas' || sgName === 'V gas') {
                     const gasKeys = sgName === 'Gas' ? GAS : Object.keys(sgData.data);
                     const g = buildGroup(sgName, gasKeys, [], sgData.data, sgData.dates);
                     if (g) groups.push(g);
@@ -1044,6 +819,69 @@
 
         const prefixed = groups.map(g => '#. ' + g);
         return prefixed.join('\n');
+    }
+
+    // ====== 橫式版 DOM 讀取 ======
+
+    function readHorizontalView() {
+        const allTables = document.querySelectorAll('table');
+        if (!allTables.length) return null;
+
+        const dates = [];
+        const data = {};
+        const datesSet = new Set();
+
+        allTables.forEach(table => {
+            const rows = table.querySelectorAll('tr');
+            if (rows.length < 2) return;
+
+            const headerCells = rows[0].querySelectorAll('td, th');
+            if (headerCells.length < 2) return;
+
+            const firstHeader = (headerCells[0].textContent || '').trim();
+            if (!firstHeader.match(/\(\d+\/\d+\)/)) return;
+
+            const itemNames = [];
+            for (let j = 1; j < headerCells.length; j++) {
+                itemNames.push((headerCells[j].textContent || '').trim());
+            }
+
+            for (let i = 1; i < rows.length; i++) {
+                const cells = rows[i].querySelectorAll('td, th');
+                if (cells.length < 2) continue;
+
+                const dateCell = (cells[0].textContent || '').trim();
+                const dm = dateCell.match(/\d{4}\/(\d{2})\/(\d{2})/);
+                if (!dm) continue;
+                const dateLabel = dm[1] + '/' + dm[2];
+
+                if (!datesSet.has(dateLabel)) {
+                    datesSet.add(dateLabel);
+                    dates.push(dateLabel);
+                }
+                const dateIdx = dates.indexOf(dateLabel);
+
+                for (let j = 1; j < cells.length && j <= itemNames.length; j++) {
+                    const rawItemName = itemNames[j - 1];
+                    const val = cleanGreenValue((cells[j].textContent || '').trim());
+                    if (!val) continue;
+
+                    const cleanName = parseGreenItemName(rawItemName);
+                    if (IGNORE.includes(cleanName)) continue;
+
+                    const nm = normalizeName(rawItemName);
+                    if (nm === '__SKIP__') continue;
+
+                    pushToStore(data, nm, dateIdx, val);
+                }
+            }
+        });
+
+        if (!dates.length) return null;
+
+        padData(data, dates.length);
+
+        return formatTrendParagraph(dates, data, null);
     }
 
     // ====== 偵測目前的樣式（清單/橫式/直式/綠單） ======
@@ -1097,7 +935,7 @@
         box.style.cssText = [
             'position:fixed', 'bottom:20px', 'right:20px', 'z-index:999999',
             'background:#fff', 'border:2px solid #1a6fa8', 'border-radius:6px',
-            'box-shadow:0 4px 16px rgba(0,0,0,.25)', 'padding:0', 'width:60%',
+            'box-shadow:0 4px 16px rgba(0,0,0,.25)', 'padding:0', 'width:20%',
             'font-family:sans-serif', 'font-size:13px', 'overflow:hidden',
         ].join(';');
 
