@@ -102,19 +102,8 @@
         // 病理報告 ← 空白填 nil
         fNilIfEmpty('病理報告', 'tplPA_txbPA');
 
-        // 其他 + 轉出：等所有欄位填完後再依序點擊
-        results.push({ field: '其他（隔離醫囑）', ok: !!document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN') });
-        results.push({ field: '轉出/出院情況', ok: !!document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus') });
-
-         setTimeout(() => autoImportLab(), 500);
-         setTimeout(() => {
-            const otBtn = document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN');
-            if (otBtn) otBtn.click();
-            setTimeout(() => {
-                const dsBtn = document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus');
-                if (dsBtn) dsBtn.click();
-            }, 1000);
-        }, 7000);
+        // 檢驗結果：填完欄位後自動帶入
+        setTimeout(() => autoImportLab(), 1000);
 
         return results;
     }
@@ -249,12 +238,12 @@
                 background: #6a3cac; color: #fff; transition: opacity 0.15s;
             }
             #ntuh-disch-fill:hover { opacity: 0.85; }
-            #ntuh-disch-lab-btn {
+            #ntuh-disch-defaults {
                 padding: 8px 0; border: none; border-radius: 6px;
                 cursor: pointer; font-size: 12px; font-weight: 600;
                 background: #2d4a6e; color: #8fa8d8; transition: opacity 0.15s;
             }
-            #ntuh-disch-lab-btn:hover { opacity: 0.85; }
+            #ntuh-disch-defaults:hover { opacity: 0.85; }
             #ntuh-disch-status { font-size: 11px; min-height: 16px; }
             #ntuh-disch-lab-status { font-size: 11px; min-height: 16px; }
             #ntuh-disch-preview {
@@ -289,6 +278,7 @@
             <div id="ntuh-disch-body">
                 <textarea id="ntuh-disch-input" placeholder="貼入出院病摘筆記內容…"></textarea>
                 <button id="ntuh-disch-fill">✨ 填入出院病摘</button>
+                <button id="ntuh-disch-defaults">📋 填入其他＋轉出預設值</button>
                 <div id="ntuh-disch-status"></div>
                 <div id="ntuh-disch-preview"></div>
             </div>
@@ -313,6 +303,15 @@
             showResults(fillDischargeNote(text));
         };
 
+        document.getElementById('ntuh-disch-defaults').onclick = () => {
+            const otBtn = document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN');
+            if (otBtn) otBtn.click();
+            setTimeout(() => {
+                const dsBtn = document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus');
+                if (dsBtn) dsBtn.click();
+            }, 1000);
+            setStatus('✓ 已點擊「其他」與「轉出」預設值按鈕', 'ok');
+        };
 
     }
 
