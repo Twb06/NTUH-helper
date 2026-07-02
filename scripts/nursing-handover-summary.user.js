@@ -67,6 +67,7 @@
         'Port-A': 'Port-A',
         '胸管': 'Chest tube',
         '引流管': 'Drain',
+        '引流導管': 'Drain',
         '腹膜透析導管': 'PD catheter',
     };
 
@@ -81,7 +82,7 @@
 
     // 每條管路以「分類名，種類：」或「氣切:」開頭，用此 pattern split
     // normalizeTubeRaw 已將腸胃道管路/氣切管路預處理，剩下的外層分類名在這裡切
-    const TUBE_SPLIT_RE = /(?=(?:血液導管|尿路導管|鼻胃管|導尿管|氣管內管|氣切套管|氣切:|引流管|胸管|腹膜透析導管|PICC|Port-A)[\s，])/;
+    const TUBE_SPLIT_RE = /(?=(?:血液導管|尿路導管|鼻胃管|導尿管|氣管內管|氣切套管|氣切:|引流導管|引流管|胸管|腹膜透析導管|PICC|Port-A)[\s，])/;
 
     function formatTubes(raw) {
         if (!raw) return '（無資料）';
