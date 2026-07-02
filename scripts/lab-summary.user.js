@@ -28,6 +28,7 @@
     const COAG = ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen'];
 
     const CULTURE_KEYS = ["Gram's", 'ID+DS', 'Anaerobic', 'ID C.', 'ID Campy.',
+        'Blood Culture',
         'VRE screening', 'CRE screening', 'MRSA screening', 'CRAB screening',
         'CMV viral load', 'Aspergillus Ag', 'EBV viral load',
         'Fungus', 'AFS+Culture', 'AFS +Culture',
@@ -335,7 +336,17 @@
                             if (remark.indexOf(pattern) > -1) { cResult += ' (' + abbr + ')'; break; }
                         }
                     }
-                    if (/screening/i.test(rawName)) {
+                    let specialMatched = false;
+                    for (const [key, label] of Object.entries(SPECIAL_CULTURE_MAP)) {
+                        if (rawName.toLowerCase().indexOf(key.toLowerCase()) > -1) {
+                            structuredCultures.push({ date: collectDate, label: label, result: cResult });
+                            specialMatched = true;
+                            break;
+                        }
+                    }
+                    if (specialMatched) {
+                        // handled above
+                    } else if (/screening/i.test(rawName)) {
                         const scrType = rawName.match(/^(\S+)\s+screening/i);
                         const scrName = scrType ? scrType[1].toUpperCase() : rawName;
                         const scrRef = cells[3] ? (cells[3].textContent || '').trim() : '';
@@ -348,20 +359,10 @@
                             if (words2.length) scrLabel = words2[words2.length - 1].charAt(0).toUpperCase() + words2[words2.length - 1].slice(1).toLowerCase();
                         }
                         structuredCultures.push({ date: collectDate, label: scrLabel, result: scrName + ' (' + (scrNeg ? '-' : '+') + ')' });
-                    } else if (/ID\+DS Blood/i.test(rawName) || /ID\+DS Urine/i.test(rawName) || /ID\+DS Sputum/i.test(rawName) || /ID\+DS|ID C\.|ID Campy\.|^Anaerobic/i.test(rawName) || /^Gram's/i.test(rawName)) {
+                    } else if (/ID\+DS|ID C\.|ID Campy\.|^Anaerobic|^Gram's|^Blood Culture/i.test(rawName)) {
                         structuredCultures.push({ date: collectDate, label: specimenLabel(headerText), result: cResult });
                     } else {
-                        let matched = false;
-                        for (const [key, label] of Object.entries(SPECIAL_CULTURE_MAP)) {
-                            if (rawName.toLowerCase().indexOf(key.toLowerCase()) > -1) {
-                                structuredCultures.push({ date: collectDate, label: label, result: cResult });
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if (!matched) {
-                            cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
-                        }
+                        cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
                     }
                     return;
                 }
