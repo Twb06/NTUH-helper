@@ -5,7 +5,7 @@
 // @description  自動填入入院紀錄各欄位，並自動帶入檢驗結果
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertAdmissionNoteContent.aspx*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DWHistoricalLabReport.aspx*
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/ExternalPage/DWHistoricalLabReport.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js
 // @grant        none
