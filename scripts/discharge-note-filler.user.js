@@ -106,6 +106,7 @@
         results.push({ field: '其他（隔離醫囑）', ok: !!document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN') });
         results.push({ field: '轉出/出院情況', ok: !!document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus') });
 
+         setTimeout(() => autoImportLab(), 500);
          setTimeout(() => {
             const otBtn = document.getElementById(PREFIX + 'tplOT_btnDisDefaultValue_ANN');
             if (otBtn) otBtn.click();
@@ -113,8 +114,7 @@
                 const dsBtn = document.getElementById(PREFIX + 'tplDS_btnSetDischargeStatus');
                 if (dsBtn) dsBtn.click();
             }, 1000);
-            setTimeout(() => autoImportLab(), 1500);
-        }, 500);
+        }, 7000);
 
         return results;
     }
