@@ -123,9 +123,9 @@
     // 檢驗結果自動帶入（在 DWHistoricalLabReport.aspx 頁面執行）
     // ─────────────────────────────────────────────
     function autoSelectAndImport() {
-        const flag = localStorage.getItem('ntuh-disch-filler-auto-lab');
-        if (!flag || Date.now() - Number(flag) > 30000) return;
-        localStorage.removeItem('ntuh-disch-filler-auto-lab');
+        const params = new URLSearchParams(window.location.search);
+        const btn = params.get('hfdbutton') || '';
+        if (!btn.includes('DischargeNote')) return;
 
         const deptCbs = Array.from(document.querySelectorAll('input[type=checkbox][dept]'))
             .filter(cb => !cb.getAttribute('group') && !cb.getAttribute('key'));
@@ -160,7 +160,6 @@
             setLabStatus('⚠ 找不到查詢按鈕，請確認已開啟檢驗紀錄頁籤', 'err');
             return;
         }
-        localStorage.setItem('ntuh-disch-filler-auto-lab', Date.now().toString());
         simulateClick(queryBtn);
         setTimeout(() => setLabStatus('✓ 完成，請確認檢驗結果已帶入', 'ok'), 6000);
     }

@@ -105,9 +105,9 @@
     // 檢驗結果自動帶入（在 DWHistoricalLabReport.aspx 頁面執行）
     // ─────────────────────────────────────────────
     function autoSelectAndImport() {
-        const flag = localStorage.getItem('ntuh-adm-filler-auto-lab');
-        if (!flag || Date.now() - Number(flag) > 30000) return;
-        localStorage.removeItem('ntuh-adm-filler-auto-lab');
+        const params = new URLSearchParams(window.location.search);
+        const btn = params.get('hfdbutton') || '';
+        if (!btn.includes('AdmissionNote')) return;
 
         const deptCbs = Array.from(document.querySelectorAll('input[type=checkbox][dept]'))
             .filter(cb => !cb.getAttribute('group') && !cb.getAttribute('key'));
@@ -143,7 +143,6 @@
             setLabStatus('⚠ 找不到查詢按鈕，請確認已開啟檢驗結果頁籤', 'err');
             return;
         }
-        localStorage.setItem('ntuh-adm-filler-auto-lab', Date.now().toString());
         simulateClick(queryBtn);
         setLabStatus('⏳ 新頁面開啟中，自動勾選後會關閉…', 'warn');
         // 新頁面由 autoSelectAndImport 接手，完成後會自動關閉
