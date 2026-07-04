@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.16.0
-// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱（適配 DiagCertificate_New.aspx 改版；入帳項目可勾選；手術名補術字；急診直入 ICU 敘述修正；門診預設不勾）
+// @version      1.17.0
+// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱（適配 DiagCertificate_New.aspx 改版；入帳項目可勾選；手術名補術字；急診直入 ICU 敘述修正；門診預設不勾；手術以住院區間過濾）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -1253,23 +1253,7 @@
 
     async function autoDetectRecords() {
         try {
-            // 1. 手術
-            setDiagStatus('自動偵測病歷中：展開手術資料…', 'warn');
-            await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_lblOpScheduleMsg');
-            const opList = fetchOpDataList();
-            detectedOpList = opList;
-            const container = document.getElementById('ntuh-diag-op-rows-container');
-            if (container) container.innerHTML = '';
-            if (opList.length > 0) {
-                document.getElementById('ntuh-diag-has-op').checked = true;
-                document.getElementById('ntuh-diag-op-detail').style.display = 'flex';
-                addOpRow(opList[0].opDate, '', opList[0].opScheduleIdse);
-            } else {
-                document.getElementById('ntuh-diag-has-op').checked = false;
-                document.getElementById('ntuh-diag-op-detail').style.display = 'none';
-            }
-
-            // 2. 住院
+            // 1. 住院（先偵測以取得本次住院區間，供手術過濾用）
             setDiagStatus('自動偵測病歷中：展開住院資料…', 'warn');
             await expandOne('NTUHWeb1_btnLogPatTransferBedShowHide', '#NTUHWeb1_gvwLogPatTransferBed tr.tableText, #NTUHWeb1_divLogPatTransferBedInfo');
             const inpat = fetchInpatData();
@@ -1279,6 +1263,35 @@
             } else {
                 document.getElementById('ntuh-diag-has-inpat').checked = false;
                 document.getElementById('ntuh-diag-discharge-row').style.display = 'none';
+            }
+
+            // 2. 手術：只自動帶入落在本次住院區間內（住院起日 ~ 今日）的刀；無住院則帶最新一筆
+            setDiagStatus('自動偵測病歷中：展開手術資料…', 'warn');
+            await expandOne('NTUHWeb1_btnOpScheduleShowHide', '#NTUHWeb1_dgOpScheduleData tr.tableText, #NTUHWeb1_lblOpScheduleMsg');
+            const opList = fetchOpDataList();
+            detectedOpList = opList;
+            const container = document.getElementById('ntuh-diag-op-rows-container');
+            if (container) container.innerHTML = '';
+
+            let autoOps = [];
+            if (inpat.inpatStartDate) {
+                const startObj = parseDate(inpat.inpatStartDate);
+                const endObj = new Date(); endObj.setHours(23, 59, 59, 999); // 手術皆已完成，上界取今日
+                autoOps = opList.filter(o => {
+                    const d = parseDate(o.opDate);
+                    return d && startObj && d >= startObj && d <= endObj;
+                }).sort((a, b) => parseDate(a.opDate) - parseDate(b.opDate)); // 由舊到新
+            } else if (opList.length > 0) {
+                autoOps = [opList[0]];
+            }
+
+            if (autoOps.length > 0) {
+                document.getElementById('ntuh-diag-has-op').checked = true;
+                document.getElementById('ntuh-diag-op-detail').style.display = 'flex';
+                autoOps.forEach(o => addOpRow(o.opDate, '', o.opScheduleIdse));
+            } else {
+                document.getElementById('ntuh-diag-has-op').checked = false;
+                document.getElementById('ntuh-diag-op-detail').style.display = 'none';
             }
 
             // 3. 急診
@@ -1302,8 +1315,8 @@
 
             setDiagStatus('✓ 病歷自動偵測完成！', 'ok');
 
-            // 自動觸發背景擷取手術中文名稱
-            if (opList.length > 0) {
+            // 自動觸發背景擷取手術中文名稱（僅針對已帶入的刀）
+            if (autoOps.length > 0) {
                 triggerOpNameScan();
             }
         } catch (e) {
