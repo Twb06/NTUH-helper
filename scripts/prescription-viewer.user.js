@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 處方檢視工具
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.3.0
-// @description  讀取處方醫令頁 (MedicationV2.aspx) 的 OrderBox(一般處方) 與 OrderDisplayBox(自備藥) 兩張 grid，整理目前在使用的藥物成「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內/自備分組對齊輸出，載入即自動顯示並可一鍵複製
+// @version      1.4.0
+// @description  讀取處方醫令頁 (MedicationV2.aspx) 的 OrderBox(一般處方) 與 OrderDisplayBox(自備藥) 兩張 grid，整理目前在使用的藥物成「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內/自備分組對齊輸出並可一鍵複製
 // @match        *://*/*MedicationV2.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js
@@ -18,17 +18,28 @@
     const DISPLAY_BOX = 'NTUHWeb1_RegularEditorBox_OrderDisplayBox_dgrPhrOrder';
 
     // ====== 商品名抽取 ======
+    // 對照表：真正無規則、抽不對的藥，直接指定「學名(或關鍵字) → 商品名」；優先於下方邏輯。
+    const BRAND_OVERRIDES = {
+        // '學名關鍵字': '商品名',
+    };
+
     // 一般處方格式「學名 (商品名 劑型 strength)」→ 取括號內第一個英文 token
     //   "Hydralazine HCl (10 Stable 10 mg/tab)"      → "Stable"
     //   "Tranexamic Acid (針 Transamin Inj ...)"      → "Transamin"
     // 管制藥有巢狀括號＋管制標記「學名 ((管4) 中文名 商品名 ...)」→ 去 (管N) 標記後取第一個英文 token
     //   "Alprazolam ((管4) 安柏寧 Alpraline 0.5 mg/tab)" → "Alpraline"
     //   "Morphine HCl ((管1) 警 Morphine PCA Inj ...)"  → "Morphine"
+    // 學名帶鹽類註記「Metoclopramide (as HCl salt) (Promeran ...)」→ 先剝 (as ...) 註記再抽 → "Promeran"
     // 自備藥格式「[自備藥]商品名 strength 劑型」(無括號、手動輸入) → 先剝前綴再取第一個英文 token
     //   "[自備藥]Tagrisso 80 mg/tab"                   → "Tagrisso"
     function extractBrand(fullName) {
         if (!fullName) return '';
+        for (const key in BRAND_OVERRIDES) {
+            if (fullName.includes(key)) return BRAND_OVERRIDES[key];
+        }
         let src = fullName.replace(/^\s*\[自備藥\]\s*/, '');
+        // 去掉學名的鹽類/型態註記 (as HCl salt)/(as sodium)/(as base)，避免抓到 "as"
+        src = src.replace(/\(\s*as\b[^)]*\)/gi, ' ');
         // 有括號：商品名在括號內，丟掉第一個 '(' 前的學名前綴
         const p = src.indexOf('(');
         if (p >= 0) src = src.slice(p + 1);
@@ -154,7 +165,7 @@
         box.id = 'rx-med-box';
         box.style.cssText = `position:fixed;top:80px;right:20px;z-index:999999;
             background:#fff;border:2px solid #507CD1;border-radius:6px;
-            box-shadow:0 4px 16px rgba(0,0,0,.25);padding:12px;width:150px;`;
+            box-shadow:0 4px 16px rgba(0,0,0,.25);padding:12px;width:380px;`;
 
         const title = document.createElement('div');
         title.textContent = '目前處方用藥';
@@ -163,7 +174,7 @@
         const ta = document.createElement('textarea');
         ta.value = text;
         ta.readOnly = true;
-        ta.style.cssText = 'width:100%;height:360px;font-family:Consolas,monospace;font-size:13px;white-space:pre;box-sizing:border-box;';
+        ta.style.cssText = 'width:100%;height:240px;font-family:Consolas,monospace;font-size:13px;white-space:pre;box-sizing:border-box;';
 
         const row = document.createElement('div');
         row.style.cssText = 'margin-top:8px;text-align:right;font-family:sans-serif;';
@@ -201,28 +212,5 @@
         document.body.appendChild(btn);
     }
 
-    // 頁面載入後自動截取顯示：ASP.NET postback 頁的表格要等 render 完才有資料，
-    // 輪詢等資料出現(或確認表存在但為空)再自動跳出，不用使用者點按鈕。
-    function autoRun() {
-        let tries = 0;
-        const iv = setInterval(() => {
-            tries++;
-            const res = buildResults();
-            const hasData = res && (res.regular.length || res.own.length);
-            const tableExists = document.getElementById(ORDER_BOX) || document.getElementById(DISPLAY_BOX);
-            if (hasData) {
-                clearInterval(iv);
-                showResult(formatOutput(res));
-            } else if (tries >= 6 && tableExists) {
-                // 表已在但無藥 → 顯示空訊息，不再空等
-                clearInterval(iv);
-                showResult(formatOutput(res));
-            } else if (tries > 40) {
-                clearInterval(iv); // ~20s 仍無 → 放棄(可手動按鈕)
-            }
-        }, 500);
-    }
-
     addButton();
-    autoRun();
 })();
