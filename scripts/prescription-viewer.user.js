@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 處方檢視工具
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.4.2
+// @version      1.5.0
 // @description  讀取處方醫令頁 (MedicationV2.aspx) 的 OrderBox(一般處方) 與 OrderDisplayBox(自備藥) 兩張 grid，整理目前在使用的藥物成「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內/自備分組對齊輸出並可一鍵複製
 // @match        *://*/*MedicationV2.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js
@@ -18,39 +18,50 @@
     const DISPLAY_BOX = 'NTUHWeb1_RegularEditorBox_OrderDisplayBox_dgrPhrOrder';
 
     // ====== 商品名抽取 ======
-    // 對照表：真正無規則、抽不對的藥，直接指定「學名(或關鍵字) → 商品名」；優先於下方邏輯。
-    const BRAND_OVERRIDES = {
-        // '學名關鍵字': '商品名',
-    };
+    // 對照表：真正無規則、抽不對的藥，用 regex 指定商品名；優先於下方邏輯。
+    // brand 可為字串或 function(match)，後者可保留 capture（如點滴系列要保留 No.）。
+    const BRAND_OVERRIDES = [
+        { re: /Taita\s*No\.?\s*(\d+)/i, brand: m => `Taita ${m[1]}` }, // 點滴系列(Taita No.3/No.5)保留編號
+        { re: /Xigduo/i, brand: 'Xigduo XR' },                          // 複方藥(商品名在前)，直接顯示商品名
+    ];
+    function applyOverride(name) {
+        for (const o of BRAND_OVERRIDES) {
+            const m = name.match(o.re);
+            if (m) return typeof o.brand === 'function' ? o.brand(m) : o.brand;
+        }
+        return null;
+    }
 
     // 一般處方格式「學名 (商品名 劑型 strength)」→ 取括號內第一個英文 token
     //   "Hydralazine HCl (10 Stable 10 mg/tab)"      → "Stable"
     //   "Tranexamic Acid (針 Transamin Inj ...)"      → "Transamin"
-    // 管制藥有巢狀括號＋管制標記「學名 ((管4) 中文名 商品名 ...)」→ 去 (管N) 標記後取第一個英文 token
-    //   "Alprazolam ((管4) 安柏寧 Alpraline 0.5 mg/tab)" → "Alpraline"
-    //   "Morphine HCl ((管1) 警 Morphine PCA Inj ...)"  → "Morphine"
-    // 學名帶鹽類註記「Metoclopramide (as HCl salt) (Promeran ...)」→ 先剝 (as ...) 註記再抽 → "Promeran"
-    // 自備藥格式「[自備藥]商品名 strength 劑型」(無括號、手動輸入) → 先剝前綴再取第一個英文 token
-    //   "[自備藥]Tagrisso 80 mg/tab"                   → "Tagrisso"
+    //   "Atropine Sulfate (眼1% Antol Eye Drops ...)"  → "Antol"（開頭中文的劑型前綴跳過）
+    // 管制藥標記 (管N) 可能在最前或巢狀括號內 → 抽取前一律全域移除，再取第一個英文 token
+    //   "Alprazolam ((管4) 安柏寧 Alpraline 0.5 mg/tab)"  → "Alpraline"
+    //   "[自備藥](管4) 安柏寧 Alpraline 0.5 mg/tab"        → "Alpraline"
+    //   "(管1) 液 Morphine Sulfate Oral Soln ..."         → "Morphine"
+    //   "(管4) Lexotan 3 mg/tab"                          → "Lexotan"
+    // 學名帶鹽類註記「Metoclopramide (as HCl salt) (Promeran ...)」→ 先剝 (as ...) 再抽 → "Promeran"
+    // 自備藥「[自備藥]商品名 strength 劑型」(無括號、手動輸入) → 剝前綴後取第一個英文 token → "Tagrisso"
     function extractBrand(fullName) {
         if (!fullName) return '';
-        for (const key in BRAND_OVERRIDES) {
-            if (fullName.includes(key)) return BRAND_OVERRIDES[key];
-        }
+        const ov = applyOverride(fullName);
+        if (ov) return ov;
         let src = fullName.replace(/^\s*\[自備藥\]\s*/, '');
-        // 去掉學名的鹽類/型態註記 (as HCl salt)/(as sodium)/(as base)，避免抓到 "as"
+        // 先全域移除管制藥標記 (管N)：它可能在最前(自備藥手動輸入)或巢狀括號內
+        src = src.replace(/[（(]\s*管\s*\d+\s*[）)]/g, ' ');
+        // 去掉學名鹽類/型態註記 (as HCl salt)/(as sodium)/(as base)，避免抓到 "as"
         src = src.replace(/\(\s*as\b[^)]*\)/gi, ' ');
-        // 有括號：商品名在括號內，丟掉第一個 '(' 前的學名前綴
+        // 若還有括號：商品名多在括號內(學名(商品名)格式)，丟掉第一個 '(' 前的學名前綴
         const p = src.indexOf('(');
         if (p >= 0) src = src.slice(p + 1);
-        // 去掉管制藥標記 (管4)/(管1) 與殘留括號，避免抓到 "(管4"
-        src = src.replace(/[（(]\s*管\s*\d+\s*[）)]?/g, ' ').replace(/[()（）]/g, ' ');
+        src = src.replace(/[()（）]/g, ' '); // 清殘留括號
         const tokens = src.trim().split(/\s+/);
         for (const tok of tokens) {
             if (!tok) continue;
-            if (/^[一-鿿㐀-䶿]+$/.test(tok)) continue; // 純中文(安柏寧/警/針/袋)
-            if (/^\d/.test(tok)) continue;              // 數字開頭(劑量/strength)
-            return tok.replace(/[,;]+$/, '');           // 去尾端標點
+            if (/^[一-鿿㐀-䶿]/.test(tok)) continue; // 開頭中文(針/栓/袋/液/眼/安柏寧…劑型或中文品名)
+            if (/^\d/.test(tok)) continue;            // 數字開頭(劑量/strength)
+            return tok.replace(/[,;]+$/, '');         // 去尾端標點
         }
         return tokens.find(Boolean) || src.trim();
     }
