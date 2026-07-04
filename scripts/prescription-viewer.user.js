@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 處方檢視工具
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.4.1
+// @version      1.4.2
 // @description  讀取處方醫令頁 (MedicationV2.aspx) 的 OrderBox(一般處方) 與 OrderDisplayBox(自備藥) 兩張 grid，整理目前在使用的藥物成「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內/自備分組對齊輸出並可一鍵複製
 // @match        *://*/*MedicationV2.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js
@@ -167,17 +167,20 @@
             background:#fff;border:2px solid #507CD1;border-radius:6px;
             box-shadow:0 4px 16px rgba(0,0,0,.25);padding:12px;width:380px;`;
 
+        // 頂部一行：左標題、右邊複製/關閉按鈕
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-family:sans-serif;';
+
         const title = document.createElement('div');
         title.textContent = '目前處方用藥';
-        title.style.cssText = 'font-weight:bold;margin-bottom:8px;color:#507CD1;font-family:sans-serif;';
+        title.style.cssText = 'font-weight:bold;color:#507CD1;';
+
+        const btns = document.createElement('div');
 
         const ta = document.createElement('textarea');
         ta.value = text;
         ta.readOnly = true;
         ta.style.cssText = 'width:100%;height:240px;font-family:Consolas,monospace;font-size:13px;white-space:pre;box-sizing:border-box;';
-
-        const row = document.createElement('div');
-        row.style.cssText = 'margin-top:8px;text-align:right;font-family:sans-serif;';
 
         const copyBtn = document.createElement('button');
         copyBtn.textContent = '複製';
@@ -195,11 +198,12 @@
         closeBtn.style.cssText = 'padding:4px 12px;cursor:pointer;';
         closeBtn.onclick = () => box.remove();
 
-        row.appendChild(copyBtn);
-        row.appendChild(closeBtn);
-        box.appendChild(title);
+        btns.appendChild(copyBtn);
+        btns.appendChild(closeBtn);
+        header.appendChild(title);
+        header.appendChild(btns);
+        box.appendChild(header);
         box.appendChild(ta);
-        box.appendChild(row);
         document.body.appendChild(box);
     }
 
