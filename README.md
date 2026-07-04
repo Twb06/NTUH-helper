@@ -14,10 +14,10 @@
 
 | 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|----------|
-| `chart-medication` | 讀取藥歷圖（Chart.aspx），整理任意藥物用藥成「商品名 起日-迄日」，自動區分進行中與已停用，並顯示療程天數；支援中文前綴（袋、針、胃…）及括弧前綴（(PPN)…）的商品名自動清理 | 通用 | 開啟藥歷圖頁面，點擊右上角「整理藥物」按鈕，複製結果 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
-| `prescription-viewer` | 處方檢視工具：讀取處方醫令頁（MedicationV2.aspx）的一般處方與自備藥兩張表，整理目前用藥成「商品名 劑量 頻率 途徑 開始日」，院內／自備分組對齊；持續處方日期加「-」、單次（STAT/ONCE）不加；支援管制藥巢狀括號與中文前綴的商品名清理。頁面載入即自動顯示，供一眼檢視＋複製寫病歷 | 通用 | 開啟處方醫令頁面（MedicationV2.aspx），右上角面板自動顯示，可點「複製」；亦可點「整理處方」重新整理 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
-| `lab-summary` | 檢驗整理工具：支援清單與綠單，自動分類（ex. Hemogram, BCS）獨立顯示日期與趨勢。支援 Culture 、PCR 、特殊抗藥性標註、VRE/CRE screening，過濾不重要項目 | 通用 | Portal 報告頁面（MedicalReportContent.aspx），點擊右下角橘色「整理檢驗」按鈕 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
-| `nursing-handover-summary` | 護理交班摘要工具：在護理交班頁面自動擷取飲食、管路、照會等資訊，整理成精簡 note 格式，顯示於右下角固定面板 | 通用 | 開啟護理交班頁面（OffDutyNurV2.aspx），右下角自動顯示摘要，可點「複製」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/nursing-handover-summary.user.js) |
+| `chart-medication` | 藥歷圖整理用藥為「商品名 起日-迄日」，區分進行中／已停用並顯示療程天數 | 通用 | 藥歷圖頁點右上角「整理藥物」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
+| `prescription-viewer` | 處方頁整理目前用藥為「商品名 劑量 頻率 途徑 開始日」，院內／自備藥分組，供一眼檢視與複製 | 通用 | 開啟處方頁右上角自動顯示 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
+| `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；支援 Culture／PCR、抗藥性標註，過濾雜項 | 通用 | 報告頁點右下角「整理檢驗」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
+| `nursing-handover-summary` | 護理交班頁擷取飲食、管路、照會等，整理成精簡 note | 通用 | 開啟護理交班頁右下角自動顯示 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/nursing-handover-summary.user.js) |
 
 ### 自動執行型
 
