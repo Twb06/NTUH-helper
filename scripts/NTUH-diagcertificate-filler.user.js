@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.15.0
-// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱（適配 DiagCertificate_New.aspx 改版；入帳項目可勾選；手術名補術字）
+// @version      1.16.0
+// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱（適配 DiagCertificate_New.aspx 改版；入帳項目可勾選；手術名補術字；急診直入 ICU 敘述修正；門診預設不勾）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -479,30 +479,22 @@
             const timeline = inpat.timeline || [];
             const startDept = (timeline.length > 0 && timeline[0].dept) ? timeline[0].dept : dept;
 
-            // 1. 住院開始子事件
+            // 1. 住院開始子事件（若入院第一床即加護病房，直接寫「加護病房住院」，不再另補轉入 ICU）
+            const startIsICU = timeline.length > 0 && ICU_SET.has(timeline[0].bed);
+            const startWard = startIsICU ? '加護病房' : '一般病房';
             let startText = '';
             if (fromEmg) {
                 const aStr = emg.arrivalDT ? fmtDateTime(emg.arrivalDT) : fmtDate(inpat.inpatStartDate);
                 const lStr = emg.leaveDT ? fmtDateTime(emg.leaveDT) : fmtDate(inpat.inpatStartDate);
-                startText = `於${aStr}至本院急診就醫，於${lStr}轉至本院${startDept}一般病房住院`;
+                startText = `於${aStr}至本院急診就醫，於${lStr}轉至本院${startDept}${startWard}住院`;
             } else {
-                startText = `於${fmtDate(inpat.inpatStartDate)}於本院${startDept}一般病房住院`;
+                startText = `於${fmtDate(inpat.inpatStartDate)}於本院${startDept}${startWard}住院`;
             }
             inpatSubEvents.push({
                 date: inpatStartDateObj,
                 priority: 1,
                 text: startText
             });
-
-            // 2. 第一步如果是 ICU，補上轉入加護病房的敘述
-            if (timeline.length > 0 && ICU_SET.has(timeline[0].bed)) {
-                const icuDateObj = parseDate(timeline[0].start) || inpatStartDateObj;
-                inpatSubEvents.push({
-                    date: icuDateObj,
-                    priority: 3,
-                    text: `於${fmtDate(timeline[0].start)}轉入本院${timeline[0].dept}加護病房治療`
-                });
-            }
 
             // 3. 遍歷住院期間的其他病房/科別異動事件
             for (let i = 1; i < timeline.length; i++) {
@@ -1304,19 +1296,9 @@
                 document.getElementById('ntuh-diag-emg-detail').style.display = 'none';
             }
 
-            // 4. 門診
-            setDiagStatus('自動偵測病歷中：展開門診資料…', 'warn');
-            await expandOne('NTUHWeb1_btnOutHistoryShowHide', '#NTUHWeb1_fieldsetOutHistory tr.tableText, #NTUHWeb1_divOutHistoryInfo', 5000);
-            const dept = (() => { const el = document.getElementById('NTUHWeb1_ddlDeptListForPatChiCertificate'); return el ? el.options[el.selectedIndex].text.trim() : '[科別]'; })();
-            const opdDates = fetchOpdDates(dept);
-            if (opdDates.length > 0) {
-                document.getElementById('ntuh-diag-has-opd').checked = true;
-                document.getElementById('ntuh-diag-opd-detail').style.display = 'flex';
-                document.getElementById('ntuh-diag-opd-start-date').value = opdDates[0];
-            } else {
-                document.getElementById('ntuh-diag-has-opd').checked = false;
-                document.getElementById('ntuh-diag-opd-detail').style.display = 'none';
-            }
+            // 4. 門診：需開門診的案例極少，一律預設不勾；使用者手動勾選時會自動展開並帶入日期
+            document.getElementById('ntuh-diag-has-opd').checked = false;
+            document.getElementById('ntuh-diag-opd-detail').style.display = 'none';
 
             setDiagStatus('✓ 病歷自動偵測完成！', 'ok');
 
