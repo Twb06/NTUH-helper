@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 處方檢視工具
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.4.0
+// @version      1.4.1
 // @description  讀取處方醫令頁 (MedicationV2.aspx) 的 OrderBox(一般處方) 與 OrderDisplayBox(自備藥) 兩張 grid，整理目前在使用的藥物成「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內/自備分組對齊輸出並可一鍵複製
 // @match        *://*/*MedicationV2.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js
@@ -208,7 +208,12 @@
         const btn = document.createElement('button');
         btn.textContent = '整理處方';
         btn.style.cssText = 'position:fixed;top:50px;right:20px;z-index:999999;padding:6px 14px;background:#507CD1;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:sans-serif;font-weight:bold;';
-        btn.onclick = () => showResult(formatOutput(buildResults()));
+        // toggle：面板已開就收合，否則重新整理顯示
+        btn.onclick = () => {
+            const open = document.getElementById('rx-med-box');
+            if (open) { open.remove(); return; }
+            showResult(formatOutput(buildResults()));
+        };
         document.body.appendChild(btn);
     }
 
