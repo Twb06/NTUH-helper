@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.2
+// @version      1.3.4
 // @description  用於例假日值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -59,6 +59,7 @@
     // ═══════════════════════════════════════════════════════════
 
     let capturedPopup = null;
+    let childMessageReceived = false;
 
     if (PATH.includes('OpenWard.aspx')) {
         const state = getState();
@@ -69,6 +70,17 @@
                 capturedPopup = win;
                 return win;
             };
+            // 提早掛 message listener，不等 initOrchestrator
+            let earlyResult = null;
+            window.addEventListener('message', function earlyHandler(event) {
+                if (event.origin !== location.origin) return;
+                if (!event.data?.ntuh_weekend) return;
+                childMessageReceived = true;
+                earlyResult = event.data.result;
+                window.removeEventListener('message', earlyHandler);
+            });
+            // 暴露給 initOrchestrator 使用
+            window._weekendEarlyResult = () => earlyResult;
         }
     }
 
@@ -92,19 +104,34 @@
             window.addEventListener('beforeunload', () => { window.alert = origAlert; });
 
             showOrchestratorStatus(state);
+
+            // 如果 early handler 已收到 child message，直接處理
+            if (childMessageReceived && window._weekendEarlyResult) {
+                addResult(state, window._weekendEarlyResult());
+                try { capturedPopup?.close(); } catch (e) { /* */ }
+                waitForPopupClosed(() => nextPatient(state));
+                return;
+            }
+
             listenForChildMessage(state);
 
             if (capturedPopup) {
                 startPopupTimeout(state);
             } else {
-                setTimeout(() => {
+                // 輪詢等待 popup 出現，最多 15 秒
+                let pollCount = 0;
+                const pollPopup = setInterval(() => {
+                    pollCount++;
+                    if (childMessageReceived) { clearInterval(pollPopup); return; }
                     if (capturedPopup) {
+                        clearInterval(pollPopup);
                         startPopupTimeout(state);
-                    } else {
+                    } else if (pollCount >= 30) { // 15 秒
+                        clearInterval(pollPopup);
                         addResult(state, '未開啟');
                         nextPatient(state);
                     }
-                }, 5000);
+                }, 500);
             }
             return;
         }
@@ -127,17 +154,35 @@
             if (event.origin !== location.origin) return;
             if (!event.data?.ntuh_weekend) return;
 
+            childMessageReceived = true;
             window.removeEventListener('message', handler);
             clearTimeout(state._timeout);
 
             addResult(state, event.data.result);
+            // 主動關閉 child（防止 child 自己 close 失敗）
             try { capturedPopup?.close(); } catch (e) { /* */ }
-            nextPatient(state);
+            waitForPopupClosed(() => nextPatient(state));
         });
+    }
+
+    function waitForPopupClosed(callback) {
+        if (!capturedPopup || capturedPopup.closed) {
+            setTimeout(callback, 300);
+            return;
+        }
+        let attempts = 0;
+        const poll = setInterval(() => {
+            attempts++;
+            if (!capturedPopup || capturedPopup.closed || attempts >= 30) {
+                clearInterval(poll);
+                setTimeout(callback, 300);
+            }
+        }, 200);
     }
 
     function startPopupTimeout(state) {
         state._timeout = setTimeout(() => {
+            if (childMessageReceived) return;
             try { capturedPopup?.close(); } catch (e) { /* */ }
             addResult(state, '逾時');
             nextPatient(state);
@@ -185,11 +230,13 @@
     }
 
     function nextPatient(state) {
+        if (state._stopped) return;
         state.currentIndex++;
         if (state.currentIndex >= state.patients.length) {
             state.running = false;
             setState(state);
-            location.reload();
+            // 用 GET 導航避免 POST 重送（reload 會重新觸發 __doPostBack 開 child）
+            window.location.href = window.location.pathname + window.location.search;
             return;
         }
         setState(state);
@@ -279,7 +326,8 @@
                 `即將對 ${patients.length} 位病人批次執行：\n` +
                 `　1. 複製最新 Progress Note\n` +
                 `　2. Subjective 填入 stable\n` +
-                `　3. 確認送出\n\n確定要繼續嗎？`
+                `　3. 自動帶入導管紀錄（若有）\n` +
+                `　4. 確認送出\n\n確定要繼續嗎？`
             )) {
                 startBatch();
             }
@@ -288,17 +336,44 @@
     }
 
     function showOrchestratorStatus(state) {
-        const el = document.createElement('div');
+        let el = document.getElementById('ntuh-batch-status');
+        if (el) el.remove();
+
+        el = document.createElement('div');
+        el.id = 'ntuh-batch-status';
         const total = state.patients.length;
         const current = state.currentIndex + 1;
         const p = state.patients[state.currentIndex];
-        el.textContent = `[${current}/${total}] 處理中：${p?.bed} ${p?.name}`;
+
         Object.assign(el.style, {
             position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
             background: 'rgba(0,0,0,0.85)', color: '#fff', padding: '12px 20px',
             borderRadius: '8px', fontSize: '14px', fontWeight: 'bold',
             boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            display: 'flex', alignItems: 'center', gap: '12px',
         });
+
+        const text = document.createElement('span');
+        text.textContent = `[${current}/${total}] 處理中：${p?.bed} ${p?.name}`;
+
+        const stopBtn = document.createElement('button');
+        stopBtn.textContent = '⛔ 終止';
+        Object.assign(stopBtn.style, {
+            padding: '4px 12px', background: '#e74c3c', color: '#fff',
+            border: 'none', borderRadius: '4px', fontSize: '13px',
+            cursor: 'pointer', fontWeight: 'bold',
+        });
+        stopBtn.onclick = () => {
+            try { capturedPopup?.close(); } catch {}
+            state.running = false;
+            setState(state);
+            el.remove();
+            showFinalResults(state);
+            clearState();
+        };
+
+        el.appendChild(text);
+        el.appendChild(stopBtn);
         document.body.appendChild(el);
     }
 
@@ -517,25 +592,52 @@
             const copyType = targetType === 'blank' ? 'blank' : 'progress';
             const resultLabel = isYesterday ? '✓' : '✓ (非昨日)';
 
-            let filled = false;
-            const doFill = () => {
-                if (filled) return;
-                filled = true;
-                if (copyType === 'blank') {
-                    fillBlankAndConfirm(resultLabel);
-                } else {
-                    fillStableAndConfirm(resultLabel);
-                }
+            let copied = false;
+            const afterCopy = () => {
+                if (copied) return;
+                copied = true;
+                // 複製 postback 完成後，用狀態偵測確認系統就緒再填入
+                waitUntilReady(copyType, () => {
+                    if (copyType === 'blank') {
+                        fillBlankAndConfirm(resultLabel);
+                    } else {
+                        fillStableAndConfirm(resultLabel);
+                    }
+                });
             };
 
-            waitForPostback(doFill);
-            setTimeout(doFill, 8000);
+            waitForPostback(afterCopy);
+            setTimeout(afterCopy, 3000);
 
             CopyNoteToNewRecord(copyType);
         });
     }
 
-    function fillBlankAndConfirm(resultLabel) {
+    function waitUntilReady(copyType, callback) {
+        const fieldId = copyType === 'blank'
+            ? 'NTUHWeb1_BlankNoteMainTab_txbBlankContnt'
+            : 'NTUHWeb1_ProgressNoteMainTab_txbSubject';
+        let attempts = 0;
+        const maxAttempts = 30; // 每 100ms 一次，最多 3 秒
+        const poll = () => {
+            const field = document.getElementById(fieldId);
+            if (field && !field.disabled) {
+                callback();
+                return;
+            }
+            attempts++;
+            if (attempts >= maxAttempts) {
+                callback(); // fallback：3 秒到了就繼續
+                return;
+            }
+            setTimeout(poll, 100);
+        };
+        poll();
+    }
+
+    async function fillBlankAndConfirm(resultLabel) {
+        await new Promise(r => setTimeout(r, 500));
+
         const contentField = document.getElementById(
             'NTUHWeb1_BlankNoteMainTab_txbBlankContnt'
         );
@@ -548,51 +650,132 @@
         contentField.dispatchEvent(new Event('input', { bubbles: true }));
         contentField.dispatchEvent(new Event('change', { bubbles: true }));
 
-        setTimeout(() => {
-            const confirmBtn = document.getElementById(
-                'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
-            );
-            if (!confirmBtn) {
-                notifyOpener('找不到確認按鈕');
-                return;
-            }
+        // 等 300ms 再按確認
+        await new Promise(r => setTimeout(r, 300));
 
-            confirmBtn.click();
-
-            setTimeout(() => {
-                notifyOpener(resultLabel);
-            }, 2000);
-        }, 500);
-    }
-
-    function fillStableAndConfirm(resultLabel) {
-        const subjectField = document.getElementById(
-            'NTUHWeb1_ProgressNoteMainTab_txbSubject'
+        const confirmBtn = document.getElementById(
+            'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
         );
-        if (!subjectField) {
-            notifyOpener('找不到 Subjective 欄位');
+        if (!confirmBtn) {
+            notifyOpener('找不到確認按鈕');
             return;
         }
 
-        subjectField.value = 'stable';
-        subjectField.dispatchEvent(new Event('input', { bubbles: true }));
-        subjectField.dispatchEvent(new Event('change', { bubbles: true }));
+        let confirmed = false;
+        const done = () => {
+            if (confirmed) return;
+            confirmed = true;
+            notifyOpener(resultLabel);
+        };
 
-        setTimeout(() => {
-            const confirmBtn = document.getElementById(
-                'NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote'
-            );
-            if (!confirmBtn) {
-                notifyOpener('找不到確認按鈕');
-                return;
-            }
+        waitForPostback(done);
+        setTimeout(done, 3000);
 
-            confirmBtn.click();
+        confirmBtn.click();
+    }
 
-            setTimeout(() => {
-                notifyOpener(resultLabel);
-            }, 2000);
-        }, 500);
+    // --- OuterData BSI 抓取 ---
+
+    function getOuterDataParams() {
+        const v = (id) => document.getElementById(id)?.value || '';
+        const params = new URLSearchParams(window.location.search);
+        return {
+            AccountIdse: v('hidAccountNo') || params.get('AccountIDSE') || '',
+            PersonId:    v('hidPersonId')  || params.get('PersonID')   || '',
+            ChartNo:     v('hidChartNo')   || '',
+            DeptCode:    v('hidDeptCode')  || '',
+            EmpDeptCode: v('hidEmpDeptCode') || '',
+        };
+    }
+
+    function outerDataUrl() {
+        return window.location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '')
+            + 'ProgressNoteControl/Service/OuterData.asmx/GetOuterDataTable';
+    }
+
+    async function fetchBSI() {
+        try {
+            const res = await fetch(outerDataUrl(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                body: JSON.stringify({
+                    jsonstring: JSON.stringify(getOuterDataParams()),
+                    datatype: 'BSI',
+                }),
+                credentials: 'same-origin',
+            });
+            if (!res.ok) return '';
+            const j = await res.json();
+            const html = JSON.parse(j.d).Html || '';
+            return parseBSI(html);
+        } catch { return ''; }
+    }
+
+    function parseBSI(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const table = doc.getElementById('tblBSIList') || doc.querySelector('table.listview');
+        if (!table) return '';
+        const rows = [...table.querySelectorAll('tbody tr')];
+        if (!rows.length) return '';
+        return rows.map(tr => {
+            const cells = [...tr.querySelectorAll('td')];
+            // 跳過「選」按鈕欄
+            const filtered = cells.filter(td => !td.querySelector('[id*="lkbSelectData"]'));
+            const item = (filtered[0]?.textContent || '').trim();
+            const date = (filtered[1]?.textContent || '').trim().replace(/(\d{4})\/(\d{2})\/(\d{2})/, (m, y, mo, d) => `${mo}${d}`);
+            return `[${item}]: 放置日期:${date}; 經醫師評估仍有導管留置適應症。`;
+        }).join('\n');
+    }
+
+    function fillField(id, value) {
+        const el = document.getElementById(id);
+        if (!el) return false;
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    }
+
+    async function fillStableAndConfirm(resultLabel) {
+        // 等 500ms 讓系統完全就緒再填入
+        await new Promise(r => setTimeout(r, 500));
+
+        fillField('NTUHWeb1_ProgressNoteMainTab_txbSubject', 'stable');
+
+        // 等 300ms 再處理導管
+        await new Promise(r => setTimeout(r, 300));
+
+        // 處理導管紀錄
+        const bsiSwitch = document.getElementById('NTUHWeb1_ProgressNoteMainTab_hidBSIswitch');
+        const bsiField = document.getElementById('NTUHWeb1_ProgressNoteMainTab_txbBSIBundle');
+
+        if (bsiSwitch?.value === 'Y' && bsiField && !bsiField.value.trim()) {
+            const bsiText = await fetchBSI();
+            fillField('NTUHWeb1_ProgressNoteMainTab_txbBSIBundle', bsiText || 'nil');
+        }
+
+        // 等 300ms 再按確認
+        await new Promise(r => setTimeout(r, 300));
+
+        const confirmBtn = document.getElementById(
+            'NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote'
+        );
+        if (!confirmBtn) {
+            notifyOpener('找不到確認按鈕');
+            return;
+        }
+
+        let confirmed = false;
+        const done = () => {
+            if (confirmed) return;
+            confirmed = true;
+            notifyOpener(resultLabel);
+        };
+
+        waitForPostback(done);
+        setTimeout(done, 3000);
+
+        confirmBtn.click();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -644,20 +827,24 @@
                 contentField.value = body;
                 contentField.dispatchEvent(new Event('change', { bubbles: true }));
 
-                setTimeout(() => {
-                    const confirmBtn = document.getElementById(
-                        'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
-                    );
-                    if (!confirmBtn) {
-                        notifyOpener('找不到確認按鈕');
-                        return;
-                    }
-                    confirmBtn.click();
+                const confirmBtn = document.getElementById(
+                    'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
+                );
+                if (!confirmBtn) {
+                    notifyOpener('找不到確認按鈕');
+                    return;
+                }
+                let confirmed = false;
+                const done = () => {
+                    if (confirmed) return;
+                    confirmed = true;
+                    notifyOpener('✓ (從admission建立)');
+                };
 
-                    setTimeout(() => {
-                        notifyOpener('✓ (從admission建立)');
-                    }, 2000);
-                }, 500);
+                waitForPostback(done);
+                setTimeout(done, 3000);
+
+                confirmBtn.click();
             });
         });
     }
