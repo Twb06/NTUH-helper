@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.3.4
+// @version      1.3.5
 // @description  用於例假日值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -637,6 +637,13 @@
 
     async function fillBlankAndConfirm(resultLabel) {
         await new Promise(r => setTimeout(r, 500));
+
+        // 標題統一改為 Progress（複製來的可能是 Progress/Weekly 等）
+        const titleField = document.getElementById('NTUHWeb1_BlankNoteMainTab_txbBlankTitle');
+        if (titleField && /progress/i.test(titleField.value)) {
+            titleField.value = 'Progress';
+            titleField.dispatchEvent(new Event('change', { bubbles: true }));
+        }
 
         const contentField = document.getElementById(
             'NTUHWeb1_BlankNoteMainTab_txbBlankContnt'
