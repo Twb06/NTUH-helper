@@ -33,13 +33,13 @@
 
 ### Note 撰寫相關
 
-從 Primary Note 解析內容並自動填入對應欄位。**需要特殊的筆記格式**，請參考 [Primary Note 格式範本](./scripts/template/primary-note-format.md)。
+從 Primary Note 解析內容並自動填入對應欄位。**需要特殊的筆記格式**。
 
 | 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|----------|
-| `admission-note-filler` | 自動入摘工具：自動填入紀錄各欄位（主訴、病史、身體診察等），並帶入檢驗結果 | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
-| `discharge-note-filler` | 自動出摘工具：自動填入出院病摘各欄位（出院診斷、住院治療經過、併發症等），並帶入檢驗結果 | 通用 | 開啟出院病摘頁面，點擊右下角 📄 浮動按鈕，貼入筆記後點擊「填入出院病摘」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js) |
-| `progress-note-filler` | 從 Primary note 解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存 | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
+| `admission-note-filler` | 自動入摘工具：自動填入紀錄各欄位（主訴、病史、身體診察等），並帶入檢驗結果。產出模板與撰寫規則見 [Admission Note 模板與規則](./scripts/template/admission-note-template.md) | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
+| `discharge-note-filler` | 自動出摘工具：自動填入出院病摘各欄位（出院診斷、住院治療經過、併發症等），並帶入檢驗結果。所需筆記格式見 [Primary Note 格式範本](./scripts/template/primary-note-format.md) | 通用 | 開啟出院病摘頁面，點擊右下角 📄 浮動按鈕，貼入筆記後點擊「填入出院病摘」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js) |
+| `progress-note-filler` | 從 Primary note 解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。所需筆記格式見 [Primary Note 格式範本](./scripts/template/primary-note-format.md) | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
 
 ## Bookmarklets
 
