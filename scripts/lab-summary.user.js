@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.1.0
+// @version      0.2.1
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成結構化文字（支援清單版與綠單趨勢版）
 // @match        *://*/*MedicalReportContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js
@@ -903,26 +903,46 @@
 
     // ====== 主流程 ======
 
-    function run() {
+    // 依目前 view mode 讀出整理後文字（無資料回 null）。worker 與 run() 共用。
+    function computeReport() {
         const mode = detectViewMode();
-        let result = null;
+        if (mode === 'green') return readGreenSheetView();
+        if (mode === 'list') return readListView();
+        if (mode === 'horizontal') return readHorizontalView();
+        return '（直式模式不支援，請切換至清單、橫式或綠單）';
+    }
 
-        if (mode === 'green') {
-            result = readGreenSheetView();
-        } else if (mode === 'list') {
-            result = readListView();
-        } else if (mode === 'horizontal') {
-            result = readHorizontalView();
-        } else {
-            result = '（直式模式不支援，請切換至清單、橫式或綠單）';
-        }
-
+    function run() {
+        const result = computeReport();
         if (!result) {
             alert('未偵測到檢驗項目');
             return;
         }
-
         showResult(result);
+    }
+
+    // ====== 背景 worker：被 progress-note-data-helper 以 ntuh_token 開頁時 ======
+    // 頁面預設清單、開頁即有資料 → 輪詢 computeReport 到非空 →
+    // 寫 localStorage['ntuh_data_'+token]（與 data-helper 同信封）→ 關頁。
+    function runReportWorker(token) {
+        const KEY = 'ntuh_data_' + token;
+        const done = (obj) => {
+            try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch (e) { /* noop */ }
+            setTimeout(() => window.close(), 150);
+        };
+        const t0 = performance.now();
+        const iv = setInterval(() => {
+            let res = null;
+            try { res = computeReport(); } catch (e) { /* 尚未就緒 */ }
+            if (res) { clearInterval(iv); done({ ok: true, text: res }); return; }
+            // 防呆：頁面就緒（view-mode radio 出現）但 computeReport 仍無資料 → 回「無檢驗資料」，避免空等逾時。
+            // 就緒後給 3s 寬限確認非「還在載入」；最終 15s 也回無資料訊息而非 error。
+            const pageReady = !!document.querySelector('input[type="radio"][id*="LabRangeSlider1_rbn"]');
+            if ((pageReady && performance.now() - t0 > 3000) || performance.now() - t0 > 15000) {
+                clearInterval(iv);
+                done({ ok: true, text: '(無檢驗資料)' });
+            }
+        }, 400);
     }
 
     // ====== UI ======
@@ -991,5 +1011,11 @@
         document.body.appendChild(btn);
     }
 
-    addButton();
+    // 進入點：被 data-helper 帶 ntuh_token 開頁 → worker；否則原本「整理檢驗」按鈕
+    const _labToken = new URLSearchParams(location.search).get('ntuh_token');
+    if (_labToken) {
+        runReportWorker(_labToken);
+    } else {
+        addButton();
+    }
 })();

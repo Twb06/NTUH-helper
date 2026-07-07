@@ -14,9 +14,9 @@
 
 | 腳本 | 說明 | 適用範圍 | 使用方式 | 安裝連結 |
 |------|------|----------|----------|----------|
-| `chart-medication` | 藥歷圖整理用藥為「商品名 起日-迄日」，區分進行中／已停用並顯示療程天數 | 通用 | 藥歷圖頁點右上角「整理藥物」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
-| `prescription-viewer` | 處方頁整理目前用藥為「商品名 劑量 頻率 途徑 開始日」，院內／自備藥分組，供一眼檢視與複製 | 通用 | 開啟處方頁右上角自動顯示 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
-| `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；支援 Culture／PCR、抗藥性標註，過濾雜項 | 通用 | 報告頁點右下角「整理檢驗」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
+| `chart-medication` | 藥歷圖整理用藥為「商品名 起日-迄日」，區分進行中／已停用並顯示療程天數；也支援 Progress Note Data Helper 背景抓取抗生素藥歷 | 通用 | 藥歷圖頁點右上角「整理藥物」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
+| `prescription-viewer` | 處方頁整理目前用藥為「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內／自備藥分組，供一眼檢視與複製；也支援背景抓取現行處方 | 通用 | 處方頁點右上角「整理處方」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
+| `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；支援 Culture／PCR、抗藥性標註、清單／橫式／綠單模式；也支援背景抓取檢驗摘要 | 通用 | 報告頁點右下角「整理檢驗」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
 | `nursing-handover-summary` | 護理交班頁擷取飲食、管路、照會等，整理成精簡 note | 通用 | 開啟護理交班頁右下角自動顯示 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/nursing-handover-summary.user.js) |
 
 ### 自動執行型
@@ -39,7 +39,8 @@
 |------|------|----------|----------|----------|
 | `admission-note-filler` | 自動入摘工具：自動填入紀錄各欄位（主訴、病史、身體診察等），並帶入檢驗結果。產出模板與撰寫規則見 [Admission Note 模板與規則](./scripts/template/admission-note-template.md) | 通用 | 開啟入院紀錄頁面，點擊右下角 🏥 浮動按鈕，貼入筆記後點擊「填入入院紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/admission-note-filler.user.js) |
 | `discharge-note-filler` | 自動出摘工具：自動填入出院病摘各欄位（出院診斷、住院治療經過、併發症等），並帶入檢驗結果。所需筆記格式見 [Primary Note 格式範本](./scripts/template/primary-note-format.md) | 通用 | 開啟出院病摘頁面，點擊右下角 📄 浮動按鈕，貼入筆記後點擊「填入出院病摘」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/discharge-note-filler.user.js) |
-| `progress-note-filler` | 從 Primary note 解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。所需筆記格式見 [Primary Note 格式範本](./scripts/template/primary-note-format.md) | 通用 | 開啟病程紀錄頁面，點擊右下角 📋 浮動按鈕，點「抓取」或手動貼入筆記後，選擇「填入病程」、「填入Weekly」或「今日紀錄」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
+| `progress-note-filler` | 從 Primary note 解析病程筆記並填入 Progress Note / Weekly Summary 欄位，可填入 Duty Note 模板，並整合背景抓取資料面板。所需筆記格式見 [Primary Note 格式範本](./scripts/template/primary-note-format.md) | 通用 | 病程紀錄頁點右下角 📋，可「抓取 primary note」、填入 progress/Weekly/Duty note、今日更新，或「抓取全部data」整理 vitals、管路、照會、飲食、影像、Rx、Abx、Lab | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js) |
+| `progress-note-data-helper` | Progress Note Filler 的資料抓取引擎：從導管、照會、飲食、OuterData、藥歷、處方、檢驗等來源背景抓資料並回傳給 filler。需搭配 `progress-note-filler` 使用 | 通用 | 安裝後無獨立按鈕；在 Progress Note Filler 點「抓取全部data」時自動執行 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js) |
 
 ## Bookmarklets
 

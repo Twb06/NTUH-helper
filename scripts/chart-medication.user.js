@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 藥歷圖工具
 // @namespace    https://github.com/your-username/chart-antibiotic-extractor
-// @version      1.3.1
+// @version      1.4.4
 // @description  讀取藥歷圖 (Chart.aspx) 的 TradeNameGroupsOfEachDrug，整理任意藥物成「商品名 起日-迄日」，迄日為今天或未來則留破折號
 // @match        *://*/*Chart.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js
@@ -299,6 +299,79 @@
         document.body.appendChild(box);
     }
 
+    // ====== 背景 worker：被 progress-note-data-helper 以 ntuh_token 開頁時 ======
+    // 自動「抗生素 only + 1M」→ 輪詢 TradeNameGroupsOfEachDrug → 用現成解析 →
+    // 寫 localStorage['ntuh_data_'+token]（與 data-helper 同信封）→ 關頁。
+    // 注意：按 1M 是 ASP.NET postback（整頁 reload），且 reload 後 query string 可能
+    // 掉 token，故用 sessionStorage 存 pending token 讓新頁仍認得自己。
+    function runChartWorker(token) {
+        const L = '[ChartWorker]';
+        console.log(L, '啟動 token=', token, '｜TRIGGERED=', sessionStorage.getItem('ntuh_chart_triggered'), '｜urlToken=', new URLSearchParams(location.search).get('ntuh_token'));
+        const KEY = 'ntuh_data_' + token;
+        const PENDING = 'ntuh_chart_pending';
+        const TRIGGERED = 'ntuh_chart_triggered';
+        const done = (obj, close) => {
+            try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch (e) { console.log(L, 'setItem 失敗', e); }
+            sessionStorage.removeItem(PENDING);
+            sessionStorage.removeItem(TRIGGERED);
+            console.log(L, '已寫回', KEY, '｜ok=', obj.ok, '｜close=', close);
+            if (close) setTimeout(() => window.close(), 150);
+        };
+        const t0 = performance.now();
+        // 觸發 1M 的時間點（判斷「確定無抗生素」用）。若進來時 TRIGGERED 已設(reload 救回)，以 t0 為基準。
+        let postT0 = sessionStorage.getItem(TRIGGERED) ? t0 : 0;
+        const iv = setInterval(() => {
+            const d = window.TradeNameGroupsOfEachDrug;
+            const dLen = Array.isArray(d) ? d.length : (typeof d);
+            // 1) 資料已載入 → 用現成邏輯解析後回傳
+            if (Array.isArray(d) && d.length) {
+                clearInterval(iv);
+                capturedData = d;
+                let text = '';
+                try { text = formatOutput(buildResults()); } catch (e) { console.log(L, 'parse 失敗', e); done({ ok: false, error: 'parse 失敗:' + e.message }, true); return; }
+                console.log(L, '解析完成，長度', text.length);
+                done({ ok: true, text }, true);
+                return;
+            }
+            // 2) 尚未觸發過、且控制項就緒 → 設抗生素 only + 按 1M
+            //    btnMonth 是 UpdatePanel「部分 postback」(AJAX 局部更新)，頁面不 reload，
+            //    故 click 後【不停輪詢】，繼續等 TradeNameGroupsOfEachDrug 被局部更新塞入。
+            //    （若某環境改成整頁 reload，TRIGGERED/PENDING 存進 sessionStorage 讓新頁救回）
+            if (!sessionStorage.getItem(TRIGGERED)) {
+                const btn = document.getElementById('btnMonth');
+                const cbs = document.querySelectorAll('input[id^="cblDrugFormulaType_"]');
+                if (btn && cbs.length) {
+                    sessionStorage.setItem(TRIGGERED, '1');
+                    sessionStorage.setItem(PENDING, token);
+                    cbs.forEach((cb) => {
+                        const lbl = cb.closest('td,label,div')?.innerText || '';
+                        cb.checked = /抗生素/.test(lbl);
+                    });
+                    console.log(L, '設定抗生素 only + click btnMonth（部分 postback，繼續輪詢）');
+                    try { window.TradeNameGroupsOfEachDrug = undefined; } catch (e) { /* noop */ } // 清舊值，只認局部更新後的新資料
+                    postT0 = performance.now();
+                    btn.click(); // 局部更新，不 reload；輪詢繼續，下一 tick 起等資料
+                    return;      // 只結束本次 callback，interval 續跑
+                }
+            }
+            // 3) 已觸發但確定沒有抗生素 → 回 (no abx)，不逾時
+            //    空陣列 = 局部更新完成、確定無藥；有些頁無藥時不塞空陣列（維持 undefined），
+            //    故觸發後過 8s 寬限仍無資料也視為無藥。
+            if (postT0 && ((Array.isArray(d) && d.length === 0) || performance.now() - postT0 > 8000)) {
+                clearInterval(iv);
+                console.log(L, '確定無抗生素 (no abx)，最後 TradeName=', dLen);
+                done({ ok: true, text: '(no abx)' }, true);
+                return;
+            }
+            // 4) 逾時（保險）
+            if (performance.now() - t0 > 18000) {
+                clearInterval(iv);
+                console.log(L, '逾時，最後 TradeName=', dLen);
+                done({ ok: false, error: '藥歷資料載入逾時' }, true);
+            }
+        }, 400);
+    }
+
     function addButton() {
         if (!document.body) { setTimeout(addButton, 100); return; }
         const btn = document.createElement('button');
@@ -311,5 +384,13 @@
         document.body.appendChild(btn);
     }
 
-    addButton();
+    // 進入點：被 data-helper 帶 ntuh_token 開頁（或 postback reload 後由 sessionStorage 救回）→ worker；否則原本行為
+    const _urlToken = new URLSearchParams(location.search).get('ntuh_token');
+    const _pendingToken = sessionStorage.getItem('ntuh_chart_pending');
+    const _workerToken = _urlToken || _pendingToken;
+    if (_workerToken) {
+        runChartWorker(_workerToken);
+    } else {
+        addButton();
+    }
 })();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 處方檢視工具
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.0
+// @version      1.6.1
 // @description  讀取處方醫令頁 (MedicationV2.aspx) 的 OrderBox(一般處方) 與 OrderDisplayBox(自備藥) 兩張 grid，整理目前在使用的藥物成「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內/自備分組對齊輸出並可一鍵複製
 // @match        *://*/*MedicationV2.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js
@@ -218,6 +218,34 @@
         document.body.appendChild(box);
     }
 
+    // ====== 背景 worker：被 progress-note-data-helper 以 ntuh_token 開頁時 ======
+    // MedicationV2 開頁即顯示現行處方（無需互動）→ 輪詢 buildResults 到 grid 就緒 →
+    // 用現成 formatOutput → 寫 localStorage['ntuh_data_'+token]（與 data-helper 同信封）→ 關頁。
+    function runRxWorker(token) {
+        const KEY = 'ntuh_data_' + token;
+        const done = (obj) => {
+            try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch (e) { /* noop */ }
+            setTimeout(() => window.close(), 150);
+        };
+        const t0 = performance.now();
+        const iv = setInterval(() => {
+            const res = buildResults();
+            if (res) {
+                const n = res.regular.length + res.own.length;
+                // 有藥 → 直接回；grid 在但暫無藥 → 給 3s 寬限確認非「還在載入」
+                if (n > 0 || performance.now() - t0 > 3000) {
+                    clearInterval(iv);
+                    done({ ok: true, text: formatOutput(res) });
+                    return;
+                }
+            }
+            if (performance.now() - t0 > 15000) {
+                clearInterval(iv);
+                done({ ok: false, error: '處方載入逾時' });
+            }
+        }, 400);
+    }
+
     function addButton() {
         if (!document.body) { setTimeout(addButton, 100); return; }
         const btn = document.createElement('button');
@@ -232,5 +260,11 @@
         document.body.appendChild(btn);
     }
 
-    addButton();
+    // 進入點：被 data-helper 帶 ntuh_token 開頁 → worker；否則原本「整理處方」按鈕
+    const _rxToken = new URLSearchParams(location.search).get('ntuh_token');
+    if (_rxToken) {
+        runRxWorker(_rxToken);
+    } else {
+        addButton();
+    }
 })();
