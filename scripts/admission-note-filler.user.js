@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Admission Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.6
 // @description  自動填入入院紀錄各欄位，並自動帶入檢驗結果
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertAdmissionNoteContent.aspx*
@@ -46,9 +46,15 @@
         // 含 Informant: 與 CC: 兩行（不再從後段 Subjective 的 CC: 抓單行）
         const cc = getBlock('主訴');
 
-        let diagnosis = '';
-        const diagMatch = pt.match(/={3,}Diagnosis={3,}\n([\s\S]*?)(?=\n={3,}|$)/i);
-        if (diagMatch) diagnosis = diagMatch[1].trim();
+        // 臆斷：優先抓獨立的「臆斷(Tentative Diagnosis)」段（Active/Underlying），
+        // 位於醫療需求與治療計畫之前。若筆記沒有獨立臆斷段（同事只把診斷放在
+        // 醫療需求 =Diagnosis= 的完整模板），退回從 PT 內的 =Diagnosis= 區塊抓，
+        // 避免 tplTD 空白。
+        let diagnosis = getBlock('臆斷');
+        if (!diagnosis) {
+            const diagMatch = pt.match(/={3,}Diagnosis={3,}\n([\s\S]*?)(?=\n={3,}|$)/i);
+            if (diagMatch) diagnosis = diagMatch[1].trim();
+        }
 
         return {
             cc,

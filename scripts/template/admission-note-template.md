@@ -220,6 +220,15 @@ Neurological Examination:
    Purpura(-) Ecchymoses(-) Telangiectasia(-), Plaque(-),
    Lymphadenopathy(-)
 
+臆斷(Tentative Diagnosis)
+[Active]
+#. [primary diagnosis]
+#. [secondary active diagnosis]
+
+[Underlying]
+#. [chronic condition 1, most relevant to admission first]
+#. [chronic condition 2]
+
 醫療需求與治療計畫(Medical Needs and Care Plan)
 =========Subjective=========
 CC: [chief complaint in one line]
