@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Admission Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  自動填入入院紀錄各欄位，並自動帶入檢驗結果
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertAdmissionNoteContent.aspx*
@@ -42,9 +42,9 @@
 
         const pt = getBlock('醫療需求與治療計畫');
 
-        let cc = '';
-        const ccMatch = pt.match(/CC:\s*(.+)/);
-        if (ccMatch) cc = ccMatch[1].trim();
+        // 主訴：抓 template 最前面的第一段「主訴 (Chief Complaint)」整塊，
+        // 含 Informant: 與 CC: 兩行（不再從後段 Subjective 的 CC: 抓單行）
+        const cc = getBlock('主訴');
 
         let diagnosis = '';
         const diagMatch = pt.match(/={3,}Diagnosis={3,}\n([\s\S]*?)(?=\n={3,}|$)/i);
