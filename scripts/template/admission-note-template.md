@@ -7,65 +7,104 @@
 - Do NOT add information not present in the summary
 - If information is not mentioned, write "not documented"
 - Never abbreviate diagnosis names
+- Never include ICD or any diagnosis codes
 - Output the full note first, then ITEMS TO VERIFY at the end
+- Do not add extra blank lines; follow the spacing in the template exactly
+- If a section has no content (e.g. `[Image] = not documented`), still include the header but keep it to one line
 
 ---
 
 ## PRESENT ILLNESS — 3 paragraphs
 
-**Paragraph 1:** Patient background + symptom course up to ED referral  
-**Paragraph 2:** ED evaluation — vital signs, PE findings, labs, imaging  
-**Paragraph 3:** Diagnosis, initial management, admission reason
+**Determine admission route first:**
+- **Via ED:** evaluated in ED before admission
+- **Via OPD:** admitted directly through outpatient clinic
+
+**Paragraph 1 — Background + symptom course**
+- Via ED: end with `...referred to our emergency department (ED).`
+- Via OPD: end with `...He/She then went to Dr. [name]'s OPD for help on [date].`
+
+**Paragraph 2 — Evaluation findings**
+- Via ED: vital signs → PE → labs → imaging
+- Via OPD: `At the out-patient clinic, [findings]...`
+- Labs: highlight only abnormal or clinically relevant values with number in parentheses
+  - e.g. `leukocytosis (WBC 18.3 K/μL)`; group normal results as `...were unremarkable`
+- Imaging: interpreted finding with key descriptor, not raw report
+
+**Paragraph 3 — Diagnosis + management + admission reason**
+- Via ED: `[Diagnosis] was diagnosed. Initial management included [types]. Admitted for [diagnosis].`
+- Via OPD: `...admission was arranged for further evaluation and management. So this time, under the diagnosis of [diagnosis], he/she was admitted for [reason].`
 
 ---
 
 ## REVIEW OF SYSTEMS (ROS)
 
-- Change relevant items to (+) based on the summary
-- Format: `symptom(+, brief description)` e.g. `cough(+, productive, for 1 week)`
-- Keep all other items as (-)
+- Mark positive findings as: `symptom(+, brief description)`
+  - e.g. `cough(+, productive, for 1 week)`
+- All other items remain (-)
 
 ---
 
 ## PHYSICAL EXAMINATION (PE)
 
-- Fill in abnormal findings based on the summary
-- Keep normal findings as per template default
+- Default neuro exam: `clear and oriented` / `full` / `steady`
+- Override only if abnormality is documented in summary
+- Fill in abnormal findings; keep normal findings as per template
 
 ---
 
 ## DIAGNOSIS FORMATTING
 
 **Format:**
-`[Full diagnosis name] ([modifier]), [status post Full Procedure Name on DATE] / [under medication (DATE-)]`
+`[Full diagnosis name] ([modifier]), [status post Full Procedure Name on DATE], [under medication]`
 
 **Rules:**
-- Never abbreviate diagnosis names
-- `status post` = previously completed treatment/procedure
-- `under` = currently ongoing treatment
-- Do NOT write "(long-term)" — just write `under [medication]`
-- If two active diagnoses share the same treatment, write separately under each
-- Active diagnoses: primary admission diagnosis first
-- Underlying diagnoses: most relevant to current admission first
-- Measurements/scales: most recent value only, with date
-  - e.g. `Heart failure with preserved ejection fraction, EF = 80.5% (2026/05/11)`
-- Procedures: full name, with date
+- No diagnosis abbreviations; no ICD codes
+- `status post` = completed; `under` = ongoing
+- Medications: no dates, no "(long-term)" — just `under [medication]`
+- Multiple medications: comma-separated e.g. `under Losartan, Bisoprolol`
+- Same treatment shared by two diagnoses → write separately under each
+- Measurements/scales: most recent value only + date
+  - e.g. `EF = 80.5% (2026/05/11)`, `MMSE = 3 (2024)`
+- Procedures: full name + date
   - e.g. `status post Transurethral Resection of the Prostate on 2024/08/04`
-- If date unknown: leave as `(____/__/__)`
+- Unknown date → `(____/__/__)`
 
 **Date precision:**
-- Within 2 years → YYYY/MM/DD
-- 2–10 years ago → YYYY/MM
-- More than 10 years ago → YYYY
+- ≤2 years → YYYY/MM/DD
+- 2–10 years → YYYY/MM
+- >10 years → YYYY
+
+**Ordering:**
+- Active: primary admission diagnosis first; conditions most directly impacting current care (e.g. malnutrition, sepsis) take priority over the underlying cause
+- Underlying: most relevant to current admission first
+
+**Antibiotic / treatment history under a diagnosis:**
+- List as indented sub-items in chronological order
+- Completed courses: `- status post [drug] from YYYY/MM/DD to YYYY/MM/DD`
+- Ongoing: `- under [drug]` — always last in the list
+- Do NOT write ongoing treatment inline after the diagnosis name if there is a treatment history; use sub-items instead
+
+**Chemotherapy notation:**
+- Include C1D1 and the most recent cycle's D1
+- Format: `status post [Regimen] (C1D1=YYYY/MM/DD, CxD1=YYYY/MM/DD)`
+- If still ongoing, write as sub-item: `- status post [Regimen] (C1D1=..., CxD1=...)`
+
+**Oncology diagnoses:**
+- Include staging e.g. `(pT4aN1bM1c, stage IVc)`
+- Include molecular markers if documented e.g. `Her2/Neu 0/3+; KRAS c.35G>T, p.G12V, wild B-raf, pMMR`
+- If markers not in summary, add to ITEMS TO VERIFY
 
 ---
 
 ## PLAN
 
-- Maximum 5 items
-- Order by priority
-- Consolidate related items
-- Be concise — one line per item where possible, no sub-bullets
+- Group by active diagnosis as primary structure
+- Sub-header = diagnosis name in brackets
+- Append `[Disposition]` and `[Future plans]` at end
+- Omit sub-headers with no content
+- One line per item; abbreviate freely: abx, f/u, c/w, w/, s/p, IR, OPD
+- Cut filler words
 
 ---
 
@@ -79,7 +118,7 @@ At the end of every output, add:
 ```
 
 Include:
-- Missing dates (surgery, procedures, measurements) → marked as `(____/__/__)`
+- Missing dates for procedures/measurements → `(____/__/__)`
 - Missing medication dosages
 - Symptoms unconfirmable due to cognitive status
 - Pending lab/culture results
@@ -90,6 +129,10 @@ Include:
 ## OUTPUT TEMPLATE
 
 ```
+主訴 (Chief Complaint)
+Informant: patient, family and medical records
+CC: [chief complaint in one line]
+
 病史(Patient History)
 【Present illness】
 This is a [age]-year-old [male/female] with the medical history of
@@ -211,7 +254,17 @@ CC: [chief complaint in one line]
 #. [chronic condition 2]
 
 ==========Plan=============
-#. [max 5 items, ordered by priority, one line each]
+[Active Diagnosis 1]
+#. ...
+
+[Active Diagnosis 2]
+#. ...
+
+[Disposition]
+#. ...
+
+[Future plans]
+#. ...
 
 ===ITEMS TO VERIFY===
 [ ] [Section] - [issue] → [action needed]
