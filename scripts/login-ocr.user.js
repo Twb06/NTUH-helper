@@ -3,11 +3,11 @@
 // @namespace    http://tampermonkey.net/
 // @version      5.5
 // @icon         https://www.ntuh.gov.tw/images/logo.ico
-// @description  Fill the NTUH Portal login captcha once via in-script template matching.
+// @description  Fill the NTUH Portal login captcha using in-script template matching.
 // @author       WeiJyun9008
 // @match        https://portal.ntuh.gov.tw/General/Login.aspx*
-// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/oneshot-login-ocr.user.js
-// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/oneshot-login-ocr.user.js
+// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/login-ocr.user.js
+// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/login-ocr.user.js
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
