@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 藥歷圖工具
 // @namespace    https://github.com/your-username/chart-antibiotic-extractor
-// @version      1.4.4
+// @version      1.4.5
 // @description  讀取藥歷圖 (Chart.aspx) 的 TradeNameGroupsOfEachDrug，整理任意藥物成「商品名 起日-迄日」，迄日為今天或未來則留破折號
 // @match        *://*/*Chart.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js
@@ -243,6 +243,11 @@
         const blocks = [];
         if (ongoing.length > 0) blocks.push(ongoing.map(line).join('\n'));
         if (ongoing.length > 0 && stopped.length > 0) blocks.push('-----------');
+        // 今日無在用抗生素但有既往用藥 → 標示 free 並加分隔線，凸顯目前無抗生素
+        if (ongoing.length === 0 && stopped.length > 0) {
+            blocks.push('free');
+            blocks.push('-----------');
+        }
         if (stopped.length > 0) blocks.push(stopped.map(line).join('\n'));
 
         return blocks.join('\n');

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.11
-// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。「抓取全部」透過事件觸發 progress-note-data-helper 引擎，取回九來源（生命徵象/導管/照會/飲食/影像/藥歷/處方/檢驗）並以區塊化面板呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
+// @version      1.31
+// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
@@ -85,7 +85,7 @@ I was informed relieved of symptoms around 0/0 00:00,
 #. The VS visited and
 #. The nasal swab of COVID / Influenza revealed positive result, quarantine  was arranged`;
 
-    function fillDutyNote() {
+    function fillDutyNote(autoConfirm = true) {
         const contentId = 'NTUHWeb1_BlankNoteMainTab_txbBlankContnt';
         const titleId = 'NTUHWeb1_BlankNoteMainTab_txbBlankTitle';
         if (!document.getElementById(contentId)) {
@@ -94,10 +94,12 @@ I was informed relieved of symptoms around 0/0 00:00,
         fillField(titleId, DUTY_TITLE);
         fillField(contentId, DUTY_TPL);
         document.getElementById(contentId).focus();
-        setTimeout(() => {
-            const saveBtn = document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1');
-            if (saveBtn) saveBtn.click();
-        }, 300);
+        if (autoConfirm) {
+            setTimeout(() => {
+                const saveBtn = document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1');
+                if (saveBtn) saveBtn.click();
+            }, 300);
+        }
         return { ok: true };
     }
 
@@ -182,7 +184,7 @@ I was informed relieved of symptoms around 0/0 00:00,
     // ─────────────────────────────────────────────
     // 填入 Progress Note
     // ─────────────────────────────────────────────
-    function fillProgressNote(noteText) {
+    function fillProgressNote(noteText, autoConfirm = true) {
         const parsed = parseNote(noteText);
         const results = [];
 
@@ -228,10 +230,12 @@ I was informed relieved of symptoms around 0/0 00:00,
             });
         }
 
-        setTimeout(() => {
-            const saveBtn = document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote');
-            if (saveBtn) saveBtn.click();
-        }, 500);
+        if (autoConfirm) {
+            setTimeout(() => {
+                const saveBtn = document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote');
+                if (saveBtn) saveBtn.click();
+            }, 500);
+        }
 
         return results;
     }
@@ -239,7 +243,7 @@ I was informed relieved of symptoms around 0/0 00:00,
     // ─────────────────────────────────────────────
     // 填入 Weekly Summary
     // ─────────────────────────────────────────────
-    function fillWeeklySummary(noteText) {
+    function fillWeeklySummary(noteText, autoConfirm = true) {
         const parsed = parseNote(noteText);
         const results = [];
 
@@ -259,10 +263,12 @@ I was informed relieved of symptoms around 0/0 00:00,
             ok: fillField('NTUHWeb1_WeeklySummaryMainTab_txbBriefSummary', briefContent)
         });
 
-        setTimeout(() => {
-            const saveBtn = document.getElementById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary');
-            if (saveBtn) saveBtn.click();
-        }, 500);
+        if (autoConfirm) {
+            setTimeout(() => {
+                const saveBtn = document.getElementById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary');
+                if (saveBtn) saveBtn.click();
+            }, 500);
+        }
 
         return results;
     }
@@ -342,7 +348,7 @@ I was informed relieved of symptoms around 0/0 00:00,
                 width: 48px;
                 height: 48px;
                 border-radius: 50%;
-                background: #252d42;
+                background: #2c5f54;
                 border: 2px solid #4a7cdc;
                 box-shadow: 0 4px 16px rgba(0,0,0,0.4);
                 z-index: 99999;
@@ -362,15 +368,15 @@ I was informed relieved of symptoms around 0/0 00:00,
                 position: fixed;
                 bottom: 24px;
                 right: 24px;
-                width: 374px;
-                background: #1a1f2e;
-                border: 1px solid #2d3650;
+                width: 380px;
+                background: #ffffff;
+                border: 1px solid #9db98a;
                 border-radius: 12px;
                 box-shadow: 0 8px 32px rgba(0,0,0,0.4);
                 z-index: 99999;
                 font-family: 'Consolas', 'Courier New', monospace;
                 font-size: 13px;
-                color: #c8d3e8;
+                color: #2b3a2b;
                 overflow: hidden;
                 display: none;
             }
@@ -379,8 +385,9 @@ I was informed relieved of symptoms around 0/0 00:00,
                 align-items: center;
                 justify-content: space-between;
                 padding: 10px 14px;
-                background: #252d42;
-                border-bottom: 1px solid #2d3650;
+                background: #2c5f54;
+                color: #fff;
+                border-bottom: 1px solid #9db98a;
                 cursor: move;
                 user-select: none;
                 font-size: 13px;
@@ -390,7 +397,7 @@ I was informed relieved of symptoms around 0/0 00:00,
             #ntuh-filler-close {
                 background: none;
                 border: none;
-                color: #7a8aaa;
+                color: #dfe8d4;
                 cursor: pointer;
                 font-size: 16px;
                 padding: 0 4px;
@@ -405,24 +412,21 @@ I was informed relieved of symptoms around 0/0 00:00,
                 max-height: 82vh;
                 overflow-y: auto;
             }
-            #ntuh-filler-input {
+            #ntuh-filler-notestatus {
                 width: 100%;
-                height: 160px;
-                background: #0f1420;
-                border: 1px solid #2d3650;
-                border-radius: 6px;
-                color: #c8d3e8;
-                font-family: 'Consolas', monospace;
-                font-size: 12px;
-                padding: 10px;
-                resize: vertical;
                 box-sizing: border-box;
-                line-height: 1.5;
+                background: #ffffff;
+                border: 1px solid #9db98a;
+                border-left: 3px solid #4a5a72;
+                border-radius: 6px;
+                color: #5f6f57;
+                font-size: 12px;
+                padding: 9px 12px;
+                line-height: 1.4;
             }
-            #ntuh-filler-input:focus {
-                outline: none;
-                border-color: #4a7cdc;
-            }
+            #ntuh-filler-notestatus.ok   { border-left-color: #4caf7d; color: #4caf7d; }
+            #ntuh-filler-notestatus.err  { border-left-color: #e05c5c; color: #e05c5c; }
+            #ntuh-filler-notestatus.warn { border-left-color: #f0a030; color: #cf8a1e; }
             #ntuh-filler-body button {
                 width: 100%;
                 padding: 10px 0;
@@ -434,16 +438,22 @@ I was informed relieved of symptoms around 0/0 00:00,
                 transition: opacity 0.15s;
             }
             #ntuh-filler-fillrow {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
+                display: flex;
+                flex-direction: column;
+                gap: 3px;
             }
-            #ntuh-filler-fillrow button { width: 100%; }
-            #ntuh-filler-grab {
-                background: #2d3650;
-                color: #8fa8d8;
+            #ntuh-filler-fillrow button { width: 100%; margin-top: 5px; }
+            #ntuh-filler-fillrow button:first-child { margin-top: 0; }
+            .ntuh-hint {
+                font-size: 10px;
+                color: #6a7a62;
+                line-height: 1.35;
+                margin: 1px 2px 0;
             }
-            #ntuh-filler-grab:hover { opacity: 0.8; }
+            .ntuh-hint-top {
+                margin: 0 2px 2px;
+                color: #b0692a;
+            }
             #ntuh-filler-fill {
                 background: #4a7cdc;
                 color: #fff;
@@ -465,17 +475,11 @@ I was informed relieved of symptoms around 0/0 00:00,
             }
             #ntuh-filler-duty:hover { opacity: 0.85; }
             #ntuh-filler-grab-outer {
-                background: #1e3a3a;
-                color: #6fd0e0;
+                background: #e8862e;
+                color: #fff;
             }
             #ntuh-filler-grab-outer:hover { opacity: 0.85; }
             #ntuh-filler-grab-outer:disabled { opacity: 0.5; cursor: wait; }
-            #ntuh-filler-copyall {
-                background: #2d3650;
-                color: #8fa8d8;
-                display: none;
-            }
-            #ntuh-filler-copyall:hover { opacity: 0.85; }
             #ntuh-filler-grabrow { display: flex; gap: 8px; }
             #ntuh-filler-grabrow button { flex: 1; width: auto; }
             #ntuh-filler-outer { display: flex; flex-direction: column; gap: 7px; }
@@ -486,8 +490,8 @@ I was informed relieved of symptoms around 0/0 00:00,
                 margin-top: 4px;
             }
             .ntuh-blk {
-                background: #0f1420;
-                border: 1px solid #2d3650;
+                background: #ffffff;
+                border: 1px solid #9db98a;
                 border-radius: 8px;
                 overflow: hidden;
             }
@@ -496,7 +500,7 @@ I was informed relieved of symptoms around 0/0 00:00,
                 align-items: center;
                 justify-content: space-between;
                 padding: 6px 10px;
-                background: #141b2b;
+                background: #2c5f54;
                 font-size: 12px;
                 font-weight: 600;
                 cursor: pointer;
@@ -505,15 +509,21 @@ I was informed relieved of symptoms around 0/0 00:00,
             .ntuh-blk-copy {
                 background: none;
                 border: none;
-                color: #5a6a88;
+                color: #cfe0d6;
                 cursor: pointer;
-                width: auto !important;
-                margin-left: auto;
-                font-size: 15px;
-                padding: 0 2px;
+                width: 34px !important;
+                height: 34px;
+                margin: -6px -4px -6px auto;
+                font-size: 21px;
+                padding: 0;
                 line-height: 1;
+                border-radius: 6px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex: 0 0 auto;
             }
-            .ntuh-blk-copy:hover { color: #8fa8d8; }
+            .ntuh-blk-copy:hover { color: #2c5f54; background: #e3ecd9; }
             .ntuh-blk-body {
                 margin: 0;
                 padding: 8px 10px;
@@ -529,32 +539,56 @@ I was informed relieved of symptoms around 0/0 00:00,
             }
             .ntuh-divider {
                 border: none;
-                border-top: 1px solid #2d3650;
+                border-top: 1px solid #9db98a;
                 margin: 4px 0;
             }
-            #ntuh-filler-status {
-                font-size: 11px;
-                min-height: 16px;
-            }
-            #ntuh-filler-preview {
+            .ntuh-linkable { cursor: pointer; }
+            .ntuh-linkable:hover { text-decoration: underline; }
+            /* 左側面板（交班筆記，之後再塞護理紀錄）：寬 160px，高度貼滿與右側 UI 對齊，同開同關 */
+            #ntuh-handover-left {
+                position: fixed;
+                top: 44px;
+                bottom: 24px;
+                left: 24px;
+                width: 160px;
+                background: #ffffff;
+                border: 1px solid #9db98a;
+                border-radius: 12px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+                z-index: 99999;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                color: #2b3a2b;
+                overflow: hidden;
                 display: none;
-                background: #0f1420;
-                border: 1px solid #2d3650;
-                border-radius: 6px;
-                padding: 8px;
-                font-size: 10.5px;
-                line-height: 1.6;
-                max-height: 160px;
-                overflow-y: auto;
+                flex-direction: column;
             }
-            .ntuh-ok   { color: #4caf7d; }
-            .ntuh-err  { color: #e05c5c; }
-            .ntuh-warn { color: #f0a030; }
-            .ntuh-row {
+            #ntuh-handover-left .hl-head {
                 display: flex;
+                align-items: center;
                 justify-content: space-between;
-                padding: 2px 0;
-                border-bottom: 1px solid #1e2638;
+                padding: 10px 12px;
+                background: #2c5f54;
+                border-bottom: 1px solid #9db98a;
+                font-size: 12px;
+                font-weight: 600;
+                color: #7adba0;
+                flex: 0 0 auto;
+            }
+            #ntuh-handover-left .hl-head2 {
+                border-top: 1px solid #9db98a;
+                color: #f0a860;
+            }
+            #ntuh-handover-left .hl-body {
+                margin: 0;
+                padding: 10px 12px;
+                white-space: pre-wrap;
+                word-break: break-word;
+                font-size: 12px;
+                line-height: 1.55;
+                flex: 1;
+                min-height: 0;
+                overflow-y: auto;
             }
         `;
         document.head.appendChild(style);
@@ -573,134 +607,148 @@ I was informed relieved of symptoms around 0/0 00:00,
                 <button id="ntuh-filler-close">✕</button>
             </div>
             <div id="ntuh-filler-body">
-                <textarea id="ntuh-filler-input" placeholder="在此貼入筆記內容，或點「抓取 primary note」…"></textarea>
-                <button id="ntuh-filler-grab">📥 抓取 primary note</button>
+                <div class="ntuh-hint ntuh-hint-top">＊需先在右上方筆記欄新增 primary note 才能自動填寫</div>
+                <div id="ntuh-filler-notestatus">尚未抓取 primary note（按下方按鍵時自動抓取）</div>
                 <div id="ntuh-filler-fillrow">
                     <button id="ntuh-filler-today">📝 今日更新</button>
+                    <div class="ntuh-hint">將舊的 today's event 內容移到最下方，日期換成今天</div>
                     <button id="ntuh-filler-fill">✨ 填入 progress</button>
-                    <button id="ntuh-filler-weekly">📅 Weekly</button>
+                    <div class="ntuh-hint">自動新增 progress，將 primary note 內容依序貼上後確認</div>
+                    <button id="ntuh-filler-weekly">📅 填入weekly</button>
+                    <div class="ntuh-hint">自動新增 weekly，將 primary note 內容依序貼上後暫存</div>
                     <button id="ntuh-filler-duty">🌙 Duty note</button>
+                    <div class="ntuh-hint">自動新增 free note，將模板內容貼上後暫存</div>
                 </div>
                 <hr class="ntuh-divider">
                 <div id="ntuh-filler-grabrow">
                     <button id="ntuh-filler-grab-outer">🔄 抓取全部data</button>
-                    <button id="ntuh-filler-copyall">📋 複製全部</button>
                 </div>
-                <div id="ntuh-filler-status"></div>
-                <div id="ntuh-filler-preview"></div>
                 <div id="ntuh-filler-outer"></div>
             </div>
         `;
         document.body.appendChild(panel);
 
+        // 左側「交班筆記」面板（與右側 UI 同開同關）
+        const hLeft = document.createElement('div');
+        hLeft.id = 'ntuh-handover-left';
+        hLeft.innerHTML = `
+            <div class="hl-head"><span id="ntuh-hl-handover-title">🗒 交班筆記</span></div>
+            <pre class="hl-body" id="ntuh-hl-handover">尚未抓取（按右側「抓取全部data」）</pre>
+            <div class="hl-head hl-head2"><span id="ntuh-hl-nursing-title">📋 今日護理紀錄</span></div>
+            <pre class="hl-body" id="ntuh-hl-nursing">尚未抓取</pre>`;
+        document.body.appendChild(hLeft);
+
         fab.onclick = () => {
             fab.style.display = 'none';
             panel.style.display = 'block';
+            hLeft.style.display = 'flex';
         };
 
         document.getElementById('ntuh-filler-close').onclick = () => {
             panel.style.display = 'none';
+            hLeft.style.display = 'none';
             fab.style.display = 'flex';
         };
 
         makeDraggable(panel, document.getElementById('ntuh-filler-header'));
 
-        document.getElementById('ntuh-filler-grab').onclick = () => {
-            const content = getNoteContent();
-            if (content) {
-                document.getElementById('ntuh-filler-input').value = content;
-                setStatus('✓ 已從筆記區抓取內容', 'ok');
-            } else {
-                setStatus('⚠ 找不到筆記，請先開啟 Primary note', 'err');
-            }
-        };
-
+        // 今日更新：自動抓 primary note → 做今日紀錄
         document.getElementById('ntuh-filler-today').onclick = () => {
-            const text = document.getElementById('ntuh-filler-input').value.trim();
-            if (!text) { setStatus('⚠ 請先抓取筆記內容', 'err'); return; }
+            const text = grabPrimaryNote();
+            if (!text) { setStatus('⚠ 找不到 primary note，請先開啟筆記', 'err'); return; }
             const result = prepareToday(text);
             if (result.ok) {
-                const updated = document.getElementById('NTUHWeb1_BlankNoteMainTab_txbBlankContnt')?.value;
-                if (updated) document.getElementById('ntuh-filler-input').value = updated;
-                setStatus('✓ 今日紀錄準備完成！', 'ok');
+                setStatus('✓ 成功更新今日', 'ok');
             } else {
                 setStatus('✗ ' + result.reason, 'err');
             }
         };
 
-        document.getElementById('ntuh-filler-fill').onclick = () => {
-            const text = document.getElementById('ntuh-filler-input').value.trim();
-            if (!text) { setStatus('⚠ 請先貼入或抓取筆記內容', 'err'); return; }
-            if (!document.getElementById('NTUHWeb1_ProgressNoteMainTab_txbSubject')) {
-                setStatus('⚠ 請先點「新增Progress」開啟表單', 'err');
-                return;
-            }
-            showResults(fillProgressNote(text));
+        // 填入 progress：自動抓 primary note → 點「新增Progress」→ 確認 PAP 展開 → 填入
+        document.getElementById('ntuh-filler-fill').onclick = async (e) => {
+            const btn = e.currentTarget;
+            const text = grabPrimaryNote();
+            if (!text) { setStatus('⚠ 找不到 primary note，請先開啟筆記', 'err'); return; }
+            btn.disabled = true;
+            try {
+                await clickAndWaitPostback('NTUHWeb1_btnInsertProgressNote'); // 開新 Progress 表單，等 postback 完成
+                if (!await waitForEl('NTUHWeb1_ProgressNoteMainTab_txbSubject')) {
+                    setStatus('✗ Progress 表單未出現', 'err'); return;
+                }
+                await ensureProgressPAP();                                          // 確認 PAP 展開，缺則點「新增PAP」
+                // 填入 → 驗證沒被後續重繪洗掉（sentinel: txbBSIBundle 恆為 'nil'）→ 穩住才確認
+                {
+                    const r = await fillStable(() => fillProgressNote(text, false),
+                        'NTUHWeb1_ProgressNoteMainTab_txbBSIBundle');
+                    if (r.ok) {
+                        document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote')?.click();
+                        setStatus('✓ 成功填入 progress', 'ok');
+                    } else {
+                        setStatus('⚠ 填入後被系統清空，未自動確認，請檢查後手動確認', 'warn');
+                    }
+                }
+            } finally { btn.disabled = false; }
         };
 
-        document.getElementById('ntuh-filler-weekly').onclick = () => {
-            const text = document.getElementById('ntuh-filler-input').value.trim();
-            if (!text) { setStatus('⚠ 請先貼入或抓取筆記內容', 'err'); return; }
-            if (!document.getElementById('NTUHWeb1_WeeklySummaryMainTab_txbDiagnosis')) {
-                setStatus('⚠ 請先點「新增Weekly」開啟表單', 'err');
-                return;
-            }
-            showResults(fillWeeklySummary(text));
+        // 填入 weekly：自動抓 primary note → 點「新增Weekly」→ 填入
+        document.getElementById('ntuh-filler-weekly').onclick = async (e) => {
+            const btn = e.currentTarget;
+            const text = grabPrimaryNote();
+            if (!text) { setStatus('⚠ 找不到 primary note，請先開啟筆記', 'err'); return; }
+            btn.disabled = true;
+            try {
+                await clickAndWaitPostback('NTUHWeb1_btnInsertWeeklySummaryNote'); // 開新 Weekly 表單，等 postback 完成
+                if (!await waitForEl('NTUHWeb1_WeeklySummaryMainTab_txbDiagnosis')) {
+                    setStatus('✗ Weekly 表單未出現', 'err'); return;
+                }
+                // 填入 → 驗證沒被洗掉（sentinel: txbBriefSummary 恆有 prompt 前綴）→ 穩住才確認
+                {
+                    const r = await fillStable(() => fillWeeklySummary(text, false),
+                        'NTUHWeb1_WeeklySummaryMainTab_txbBriefSummary');
+                    if (r.ok) {
+                        document.getElementById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary')?.click();
+                        setStatus('✓ 成功填入 weekly', 'ok');
+                    } else {
+                        setStatus('⚠ 填入後被系統清空，未自動確認，請檢查後手動確認', 'warn');
+                    }
+                }
+            } finally { btn.disabled = false; }
         };
 
-        document.getElementById('ntuh-filler-duty').onclick = () => {
-            const result = fillDutyNote();
-            if (result.ok) {
-                setStatus('✓ 已填入 Duty Note 模板', 'ok');
-            } else {
-                setStatus('✗ ' + result.reason, 'err');
-            }
-        };
-
-        // 「抓取全部」：透過事件觸發 data-helper 引擎（它負責開背景頁/打 API），
-        // 結果由 data-helper 寫 localStorage['ntuh_datahelper_result'] 後派 'ntuh-datahelper-result' ping。
-        document.getElementById('ntuh-filler-grab-outer').onclick = (e) => {
+        // 「抓取全部data」：手動觸發 data-helper 引擎，結果進右側區塊＋左側面板
+        document.getElementById('ntuh-filler-grab-outer').onclick = async (e) => {
             const btn = e.currentTarget;
             btn.disabled = true;
-            setStatus('🔄 背景抓取中…（約需數秒）', 'warn');
-            try { localStorage.removeItem('ntuh_datahelper_result'); } catch (err) { /* noop */ }
-
-            let done = false;
-            const finish = (fn) => { if (done) return; done = true; document.removeEventListener('ntuh-datahelper-result', onResult); clearTimeout(to); btn.disabled = false; fn(); };
-            const onResult = () => finish(() => {
-                let results = [];
-                try { results = JSON.parse(localStorage.getItem('ntuh_datahelper_result') || '[]'); } catch (err) { results = []; }
-                try { localStorage.removeItem('ntuh_datahelper_result'); } catch (err) { /* noop */ }
-                renderBlocks(results);
-                const ok = results.filter((r) => r.ok).length;
-                setStatus(ok === results.length ? '✓ 抓取完成' : `部分成功（${ok}/${results.length}）`,
-                    ok === results.length ? 'ok' : 'warn');
-            });
-            const to = setTimeout(() => finish(() => {
-                setStatus('✗ data-helper 無回應，請確認已安裝並啟用', 'err');
-            }), 45000);
-
-            document.addEventListener('ntuh-datahelper-result', onResult);
-            document.dispatchEvent(new CustomEvent('ntuh-datahelper-grab'));
+            try { await grabAll(); } finally { btn.disabled = false; }
         };
 
-        document.getElementById('ntuh-filler-copyall').onclick = () => {
-            if (!lastGrabCombined) return;
-            navigator.clipboard.writeText(lastGrabCombined).then(() => {
-                const b = document.getElementById('ntuh-filler-copyall');
-                const t = b.textContent; b.textContent = '✅ 已複製';
-                setTimeout(() => { b.textContent = t; }, 1200);
-            });
+        // Duty note：自動點「新增Note」開 free note → 貼模板 → 暫存
+        document.getElementById('ntuh-filler-duty').onclick = async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                await clickAndWaitPostback('NTUHWeb1_btnInsertBlankNote'); // 開新 free note
+                if (!await waitForEl('NTUHWeb1_BlankNoteMainTab_txbBlankContnt')) {
+                    setStatus('✗ Note 表單未出現', 'err'); return;
+                }
+                const r = await fillStable(() => fillDutyNote(false),
+                    'NTUHWeb1_BlankNoteMainTab_txbBlankContnt');
+                if (r.ok) {
+                    document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1')?.click();
+                    setStatus('✓ 成功填入 duty note', 'ok');
+                } else {
+                    setStatus('⚠ 填入後被系統清空，未自動暫存，請檢查後手動暫存', 'warn');
+                }
+            } finally { btn.disabled = false; }
         };
     }
 
     // 區塊分組：key → 群組（顏色對應面板卡標題）
     const BLOCK_GROUPS = [
-        { title: '生命徵象',   keys: ['vitals', 'neuro'],            color: '#6fd0e0' },
+        { title: '生命徵象',   keys: ['tprbp', 'resp', 'gcs', 'uo', 'pain'], color: '#6fd0e0' },
         { title: '管路 · 照護', keys: ['catheter', 'consult', 'diet'], color: '#7adba0' },
         { title: '藥物 · 報告', keys: ['rx', 'meds', 'lab', 'image'],  color: '#f0a860' },
     ];
-    let lastGrabCombined = '';
 
     function renderBlocks(results) {
         const wrap = document.getElementById('ntuh-filler-outer');
@@ -709,7 +757,26 @@ I was informed relieved of symptoms around 0/0 00:00,
         const byKey = {};
         results.forEach((r) => { byKey[r.key] = r; });
 
-        const combinedParts = [];
+        // 交班筆記 + 今日護理紀錄 → 灌進左側面板兩區塊（不進右側區塊）
+        const setLeft = (id, r, emptyMsg) => {
+            const el = document.getElementById(id);
+            if (el && r) el.textContent = r.ok ? (r.text || emptyMsg) : ('抓取失敗：' + r.error);
+        };
+        setLeft('ntuh-hl-handover', byKey['handover'], '（無交班筆記）');
+        setLeft('ntuh-hl-nursing', byKey['nursing'], '（今日無護理紀錄）');
+
+        // 左側標題點擊跳轉對應頁面（交班 / 護理紀錄）
+        const wireLeftTitle = (titleId, baseText, r) => {
+            const el = document.getElementById(titleId);
+            if (!el || !r || !r.url) return;
+            el.textContent = baseText + ' ↗';
+            el.classList.add('ntuh-linkable');
+            el.title = '開啟對應頁面';
+            el.onclick = () => window.open(r.url, '_blank');
+        };
+        wireLeftTitle('ntuh-hl-handover-title', '🗒 交班筆記', byKey['handover']);
+        wireLeftTitle('ntuh-hl-nursing-title', '📋 今日護理紀錄', byKey['nursing']);
+
         BLOCK_GROUPS.forEach((g) => {
             const present = g.keys.filter((k) => byKey[k]);
             if (!present.length) return;
@@ -722,15 +789,19 @@ I was informed relieved of symptoms around 0/0 00:00,
             present.forEach((k) => {
                 const r = byKey[k];
                 const text = r.ok ? (r.text || '（無資料）') : ('抓取失敗：' + r.error);
-                combinedParts.push(r.label + '\n' + text);
 
                 const card = document.createElement('div');
                 card.className = 'ntuh-blk';
                 const head = document.createElement('div');
                 head.className = 'ntuh-blk-head';
                 const title = document.createElement('span');
-                title.textContent = r.label + (r.ok ? '' : ' ✗');
+                title.textContent = r.label + (r.ok ? '' : ' ✗') + (r.url ? ' ↗' : '');
                 title.style.color = r.ok ? g.color : '#e05c5c';
+                if (r.url) {
+                    title.classList.add('ntuh-linkable');
+                    title.title = '開啟對應頁面';
+                    title.onclick = (ev) => { ev.stopPropagation(); window.open(r.url, '_blank'); };
+                }
                 const copy = document.createElement('button');
                 copy.className = 'ntuh-blk-copy';
                 copy.textContent = '⧉';
@@ -759,34 +830,111 @@ I was informed relieved of symptoms around 0/0 00:00,
                 wrap.appendChild(card);
             });
         });
-
-        lastGrabCombined = combinedParts.join('\n\n');
-        const copyAll = document.getElementById('ntuh-filler-copyall');
-        if (copyAll) copyAll.style.display = combinedParts.length ? 'block' : 'none';
     }
 
+    // 抓 primary note，回傳內容（無則回 null）。狀態統一由 setStatus（上方狀態框）呈現
+    function grabPrimaryNote() {
+        return getNoteContent() || null;
+    }
+
+    // 觸發 data-helper 背景抓取，回傳 Promise（結果進面板；逾時則略過續行不卡住）
+    function grabAll() {
+        return new Promise((resolve) => {
+            setStatus('🔄 背景抓取中…（約需數秒）', 'warn');
+            try { localStorage.removeItem('ntuh_datahelper_result'); } catch (e) { /* noop */ }
+            let done = false;
+            const finish = (results) => {
+                if (done) return; done = true;
+                document.removeEventListener('ntuh-datahelper-result', onResult);
+                clearTimeout(to);
+                resolve(results);
+            };
+            const onResult = () => {
+                let results = [];
+                try { results = JSON.parse(localStorage.getItem('ntuh_datahelper_result') || '[]'); } catch (e) { results = []; }
+                try { localStorage.removeItem('ntuh_datahelper_result'); } catch (e) { /* noop */ }
+                renderBlocks(results);
+                const ok = results.filter((r) => r.ok).length;
+                setStatus(ok === results.length ? '✓ 抓取完成' : `部分成功（${ok}/${results.length}）`,
+                    ok === results.length ? 'ok' : 'warn');
+                finish(results);
+            };
+            const to = setTimeout(() => {
+                setStatus('⚠ data-helper 無回應，略過抓取續行', 'warn');
+                finish(null);
+            }, 45000);
+            document.addEventListener('ntuh-datahelper-result', onResult);
+            document.dispatchEvent(new CustomEvent('ntuh-datahelper-grab'));
+        });
+    }
+
+    // 點 ASP.NET 按鈕並等其 UpdatePanel 非同步 postback 完成（否則會搶在新 note 建好前就填+存）
+    function clickAndWaitPostback(btnId, timeout = 8000) {
+        return new Promise((resolve) => {
+            const btn = document.getElementById(btnId);
+            if (!btn) return resolve(false);
+            let settled = false;
+            const done = (ok) => { if (settled) return; settled = true; resolve(ok); };
+            try {
+                const prm = window.Sys && window.Sys.WebForms && window.Sys.WebForms.PageRequestManager.getInstance();
+                if (prm) {
+                    const handler = () => { prm.remove_endRequest(handler); setTimeout(() => done(true), 150); };
+                    prm.add_endRequest(handler);
+                    btn.click();
+                    setTimeout(() => done(true), timeout); // 保險：沒收到 endRequest 也放行
+                } else {
+                    btn.click();
+                    setTimeout(() => done(true), 800);
+                }
+            } catch (e) { btn.click(); setTimeout(() => done(true), 800); }
+        });
+    }
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // 填入後可能被「新增 note 的後續非同步重繪」洗掉 → 填→等→驗證 sentinel 欄位仍有值。
+    // weekly 的重繪較晚，單次檢查會誤判「穩了」→要求**連續兩次**檢查都在才算真穩；
+    // 被洗就重填，穩不住則回 ok:false 讓呼叫端別自動確認（避免存空表）。
+    const stillHas = (id) => { const el = document.getElementById(id); return !!(el && (el.value || '').trim()); };
+    async function fillStable(fillFn, sentinelId, tries = 5) {
+        let results = fillFn();
+        for (let i = 0; i < tries; i++) {
+            await sleep(600);
+            if (!stillHas(sentinelId)) { results = fillFn(); continue; } // 被洗→重填
+            await sleep(600);
+            if (stillHas(sentinelId)) return { results, ok: true };      // 連兩次都在＝真穩
+            results = fillFn();                                          // 較晚被洗→重填
+        }
+        return { results, ok: false };
+    }
+
+    // 輪詢等某 id 元素出現（局部更新後表單/欄位是 async 塞進 DOM）
+    function waitForEl(id, timeout = 6000) {
+        return new Promise((resolve) => {
+            const t0 = Date.now();
+            const tick = () => {
+                const el = document.getElementById(id);
+                if (el) return resolve(el);
+                if (Date.now() - t0 > timeout) return resolve(null);
+                setTimeout(tick, 150);
+            };
+            tick();
+        });
+    }
+
+    // 確認 Progress 的 PAP 已展開（Problem1 欄在）；缺則點「新增PAP」(Button1) 再等
+    async function ensureProgressPAP() {
+        if (document.getElementById('NTUHWeb1_ProgressNoteMainTab_ucPAP_txbProblem1')) return true;
+        document.getElementById('Button1')?.click(); // InsertPAPTab('progress')
+        return !!(await waitForEl('NTUHWeb1_ProgressNoteMainTab_ucPAP_txbProblem1'));
+    }
+
+    // 狀態一律顯示在上方的 primary note 狀態框（class 控制左邊框顏色）
     function setStatus(msg, type) {
-        const el = document.getElementById('ntuh-filler-status');
+        const el = document.getElementById('ntuh-filler-notestatus');
         if (!el) return;
         el.textContent = msg;
-        el.className = type === 'ok' ? 'ntuh-ok' : type === 'err' ? 'ntuh-err' : 'ntuh-warn';
-    }
-
-    function showResults(results) {
-        const preview = document.getElementById('ntuh-filler-preview');
-        if (!preview) return;
-        preview.style.display = 'block';
-        preview.innerHTML = results.map(r =>
-            `<div class="ntuh-row">
-                <span>${r.field}</span>
-                <span class="${r.ok ? 'ntuh-ok' : 'ntuh-err'}">${r.ok ? '✓ 填入' : '✗ ' + (r.reason || '找不到欄位')}</span>
-            </div>`
-        ).join('');
-        const allOk = results.every(r => r.ok);
-        setStatus(
-            allOk ? '✓ 全部填入完成！請確認後儲存。' : '部分欄位填入失敗',
-            allOk ? 'ok' : 'warn'
-        );
+        el.className = type === 'ok' ? 'ok' : type === 'err' ? 'err' : type === 'warn' ? 'warn' : '';
     }
 
     function makeDraggable(panel, handle) {

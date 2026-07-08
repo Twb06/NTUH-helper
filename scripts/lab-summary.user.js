@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.2.1
+// @version      0.2.2
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成結構化文字（支援清單版與綠單趨勢版）
 // @match        *://*/*MedicalReportContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js
@@ -936,9 +936,9 @@
             try { res = computeReport(); } catch (e) { /* 尚未就緒 */ }
             if (res) { clearInterval(iv); done({ ok: true, text: res }); return; }
             // 防呆：頁面就緒（view-mode radio 出現）但 computeReport 仍無資料 → 回「無檢驗資料」，避免空等逾時。
-            // 就緒後給 3s 寬限確認非「還在載入」；最終 15s 也回無資料訊息而非 error。
+            // 就緒後給 8s 寬限（背景分頁被瀏覽器節流時，DetailedSheet 表格 render 可能 >3s，太短會誤判空）；最終 20s 也回無資料訊息而非 error。
             const pageReady = !!document.querySelector('input[type="radio"][id*="LabRangeSlider1_rbn"]');
-            if ((pageReady && performance.now() - t0 > 3000) || performance.now() - t0 > 15000) {
+            if ((pageReady && performance.now() - t0 > 8000) || performance.now() - t0 > 20000) {
                 clearInterval(iv);
                 done({ ok: true, text: '(無檢驗資料)' });
             }
