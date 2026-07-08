@@ -6,8 +6,8 @@
 // @description  Fill the NTUH Portal login captcha using in-script template matching.
 // @author       WeiJyun9008
 // @match        https://portal.ntuh.gov.tw/General/Login.aspx*
-// @updateURL    https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/login-ocr.user.js
-// @downloadURL  https://raw.githubusercontent.com/Twb06/NTUH-helper/main/scripts/login-ocr.user.js
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-ocr.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-ocr.user.js
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
