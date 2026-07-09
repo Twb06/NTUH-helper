@@ -607,7 +607,7 @@ I was informed relieved of symptoms around 0/0 00:00,
                 <button id="ntuh-filler-close">✕</button>
             </div>
             <div id="ntuh-filler-body">
-                <div class="ntuh-hint ntuh-hint-top">＊需先在右上方筆記欄新增 primary note 才能自動填寫</div>
+                <div class="ntuh-hint ntuh-hint-top">＊需先在左上方筆記區新增 primary note 才能自動填寫</div>
                 <div id="ntuh-filler-notestatus">尚未抓取 primary note（按下方按鍵時自動抓取）</div>
                 <div id="ntuh-filler-fillrow">
                     <button id="ntuh-filler-today">📝 今日更新</button>
