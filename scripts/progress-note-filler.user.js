@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.31
+// @version      1.37
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -641,7 +641,8 @@ I was informed relieved of symptoms around 0/0 00:00,
         fab.onclick = () => {
             fab.style.display = 'none';
             panel.style.display = 'block';
-            hLeft.style.display = 'flex';
+            // 左側面板只在抓過 data 後才顯示（重開面板時沿用已抓的內容）
+            if (hLeft.dataset.grabbed === '1') hLeft.style.display = 'flex';
         };
 
         document.getElementById('ntuh-filler-close').onclick = () => {
@@ -671,6 +672,8 @@ I was informed relieved of symptoms around 0/0 00:00,
             if (!text) { setStatus('⚠ 找不到 primary note，請先開啟筆記', 'err'); return; }
             btn.disabled = true;
             try {
+                setStatus('💾 儲存 primary note…', 'warn');
+                await savePrimaryNote();                                     // 先存 primary note，等存好再開表單
                 await clickAndWaitPostback('NTUHWeb1_btnInsertProgressNote'); // 開新 Progress 表單，等 postback 完成
                 if (!await waitForEl('NTUHWeb1_ProgressNoteMainTab_txbSubject')) {
                     setStatus('✗ Progress 表單未出現', 'err'); return;
@@ -697,10 +700,13 @@ I was informed relieved of symptoms around 0/0 00:00,
             if (!text) { setStatus('⚠ 找不到 primary note，請先開啟筆記', 'err'); return; }
             btn.disabled = true;
             try {
-                await clickAndWaitPostback('NTUHWeb1_btnInsertWeeklySummaryNote'); // 開新 Weekly 表單，等 postback 完成
+                setStatus('💾 儲存 primary note…', 'warn');
+                await savePrimaryNote();                                            // 先存 primary note，等存好再開表單
+                await clickAndWaitPostback('NTUHWeb1_btnInsertWeeklySummaryNote'); // 開新 Weekly 表單
                 if (!await waitForEl('NTUHWeb1_WeeklySummaryMainTab_txbDiagnosis')) {
                     setStatus('✗ Weekly 表單未出現', 'err'); return;
                 }
+                await waitPostbacksSettle(); // 等第一次新增 weekly 的延遲重繪結束，再填才不會被清空
                 // 填入 → 驗證沒被洗掉（sentinel: txbBriefSummary 恆有 prompt 前綴）→ 穩住才確認
                 {
                     const r = await fillStable(() => fillWeeklySummary(text, false),
@@ -741,6 +747,9 @@ I was informed relieved of symptoms around 0/0 00:00,
                 }
             } finally { btn.disabled = false; }
         };
+
+        // 先畫出資料區骨架（群組＋分項標題，收合、顯示「尚未抓取」），不用等 data
+        renderBlocks();
     }
 
     // 區塊分組：key → 群組（顏色對應面板卡標題）
@@ -749,13 +758,19 @@ I was informed relieved of symptoms around 0/0 00:00,
         { title: '管路 · 照護', keys: ['catheter', 'consult', 'diet'], color: '#7adba0' },
         { title: '藥物 · 報告', keys: ['rx', 'meds', 'lab', 'image'],  color: '#f0a860' },
     ];
+    // key → 標題（供抓取前先畫骨架用；抓取後結果自帶 label 亦同）
+    const KEY_LABELS = {
+        tprbp: '[TPR+BP]', resp: '[Resp]', gcs: '[GCS]', uo: '[UO]', pain: '[Pain]',
+        catheter: '[Tubes]', consult: '[Consult]', diet: '[Diet]',
+        rx: '[Rx]', meds: '[Abx]', lab: '[Lab]', image: '[Image]',
+    };
 
     function renderBlocks(results) {
         const wrap = document.getElementById('ntuh-filler-outer');
         if (!wrap) return;
         wrap.innerHTML = '';
         const byKey = {};
-        results.forEach((r) => { byKey[r.key] = r; });
+        (results || []).forEach((r) => { byKey[r.key] = r; });
 
         // 交班筆記 + 今日護理紀錄 → 灌進左側面板兩區塊（不進右側區塊）
         const setLeft = (id, r, emptyMsg) => {
@@ -777,27 +792,34 @@ I was informed relieved of symptoms around 0/0 00:00,
         wireLeftTitle('ntuh-hl-handover-title', '🗒 交班筆記', byKey['handover']);
         wireLeftTitle('ntuh-hl-nursing-title', '📋 今日護理紀錄', byKey['nursing']);
 
-        BLOCK_GROUPS.forEach((g) => {
-            const present = g.keys.filter((k) => byKey[k]);
-            if (!present.length) return;
+        // 抓過 data 後才顯示左側面板（並記住，重開面板時沿用）
+        const hLeftEl = document.getElementById('ntuh-handover-left');
+        if (hLeftEl && (byKey['handover'] || byKey['nursing'])) {
+            hLeftEl.dataset.grabbed = '1';
+            hLeftEl.style.display = 'flex';
+        }
 
+        BLOCK_GROUPS.forEach((g) => {
+            // 永遠畫出全部群組與分項（骨架）；有抓到才展開填入，沒抓到收合顯示「尚未抓取」
             const grp = document.createElement('div');
             grp.className = 'ntuh-grp';
             grp.textContent = g.title;
             wrap.appendChild(grp);
 
-            present.forEach((k) => {
+            g.keys.forEach((k) => {
                 const r = byKey[k];
-                const text = r.ok ? (r.text || '（無資料）') : ('抓取失敗：' + r.error);
+                const label = KEY_LABELS[k] || k;
+                const text = !r ? '尚未抓取'
+                    : (r.ok ? (r.text || '（無資料）') : ('抓取失敗：' + r.error));
 
                 const card = document.createElement('div');
                 card.className = 'ntuh-blk';
                 const head = document.createElement('div');
                 head.className = 'ntuh-blk-head';
                 const title = document.createElement('span');
-                title.textContent = r.label + (r.ok ? '' : ' ✗') + (r.url ? ' ↗' : '');
-                title.style.color = r.ok ? g.color : '#e05c5c';
-                if (r.url) {
+                title.textContent = label + (r && !r.ok ? ' ✗' : '') + (r && r.url ? ' ↗' : '');
+                title.style.color = !r ? '#8a9a80' : (r.ok ? g.color : '#e05c5c');
+                if (r && r.url) {
                     title.classList.add('ntuh-linkable');
                     title.title = '開啟對應頁面';
                     title.onclick = (ev) => { ev.stopPropagation(); window.open(r.url, '_blank'); };
@@ -815,10 +837,11 @@ I was informed relieved of symptoms around 0/0 00:00,
                     body.classList.add('ntuh-blk-body-compact');
                 }
                 body.textContent = text;
+                body.style.display = r ? 'block' : 'none'; // 抓到才展開，骨架先收合
 
                 copy.onclick = (ev) => {
                     ev.stopPropagation();
-                    navigator.clipboard.writeText(r.label + '\n' + text).then(() => {
+                    navigator.clipboard.writeText(label + '\n' + text).then(() => {
                         copy.textContent = '✓';
                         setTimeout(() => { copy.textContent = '⧉'; }, 1200);
                     });
@@ -835,6 +858,14 @@ I was informed relieved of symptoms around 0/0 00:00,
     // 抓 primary note，回傳內容（無則回 null）。狀態統一由 setStatus（上方狀態框）呈現
     function grabPrimaryNote() {
         return getNoteContent() || null;
+    }
+
+    // 儲存 primary note（blank note，存法同今日更新的 Button1），等 postback 完成再往下
+    async function savePrimaryNote() {
+        const btn = document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1');
+        if (!btn) return false;
+        await clickAndWaitPostback('NTUHWeb1_BlankNoteMainTab_Button1');
+        return true;
     }
 
     // 觸發 data-helper 背景抓取，回傳 Promise（結果進面板；逾時則略過續行不卡住）
@@ -890,6 +921,28 @@ I was informed relieved of symptoms around 0/0 00:00,
         });
     }
 
+    // 等所有 UpdatePanel postback 安靜下來（begin/endRequest 連續 quietMs 無動靜才放行）。
+    // 用途：新增 Weekly 第一次會有「延遲重繪」，只等單一 endRequest 會搶在它之前填→被清空。
+    function waitPostbacksSettle(quietMs = 1300, maxWait = 9000) {
+        return new Promise((resolve) => {
+            const prm = window.Sys && window.Sys.WebForms && window.Sys.WebForms.PageRequestManager.getInstance();
+            if (!prm) return setTimeout(resolve, 400);
+            let last = Date.now();
+            const bump = () => { last = Date.now(); };
+            prm.add_beginRequest(bump);
+            prm.add_endRequest(bump);
+            const start = Date.now();
+            const iv = setInterval(() => {
+                if (Date.now() - last >= quietMs || Date.now() - start > maxWait) {
+                    clearInterval(iv);
+                    prm.remove_beginRequest(bump);
+                    prm.remove_endRequest(bump);
+                    resolve();
+                }
+            }, 200);
+        });
+    }
+
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 填入後可能被「新增 note 的後續非同步重繪」洗掉 → 填→等→驗證 sentinel 欄位仍有值。
@@ -922,11 +975,17 @@ I was informed relieved of symptoms around 0/0 00:00,
         });
     }
 
-    // 確認 Progress 的 PAP 已展開（Problem1 欄在）；缺則點「新增PAP」(Button1) 再等
+    // 確認 Progress 的 PAP 已「展開且可見」再填。
+    // 注意：ucPAP_example 是隱藏的 PAP 模板（display:none），Problem1 恆存在但隱藏——
+    // 只看「存在」會誤判已就緒，收合狀態下 fill 的值不會被存進去。故改看「可見(offsetParent)」，
+    // 不可見就點「新增PAP」(Button1 / InsertPAPTab)展開，等它變可見再填。
     async function ensureProgressPAP() {
-        if (document.getElementById('NTUHWeb1_ProgressNoteMainTab_ucPAP_txbProblem1')) return true;
-        document.getElementById('Button1')?.click(); // InsertPAPTab('progress')
-        return !!(await waitForEl('NTUHWeb1_ProgressNoteMainTab_ucPAP_txbProblem1'));
+        const id = 'NTUHWeb1_ProgressNoteMainTab_ucPAP_txbProblem1';
+        const visible = () => { const el = document.getElementById(id); return !!(el && el.offsetParent !== null); };
+        if (visible()) return true;
+        document.getElementById('Button1')?.click(); // InsertPAPTab('progress') → 展開成可見的真 PAP
+        for (let i = 0; i < 40 && !visible(); i++) await sleep(150); // 等變可見（最多 ~6s）
+        return visible();
     }
 
     // 狀態一律顯示在上方的 primary note 狀態框（class 控制左邊框顏色）
