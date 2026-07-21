@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.9.8
+// @version      0.9.9
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -559,6 +559,34 @@
         return 'ntuh_' + key + '_' + rnd() + rnd();
     }
 
+    function openTab(url) {
+        if (typeof GM_openInTab !== 'undefined') GM_openInTab(url, { active: false, insert: true, setParent: true });
+        else window.open(url, '_blank');
+    }
+
+    // lab 特例：第一次背景開常落在登入前院網（該子系統 session 尚未建立），但第一次開會把 session 建起來。
+    // 故若失敗就重開一次（等同使用者手動先開一次的效果），給較短預算輪詢回傳。
+    async function retryTab(key, params, results) {
+        const src = SOURCES[key];
+        const token = makeToken(key);
+        console.log(LOG, '重試背景頁', key, token);
+        deleteSharedData('ntuh_data_' + token);
+        openTab(src.buildUrl(params, token));
+        const start = Date.now();
+        while (Date.now() - start < 20000) {
+            const raw = getSharedData('ntuh_data_' + token);
+            if (raw) {
+                deleteSharedData('ntuh_data_' + token);
+                let data; try { data = JSON.parse(raw); } catch { data = { ok: false, error: '解析回傳失敗' }; }
+                results[key] = { label: src.label, ...data };
+                console.log(LOG, '重試成功', key);
+                return;
+            }
+            await sleep(800);
+        }
+        console.log(LOG, '重試仍逾時', key); // 保留原本的失敗結果
+    }
+
     async function grabSources(keys) {
         const params = getPageParams();
         const results = {};
@@ -586,11 +614,7 @@
             const token = makeToken(key);
             const url = src.buildUrl(params, token);
             console.log(LOG, '開背景頁', key, token, url);
-            if (typeof GM_openInTab !== 'undefined') {
-                GM_openInTab(url, { active: false, insert: true, setParent: true });
-            } else {
-                window.open(url, '_blank');
-            }
+            openTab(url);
             return { key, src, token };
         });
 
@@ -610,7 +634,11 @@
                         results[t.key] = { label: t.src.label, ...data };
                     }
                 }
-                if (tasks.every((t) => results[t.key]) || Date.now() - startTime > TIMEOUT) {
+                // 只剩 lab 沒回時提早收尾（12s），好早點觸發 lab 重試，不必空等到 30s
+                const onlyLabLeft = tabKeys.includes('lab') && !results['lab']
+                    && tasks.filter((t) => t.key !== 'lab').every((t) => results[t.key]);
+                if (tasks.every((t) => results[t.key]) || Date.now() - startTime > TIMEOUT
+                    || (onlyLabLeft && Date.now() - startTime > 12000)) {
                     clearInterval(poll);
                     for (const t of tasks) {
                         if (!results[t.key]) results[t.key] = { label: t.src.label, ok: false, error: '逾時' };
@@ -621,6 +649,10 @@
         });
 
         await Promise.all([...fetchPromises, pollPromise]);
+        // lab 第一次常落在登入前院網而失敗 → 重開一次（第一次開已把 session 建起來）
+        if (keys.includes('lab') && (!results.lab || !results.lab.ok)) {
+            await retryTab('lab', params, results);
+        }
         // 每個結果掛上「點標題跳轉」網址：fetch 來源用 navUrl；tab 來源用 buildUrl 去掉 token
         keys.forEach((k) => {
             if (!results[k]) return;

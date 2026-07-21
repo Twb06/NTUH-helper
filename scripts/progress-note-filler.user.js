@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.37
+// @version      1.41
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -85,14 +85,43 @@ I was informed relieved of symptoms around 0/0 00:00,
 #. The VS visited and
 #. The nasal swab of COVID / Influenza revealed positive result, quarantine  was arranged`;
 
-    function fillDutyNote(autoConfirm = true) {
+    // Primary note 模板（格式須與 primary-note-format.md 一致）
+    const PRIMARY_TITLE = 'Primary note';
+    const PRIMARY_TPL = `----------------------[Today's Events]------------------------
+
+
+--------------------------[Plans]-----------------------------
+[]
+
+[]
+
+[預]
+
+------------------------[Diagnosis]---------------------------
+[Active]
+
+[Underlying]
+
+[Resolved]
+
+------------------------[Assessment]-------------------------
+[Lab]
+
+
+
+------------------------[Course]------------------------------
+
+After the admission, the patient was in stable condition, the physical examination showed no abnormal findings, the lab data revealed normal hemogram, coagulation, liver, and kidney function, electrolytes level are within normal limits. The CXR showed no definite lesion, sharp CP angle and no cardiomegaly. The EKG revealed normal sinus rhythm.`;
+
+    // 通用：把 title/content 填進 blank note 欄位（duty、primary 共用），autoConfirm 時暫存
+    function fillBlankNote(title, content, autoConfirm = true) {
         const contentId = 'NTUHWeb1_BlankNoteMainTab_txbBlankContnt';
         const titleId = 'NTUHWeb1_BlankNoteMainTab_txbBlankTitle';
         if (!document.getElementById(contentId)) {
             return { ok: false, reason: '找不到 Blank Note 欄位，請先切到該分頁' };
         }
-        fillField(titleId, DUTY_TITLE);
-        fillField(contentId, DUTY_TPL);
+        fillField(titleId, title);
+        fillField(contentId, content);
         document.getElementById(contentId).focus();
         if (autoConfirm) {
             setTimeout(() => {
@@ -102,6 +131,7 @@ I was informed relieved of symptoms around 0/0 00:00,
         }
         return { ok: true };
     }
+    function fillDutyNote(autoConfirm = true) { return fillBlankNote(DUTY_TITLE, DUTY_TPL, autoConfirm); }
 
     // ─────────────────────────────────────────────
     // 把 Today's Events 裡按日期分塊
@@ -474,6 +504,13 @@ I was informed relieved of symptoms around 0/0 00:00,
                 color: #c89adc;
             }
             #ntuh-filler-duty:hover { opacity: 0.85; }
+            #ntuh-filler-primary {
+                background: #2a4a4a;
+                color: #7ad0c8;
+            }
+            #ntuh-filler-primary:hover { opacity: 0.85; }
+            #ntuh-filler-fillrow .ntuh-duo { display: flex; gap: 6px; margin-top: 5px; }
+            #ntuh-filler-fillrow .ntuh-duo button { flex: 1; width: auto !important; margin-top: 0; }
             #ntuh-filler-grab-outer {
                 background: #e8862e;
                 color: #fff;
@@ -616,8 +653,11 @@ I was informed relieved of symptoms around 0/0 00:00,
                     <div class="ntuh-hint">自動新增 progress，將 primary note 內容依序貼上後確認</div>
                     <button id="ntuh-filler-weekly">📅 填入weekly</button>
                     <div class="ntuh-hint">自動新增 weekly，將 primary note 內容依序貼上後暫存</div>
-                    <button id="ntuh-filler-duty">🌙 Duty note</button>
-                    <div class="ntuh-hint">自動新增 free note，將模板內容貼上後暫存</div>
+                    <div class="ntuh-duo">
+                        <button id="ntuh-filler-duty">🌙 Duty note</button>
+                        <button id="ntuh-filler-primary">🗒 Primary note</button>
+                    </div>
+                    <div class="ntuh-hint">貼上模板後暫存（Duty＝新增 free note模板／Primary＝左上角新增病歷模板）</div>
                 </div>
                 <hr class="ntuh-divider">
                 <div id="ntuh-filler-grabrow">
@@ -742,6 +782,27 @@ I was informed relieved of symptoms around 0/0 00:00,
                 if (r.ok) {
                     document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1')?.click();
                     setStatus('✓ 成功填入 duty note', 'ok');
+                } else {
+                    setStatus('⚠ 填入後被系統清空，未自動暫存，請檢查後手動暫存', 'warn');
+                }
+            } finally { btn.disabled = false; }
+        };
+
+        // Primary note：自動點左上角筆記本的「+ 新增筆記」→ 貼 primary note 模板 → 暫存
+        // （primary note 屬於筆記本 ucProgressNoteBookList，非 duty 用的 free note btnInsertBlankNote）
+        document.getElementById('ntuh-filler-primary').onclick = async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                await clickAndWaitPostback('NTUHWeb1_ucProgressNoteBookList_btnNoteBook'); // 開新筆記
+                if (!await waitForEl('NTUHWeb1_BlankNoteMainTab_txbBlankContnt')) {
+                    setStatus('✗ Note 表單未出現', 'err'); return;
+                }
+                const r = await fillStable(() => fillBlankNote(PRIMARY_TITLE, PRIMARY_TPL, false),
+                    'NTUHWeb1_BlankNoteMainTab_txbBlankContnt');
+                if (r.ok) {
+                    document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1')?.click();
+                    setStatus('✓ 已建立 primary note 模板', 'ok');
                 } else {
                     setStatus('⚠ 填入後被系統清空，未自動暫存，請檢查後手動暫存', 'warn');
                 }
@@ -893,7 +954,7 @@ I was informed relieved of symptoms around 0/0 00:00,
             const to = setTimeout(() => {
                 setStatus('⚠ data-helper 無回應，略過抓取續行', 'warn');
                 finish(null);
-            }, 45000);
+            }, 60000); // 含 lab 失敗時的重開重試預算
             document.addEventListener('ntuh-datahelper-result', onResult);
             document.dispatchEvent(new CustomEvent('ntuh-datahelper-grab'));
         });
