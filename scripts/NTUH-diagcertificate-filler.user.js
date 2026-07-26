@@ -1,18 +1,27 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.19.0
-// @description  自動填入診斷書，利用背景分頁跨網域擷取手術中文名稱（適配 DiagCertificate_New.aspx 改版；入帳項目可勾選；手術名補術字；急診直入 ICU 敘述修正；門診預設不勾；手術以住院區間過濾）※ 1.19.0 = 回退 1.18.0 問題版本，內容同 1.17.0
+// @version      1.20.0
+// @description  自動填入診斷書（1.17 為底）＋移植 1.18 的手術同意書 PDF 解析：自動帶入建議手術名稱與診斷病名
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx*
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry*
+// @match        https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @grant        GM_openInTab
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getResourceText
+// @connect      ihisaw.ntuh.gov.tw
+// @connect      cdnjs.cloudflare.com
+// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
+// @resource     pdfWorker https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js
 // ==/UserScript==
 
 (function () {
@@ -20,6 +29,660 @@
 
     let activeOpScanTokens = {};
     let detectedOpList = [];
+
+    // =====================================================================
+    // 模組：手術同意書 PDF 解析（移植自 1.18.0；建議手術名稱＋診斷病名自動帶入）
+    // =====================================================================
+    const CONSENT_RESULT_KEY = 'ntuh_consent_scan_result';
+    const CONSENT_DETAIL_TASK_KEY = 'ntuh_consent_detail_task';
+    let currentScanToken = null;
+    let currentScanTimer = null;
+
+    function handleConsentMessage(msg) {
+        if (!msg || msg.ntuh !== true) return;
+        if (!currentScanToken || msg.token !== currentScanToken) {
+            console.warn('[DiagFiller] 忽略 token 不符的同意書掃描結果', msg.token, '≠', currentScanToken);
+            return;
+        }
+        if (currentScanTimer) {
+            clearTimeout(currentScanTimer);
+            currentScanTimer = null;
+        }
+        if (msg.error) {
+            setDiagStatus('✗ 同意書背景讀取失敗：' + msg.error, 'err');
+            currentScanToken = null;
+        } else if (msg.kind === 'operation-name') {
+            applyDiseaseName(msg.diseaseName, msg.sourceTitle);
+            applySuggestedOperationName(msg.operationName, msg.sourceTitle);
+            currentScanToken = null;
+        } else if (msg.data !== undefined) {
+            handleReceivedConsent(msg.data);
+            if (msg.awaitingOperationName) {
+                setDiagStatus('⏳ 已找到同意書，正在讀取「建議手術名稱」...', 'warn');
+                currentScanTimer = setTimeout(() => {
+                    currentScanToken = null;
+                    currentScanTimer = null;
+                    setDiagStatus('⚠ 同意書清單已讀取，但無法從最可能的同意書取得建議手術名稱。', 'warn');
+                }, 40000);
+            } else {
+                currentScanToken = null;
+            }
+        }
+    }
+
+    const CONSENT_TITLE_HINTS = [
+        { english: /\b(port-?a|port|catheter|central venous|cvp|cvc)\b/i, chinese: /中央靜脈|血管通路|人工血管|輸液港/ },
+        { english: /\b(colon|colorectal|rectal|colectomy)\b/i, chinese: /大腸|直腸|結腸/ },
+        { english: /\b(gastrectomy|gastric|stomach)\b/i, chinese: /胃/ },
+        { english: /\b(appendectomy|appendix)\b/i, chinese: /闌尾/ },
+        { english: /\b(cholecystectomy|gallbladder|biliary)\b/i, chinese: /膽囊|膽道/ },
+        { english: /\b(orthopedic|arthroplasty|fracture|fixation)\b/i, chinese: /骨科|關節|骨折/ },
+        { english: /\b(cardiac|heart|coronary)\b/i, chinese: /心臟|冠狀動脈/ }
+    ];
+
+    function sendConsentResult(result) {
+        GM_setValue(CONSENT_RESULT_KEY, { ntuh: true, sentAt: Date.now(), ...result });
+    }
+
+    function requestArrayBuffer(url) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType: 'arraybuffer',
+                onload(response) {
+                    if (response.status < 200 || response.status >= 400) {
+                        reject(new Error(`HTTP ${response.status}`));
+                        return;
+                    }
+                    const rawData = response.response;
+                    if (!rawData) {
+                        reject(new Error('同意書回應沒有可讀取的二進位內容'));
+                        return;
+                    }
+                    resolve({
+                        data: rawData,
+                        contentType: String(response.responseHeaders || '').match(/content-type:\s*([^\r\n;]+)/i)?.[1] || ''
+                    });
+                },
+                onerror() { reject(new Error('無法下載同意書 PDF')); },
+                ontimeout() { reject(new Error('下載同意書 PDF 逾時')); },
+                timeout: 15000
+            });
+        });
+    }
+
+    // 頁首/頁尾/浮水印等雜訊行——欄位值絕不會長這樣。值跨頁時，標籤（頁尾）與
+    // 內容（次頁黑框）之間會夾著這些行，不剔除就會被誤當成值吸進去。
+    // 註：比對時已先移除行內所有空白（PDF 文字列常以空白拼接）。
+    const CONSENT_NOISE_PATTERNS = [
+        /^西元\d{3,4}年.*(?:委員會|審核通過|電子病歷版本)/,
+        /文件編號|MR\d{2}-\d{3}|^版次/,
+        /^時間[:：]/,
+        /^病歷號[:：]/,
+        /^姓名[:：]/,
+        /^生日[:：]/,
+        /國立臺灣大學醫學院附設醫院|NationalTaiwanUniversityHospital/i,
+        /^電子病歷$/,
+        /說明暨同意書/,
+        /請詳細閱讀內容/,
+        /^第\d+頁$/,
+        /^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]+$/,
+        /^\d{1,3}(?:\.\d{1,3}){3}$/,                  // 浮水印：IP
+        /^\d{4}\/\d{1,2}\/\d{1,2}(?:\d{1,2}:\d{2})?/, // 浮水印：日期時間
+        /^\d{5,8}$/                                   // 浮水印：工號/病歷號
+    ];
+    const isConsentNoiseLine = compact => CONSENT_NOISE_PATTERNS.some(re => re.test(compact));
+
+    // 同意書文字的共用前處理與規則
+    function consentTextLines(text) {
+        return String(text || '')
+            .replace(/\r/g, '')
+            .split('\n')
+            .map(line => line.replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+            .filter(line => !isConsentNoiseLine(line.replace(/\s+/g, '')));
+    }
+    const isConsentBoundaryLine = compact =>
+        /^(?:\d+[.、]?\s*)?(?:建議手術原因|手術原因|疾病名稱|擬實施之手術)/.test(compact) ||
+        /^\d+[.、]\s*[^：:]{1,20}[:：]/.test(compact) ||
+        /醫師之聲明|病人之聲明|^[一二三四五六七八九][、.]/.test(compact);
+    const cleanConsentValue = value => String(value || '')
+        .replace(/^\d+[.、]\s*/, '')
+        .replace(/([一-鿿])\s+(?=[一-鿿])/g, '$1')
+        .trim();
+
+    // 值可能跨多行（例：「微創腰椎第三第四第五節椎間」＋「盤切除減壓、融合、固定」），
+    // 因此從標籤處往下累加，直到遇到下一個欄位/區塊標記才停止。
+    function collectValueBelowLabel(lines, labelRe) {
+        for (let i = 0; i < lines.length; i += 1) {
+            const compactLine = lines[i].replace(/\s+/g, '');
+            const labelMatch = compactLine.match(labelRe);
+            if (!labelMatch) continue;
+            const parts = [];
+            const inlineValue = (labelMatch[1] || '').trim();
+            if (inlineValue) parts.push(inlineValue);
+            for (let j = i + 1; j < lines.length && j < i + 8; j += 1) {
+                const compactCandidate = lines[j].replace(/\s+/g, '');
+                if (isConsentBoundaryLine(compactCandidate)) break;
+                parts.push(lines[j]);
+                if (parts.join('').replace(/\s+/g, '').length >= 60) break;
+            }
+            const combined = cleanConsentValue(parts.join(''));
+            if (combined) return combined;
+        }
+        return '';
+    }
+
+    function extractSuggestedOperationNameFromText(text) {
+        const lines = consentTextLines(text);
+        const direct = collectValueBelowLabel(lines, /(?:建議手術名稱|建議術式)[:：]?(.*)$/);
+        if (direct) return direct;
+        // 後備：從「建議手術原因」往上回頭收集——術名在黑框內、緊貼在「建議手術原因」
+        // 上方；標籤行留在前一頁、後面接不到值時（跨頁），這條路徑仍能命中。
+        for (let i = 0; i < lines.length; i += 1) {
+            const compactLine = lines[i].replace(/\s+/g, '');
+            if (!/^(?:\d+[.、]?\s*)?(?:建議手術原因|手術原因)/.test(compactLine)) continue;
+            const parts = [];
+            for (let j = i - 1; j >= 0 && parts.length < 4; j -= 1) {
+                const compactCandidate = lines[j].replace(/\s+/g, '');
+                if (/建議手術名稱|建議術式/.test(compactCandidate)) break;
+                if (isConsentBoundaryLine(compactCandidate)) break;
+                parts.unshift(lines[j]);
+                if (parts.join('').replace(/\s+/g, '').length >= 60) break;
+            }
+            const combined = cleanConsentValue(parts.join(''));
+            if (combined) return combined;
+        }
+        return '';
+    }
+
+    // 「1.疾病名稱：」下方文字 → 帶入診斷書「診斷病名」
+    function extractDiseaseNameFromText(text) {
+        return collectValueBelowLabel(consentTextLines(text), /疾病名稱[:：]?(.*)$/);
+    }
+
+    function resolveDocumentUrls(buffer, baseUrl) {
+        const html = new TextDecoder('utf-8').decode(new Uint8Array(buffer));
+        const urls = new Set();
+        const addUrl = value => {
+            if (!value || /^(?:javascript:|#)/i.test(value)) return;
+            try { urls.add(new URL(value.replace(/&amp;/g, '&'), baseUrl).toString()); } catch (_error) {}
+        };
+        try {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            for (const element of Array.from(doc.querySelectorAll('iframe[src], embed[src], object[data], a[href]'))) {
+                addUrl(element.getAttribute('src') || element.getAttribute('data') || element.getAttribute('href'));
+            }
+        } catch (_error) {}
+        for (const match of html.matchAll(/(?:window\.location(?:\.href)?|location\.href|src|data|href)\s*=\s*["']([^"']+)["']/gi)) {
+            addUrl(match[1]);
+        }
+        for (const match of html.matchAll(/https?:\\?\/\\?\/[^"'<>\\s]+/gi)) {
+            addUrl(match[0].replace(/\\\//g, '/'));
+        }
+        return Array.from(urls).filter(candidate =>
+            /\.pdf(?:$|[?#])/i.test(candidate) ||
+            /EMR|Record|SimpleInfo|PDF|Print|Download|Show/i.test(candidate)
+        );
+    }
+
+    // PDF.js v3 需要指定 GlobalWorkerOptions.workerSrc，否則 getDocument 會丟出
+    // 'No "GlobalWorkerOptions.workerSrc" specified.'（disableWorker 在 v3 已無效）。
+    // 用 @resource 於安裝時抓下的 worker 檔轉成同源 blob URL，可繞過頁面 CSP 的 script-src、
+    // 並讓 new Worker(blob:) 正常啟動（已實測此網域允許 blob worker）。
+    let __pdfWorkerReadyPromise = null;
+    function ensurePdfWorker() {
+        if (__pdfWorkerReadyPromise) return __pdfWorkerReadyPromise;
+        __pdfWorkerReadyPromise = (async () => {
+            if (typeof pdfjsLib === 'undefined') return;
+            if (pdfjsLib.GlobalWorkerOptions.workerSrc) return;
+            let workerText = '';
+            try {
+                if (typeof GM_getResourceText === 'function') {
+                    workerText = GM_getResourceText('pdfWorker') || '';
+                }
+            } catch (e) {
+                console.warn('[DiagFiller] GM_getResourceText 取 pdfWorker 失敗，改用網路後備', e);
+            }
+            if (!workerText) {
+                // 後備：直接抓 CDN 上的 worker（需 @connect cdnjs.cloudflare.com）
+                workerText = await new Promise((resolve) => {
+                    try {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+                            onload: (r) => resolve((r && r.responseText) || ''),
+                            onerror: () => resolve(''),
+                            ontimeout: () => resolve('')
+                        });
+                    } catch (e) {
+                        resolve('');
+                    }
+                });
+            }
+            if (workerText) {
+                const blob = new Blob([workerText], { type: 'application/javascript' });
+                pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+            }
+        })();
+        return __pdfWorkerReadyPromise;
+    }
+
+    async function extractSuggestedOperationNameFromPdf(url, visited = new Set()) {
+        if (typeof pdfjsLib === 'undefined') throw new Error('PDF 文字讀取元件未載入');
+        await ensurePdfWorker();
+        if (visited.has(url) || visited.size >= 8) throw new Error('找不到實際 PDF 網址');
+        visited.add(url);
+        const downloaded = await requestArrayBuffer(url);
+        const bytes = downloaded.data instanceof ArrayBuffer
+            ? new Uint8Array(downloaded.data)
+            : new Uint8Array(await downloaded.data.arrayBuffer());
+        const header = new TextDecoder('ascii').decode(bytes.slice(0, 5));
+        if (header !== '%PDF-') {
+            const candidates = resolveDocumentUrls(downloaded.data, url);
+            let lastError = new Error(`同意書網址未直接回傳 PDF（${downloaded.contentType || '未知格式'}）`);
+            for (const candidate of candidates) {
+                try {
+                    return await extractSuggestedOperationNameFromPdf(candidate, visited);
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+            throw lastError;
+        }
+
+        const loadingTask = pdfjsLib.getDocument({
+            data: bytes,
+            isEvalSupported: false
+        });
+        const pdf = await loadingTask.promise;
+        const pageTexts = [];
+        let operationName = '';
+        let operationPage = 0;
+        let diseaseName = '';
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+            const page = await pdf.getPage(pageNumber);
+            const content = await page.getTextContent();
+            const rows = new Map();
+            for (const item of content.items) {
+                const y = Math.round(Number(item.transform?.[5] || 0) / 3) * 3;
+                if (!rows.has(y)) rows.set(y, []);
+                rows.get(y).push({ x: Number(item.transform?.[4] || 0), text: item.str || '' });
+            }
+            const pageText = Array.from(rows.entries())
+                .sort((a, b) => b[0] - a[0])
+                .map(([, items]) => items.sort((a, b) => a.x - b.x).map(item => item.text).join(' '))
+                .join('\n');
+            console.log(`[DiagFiller] PDF 第 ${pageNumber}/${pdf.numPages} 頁文字片段：`, pageText.slice(0, 500));
+            pageTexts.push(pageText);
+            if (!operationName) {
+                const found = extractSuggestedOperationNameFromText(pageText);
+                if (found) { operationName = found; operationPage = pageNumber; }
+            }
+            if (!diseaseName) diseaseName = extractDiseaseNameFromText(pageText);
+            if (operationName && diseaseName) break;
+        }
+        // 跨頁後備：標籤在前頁頁尾、值在次頁黑框內時，單頁各抓不到 → 全文串起來再抓一次
+        if (!operationName) {
+            const crossPageName = extractSuggestedOperationNameFromText(pageTexts.join('\n'));
+            if (crossPageName) {
+                const compactHead = crossPageName.replace(/\s+/g, '').slice(0, 4);
+                const matchedIndex = pageTexts.findIndex(t => t.replace(/\s+/g, '').includes(compactHead));
+                console.log('[DiagFiller] 單頁未命中，跨頁串接後取得術名：', crossPageName);
+                operationName = crossPageName;
+                operationPage = matchedIndex >= 0 ? matchedIndex + 1 : 1;
+            }
+        }
+        if (!diseaseName) diseaseName = extractDiseaseNameFromText(pageTexts.join('\n'));
+        return { operationName, diseaseName, pageNumber: operationPage, pageCount: pdf.numPages };
+    }
+
+    // 「診斷病名」textarea 沒有事先確認過的 id：以「診斷病名」標籤鄰近位置定位，
+    // 對每個 textarea 往上爬幾層祖先、看前面的兄弟元素文字是否含標籤字樣。
+    function findDiagnosisTextarea() {
+        for (const textarea of Array.from(document.querySelectorAll('textarea'))) {
+            let node = textarea;
+            for (let depth = 0; depth < 4 && node; depth += 1) {
+                let sibling = node.previousElementSibling;
+                let hops = 0;
+                while (sibling && hops < 4) {
+                    if (/診斷病名/.test(sibling.textContent || '')) return textarea;
+                    sibling = sibling.previousElementSibling;
+                    hops += 1;
+                }
+                node = node.parentElement;
+            }
+        }
+        return null;
+    }
+
+    // 同意書「1.疾病名稱」的值 → 診斷書「診斷病名」。
+    // 空欄直接填；已含相同病名不動；已有其他內容則換行附加（不覆蓋醫師手打的字）。
+    function applyDiseaseName(diseaseName, sourceTitle) {
+        const name = String(diseaseName || '').trim();
+        if (!name) return;
+        const textarea = findDiagnosisTextarea();
+        if (!textarea) {
+            setDiagStatus('⚠ 找不到「診斷病名」欄位，無法帶入：' + name, 'warn');
+            return;
+        }
+        const existing = textarea.value.trim();
+        if (existing.includes(name)) return;
+        textarea.value = existing ? existing + '\n' + name : name;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        setDiagStatus(`✓ 已從「${sourceTitle || '手術同意書'}」帶入診斷病名：${name}`, 'ok');
+    }
+
+    function scoreConsentCandidate(item, opDate, opName) {
+        let score = 0;
+        const itemDate = String(item.date || '').substring(0, 10);
+        if (opDate && itemDate === opDate) score += 100;
+        if (item.status === '已簽署') score += 10;
+        for (const hint of CONSENT_TITLE_HINTS) {
+            if (hint.english.test(opName || '') && hint.chinese.test(item.title || '')) score += 50;
+        }
+        if (/手術說明暨同意書|術式同意書/.test(item.title || '')) score += 5;
+        return score;
+    }
+
+    // 建議手術名稱 → 帶入第一列手術名稱（PDF 為主，覆蓋背景掃描的備援名稱）
+    function applySuggestedOperationName(operationName, sourceTitle) {
+        const chineseName = String(operationName || '').trim();
+        if (!chineseName) {
+            setDiagStatus('⚠ 已開啟同意書，但找不到「建議手術名稱」，保留原術式。', 'warn');
+            return;
+        }
+        const cbxOp = document.getElementById('ntuh-diag-has-op');
+        const detailEl = document.getElementById('ntuh-diag-op-detail');
+        const container = document.getElementById('ntuh-diag-op-rows-container');
+        if (cbxOp && !cbxOp.checked) cbxOp.checked = true;
+        if (detailEl) detailEl.style.display = 'flex';
+        if (container && container.children.length === 0) addOpRow(todayStr(), '', '');
+        const firstRow = container ? container.querySelector('.ntuh-diag-op-row') : null;
+        const nameInput = firstRow ? firstRow.querySelector('.ntuh-diag-op-name-input') : null;
+        const oldName = nameInput ? nameInput.value.trim() : '';
+        if (nameInput) {
+            nameInput.value = chineseName;
+            nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+            nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        const instruction = document.getElementById('NTUHWeb1_InstructionSetItem');
+        if (instruction && oldName && instruction.value.includes(oldName)) {
+            fillField('NTUHWeb1_InstructionSetItem', instruction.value.split(oldName).join(chineseName));
+        }
+        const preview = document.getElementById('ntuh-diag-preview');
+        if (preview && oldName && preview.textContent.includes(oldName)) {
+            preview.textContent = preview.textContent.split(oldName).join(chineseName);
+        }
+        setDiagStatus(`✓ 已從「${sourceTitle || '手術同意書'}」帶入建議手術名稱：${chineseName}`, 'ok');
+    }
+
+    function handleReceivedConsent(list) {
+        const container = document.getElementById('ntuh-diag-consent-result-box');
+        if (!container) return;
+
+        container.style.display = 'block';
+        if (!list || list.length === 0) {
+            container.innerHTML = `<div style="color:#a0aec0; font-size:11px; padding:4px 0;">⚠️ 未偵測到手術/術式相關同意書。</div>`;
+            setDiagStatus('✓ 背景掃描完成，未發現手術/術式同意書', 'ok');
+            return;
+        }
+
+        let html = `<div style="font-weight:bold; color:#ff7597; font-size:11px; margin-top:4px; border-top:1px dashed #2d3650; padding-top:6px;">📋 擷取到手術/術式同意書 (點擊開啟)：</div>`;
+        html += `<ul style="margin:0; padding-left:14px; font-size:12px; line-height:1.6; max-height:150px; overflow-y:auto;">`;
+        list.forEach(item => {
+            html += `
+                <li style="margin-bottom: 4px; list-style-type: square;">
+                    <span style="color:#7a8aaa; font-size:11px;">[${item.date}]</span><br>
+                    <a href="${item.url}" target="_blank" style="color:#63b3ed; font-weight:bold; text-decoration:underline;">
+                        ${item.title}
+                    </a>
+                    <span style="color:#48bb78; font-size:11px;">(${item.status})</span>
+                </li>`;
+        });
+        html += `</ul>`;
+        container.innerHTML = html;
+        setDiagStatus('✓ 同意書背景跨網讀取成功！', 'ok');
+    }
+
+    async function runConsentExtractorAndReturn() {
+        // 從 URL 讀取 token（或 sessionStorage 作為備援）
+        const token = new URLSearchParams(window.location.search).get('ntuh_token') ||
+                      sessionStorage.getItem('ntuh_window_token') || '';
+        try {
+            await waitForEl('a[id*="ClickConsentShowList"]', 8000);
+            await sleep(600);
+
+            const links = Array.from(document.querySelectorAll('a[id*="ClickConsentShowList"]'));
+            const consentList = [];
+            const session = new URLSearchParams(window.location.search).get('SESSION') || '';
+
+            links.forEach(link => {
+                const id = link.id;
+                const matchCtrl = id.match(/PatientConsentDataList_(ctl\d+)_ClickConsentShowList/);
+                if (!matchCtrl) return;
+                const controlName = matchCtrl[1];
+
+                const emrCodeEl = document.getElementById(`PatientConsentDataList_${controlName}_EMRCode`);
+                const emrIdseEl = document.getElementById(`PatientConsentDataList_${controlName}_EMRIDSE`);
+
+                const emrCode = emrCodeEl ? emrCodeEl.value.trim() : '';
+                const emrIdse = emrIdseEl ? emrIdseEl.value.trim() : '';
+
+                if (!emrCode || !emrIdse) return;
+
+                const fullTitle = link.textContent.trim();
+                let title = fullTitle;
+                let dateStr = '';
+                let statusStr = '未簽';
+
+                const bracketMatch = fullTitle.match(/^([\s\S]+?)\s*\(\s*(\d{2}\/\d{2}\/\d{2})\s+(\d{2}:\d{2})\s*(.*?)\s*\)$/);
+                if (bracketMatch) {
+                    title = bracketMatch[1].trim();
+                    const rawDate = bracketMatch[2];
+                    const rawTime = bracketMatch[3];
+                    const extra = bracketMatch[4] || '';
+
+                    const dateParts = rawDate.split('/');
+                    if (dateParts[0].length === 2) {
+                        dateParts[0] = '20' + dateParts[0];
+                    }
+                    dateStr = `${dateParts.join('/')} ${rawTime}`;
+
+                    if (extra.includes('已簽') || extra.includes('已簽署') || /\bsigned\b/i.test(extra)) {
+                        statusStr = '已簽署';
+                    }
+                } else {
+                    const simpleMatch = fullTitle.match(/^([\s\S]+?)\s*\(\s*(已簽署|已簽)\s*\)$/);
+                    if (simpleMatch) {
+                        title = simpleMatch[1].trim();
+                        statusStr = '已簽署';
+                    }
+                }
+
+                const isConsent = title.includes('同意書') || /\bconsent\b/i.test(title);
+                const isProcedure = title.includes('術') || title.includes('檢查') ||
+                                    /\b(surgery|surgical|operation|procedure|examination|exam)\b/i.test(title);
+                if (isConsent && isProcedure) {
+                    const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder.aspx` +
+                                      `?SESSION=${session}&Func=EMRRecordSeries&EMRIDSE=${emrIdse}&EMRRecord=${emrCode}&AllowPrint=Y`;
+
+                    consentList.push({
+                        date: dateStr || todayStr(),
+                        title: title,
+                        status: statusStr,
+                        url: targetUrl,
+                        emrIdse,
+                        emrCode
+                    });
+                }
+            });
+
+            const params = new URLSearchParams(window.location.search);
+            const opDate = params.get('ntuh_op_date') || '';
+            const opName = params.get('ntuh_op_name') || '';
+            const ranked = consentList.slice().sort((a, b) =>
+                scoreConsentCandidate(b, opDate, opName) - scoreConsentCandidate(a, opDate, opName)
+            );
+            const bestConsent = ranked[0] || null;
+            const result = {
+                ntuh: true,
+                token,
+                data: consentList,
+                awaitingOperationName: !!bestConsent,
+                sentAt: Date.now()
+            };
+            GM_setValue(CONSENT_RESULT_KEY, result);
+
+            // 保留 postMessage 作為支援 window.opener 環境的備援。
+            if (window.opener) {
+                window.opener.postMessage(
+                    result,
+                    'https://hisaw.ntuh.gov.tw'
+                );
+                console.log('[ConsentHelper] 資料已透過 postMessage 回傳，共', consentList.length, '筆');
+            } else {
+                console.warn('[ConsentHelper] 無法取得 opener，資料無法回傳');
+            }
+
+            if (bestConsent) {
+                try {
+                    const pdfResult = await extractSuggestedOperationNameFromPdf(bestConsent.url);
+                    if (pdfResult.operationName || pdfResult.diseaseName) {
+                        sendConsentResult({
+                            token,
+                            kind: 'operation-name',
+                            operationName: pdfResult.operationName,
+                            diseaseName: pdfResult.diseaseName,
+                            sourceTitle: `${bestConsent.title}（PDF 第 ${pdfResult.pageNumber || 1}/${pdfResult.pageCount} 頁）`
+                        });
+                    } else {
+                        throw new Error(`已讀取 PDF 共 ${pdfResult.pageCount} 頁，但找不到建議手術名稱`);
+                    }
+                } catch (pdfError) {
+                    console.error('[DiagFiller] 直接讀取整份 PDF 失敗：', pdfError);
+                    sendConsentResult({
+                        token,
+                        error: `PDF 全頁解析失敗：${pdfError.message}`
+                    });
+                }
+            }
+
+            await sleep(300);
+            console.log('[DiagFiller] 同意書清單處理完畢，準備關閉分頁...');
+            window.close();
+
+        } catch (e) {
+            console.error('[ConsentHelper] 背景讀取新網頁失敗或逾時：', e.message);
+            const result = { ntuh: true, token, error: e.message || '背景頁面讀取失敗', sentAt: Date.now() };
+            GM_setValue(CONSENT_RESULT_KEY, result);
+            if (window.opener) {
+                window.opener.postMessage(
+                    result,
+                    'https://hisaw.ntuh.gov.tw'
+                );
+            }
+            await sleep(100);
+            window.close();
+        }
+    }
+
+    async function runConsentDetailExtractor(pendingTask = null) {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get('ntuh_token') || pendingTask?.token || '';
+        const sourceTitle = params.get('ntuh_source_title') || pendingTask?.sourceTitle || '';
+
+        function accessiblePageText(targetWindow, depth = 0) {
+            if (!targetWindow || depth > 3) return '';
+            let text = '';
+            try {
+                const targetDocument = targetWindow.document;
+                text += '\n' + (targetDocument.body?.innerText || '');
+                text += '\n' + (targetDocument.documentElement?.outerHTML || '');
+                for (const element of Array.from(targetDocument.querySelectorAll('input, textarea, option, [aria-label], [title], svg text'))) {
+                    text += '\n' + [
+                        element.value,
+                        element.textContent,
+                        element.getAttribute?.('aria-label'),
+                        element.getAttribute?.('title')
+                    ].filter(Boolean).join('\n');
+                }
+                for (const frame of Array.from(targetWindow.frames || [])) {
+                    text += accessiblePageText(frame, depth + 1);
+                }
+            } catch (_error) {
+                // 無法存取的跨網域 frame 直接略過。
+            }
+            return text;
+        }
+
+        function detailPageLines() {
+            return accessiblePageText(window)
+                .replace(/\r/g, '')
+                .replace(/&nbsp;|&#160;/gi, ' ')
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/(?:div|p|td|tr|span)>/gi, '\n')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/[ \t]+/g, ' ')
+                .split('\n')
+                .map(line => line.trim())
+                .filter(Boolean)
+                .filter(line => !isConsentNoiseLine(line.replace(/\s+/g, '')));
+        }
+
+        function findSuggestedOperationName() {
+            const lines = detailPageLines();
+            for (let i = 0; i < lines.length; i += 1) {
+                const labelMatch = lines[i].match(/(?:建議手術名稱|建議術式)\s*[:：]?\s*(.*)$/);
+                if (!labelMatch) continue;
+                const inlineValue = labelMatch[1].trim();
+                if (inlineValue) return inlineValue.replace(/^\d+[.、]\s*/, '').trim();
+                for (let j = i + 1; j < Math.min(lines.length, i + 4); j += 1) {
+                    if (/^(?:\d+[.、]\s*)?建議手術原因|^手術原因/.test(lines[j])) break;
+                    if (lines[j]) return lines[j].replace(/^\d+[.、]\s*/, '').trim();
+                }
+            }
+            return '';
+        }
+
+        function findDiseaseName() {
+            const lines = detailPageLines();
+            for (let i = 0; i < lines.length; i += 1) {
+                const labelMatch = lines[i].match(/疾病名稱\s*[:：]?\s*(.*)$/);
+                if (!labelMatch) continue;
+                const inlineValue = labelMatch[1].trim();
+                if (inlineValue) return inlineValue.replace(/^\d+[.、]\s*/, '').trim();
+                for (let j = i + 1; j < Math.min(lines.length, i + 4); j += 1) {
+                    if (/建議手術名稱|建議術式/.test(lines[j])) break;
+                    if (lines[j]) return lines[j].replace(/^\d+[.、]\s*/, '').trim();
+                }
+            }
+            return '';
+        }
+
+        try {
+            let operationName = '';
+            for (let i = 0; i < 24 && !operationName; i += 1) {
+                await sleep(500);
+                operationName = findSuggestedOperationName();
+            }
+            sendConsentResult({
+                token,
+                kind: 'operation-name',
+                operationName,
+                diseaseName: findDiseaseName(),
+                sourceTitle
+            });
+            await sleep(300);
+            window.close();
+        } catch (e) {
+            sendConsentResult({ token, error: '讀取建議手術名稱失敗：' + e.message });
+            await sleep(300);
+            window.close();
+        }
+    }
 
     // =========================================================================
     // 路由分流控制中心
@@ -30,6 +693,16 @@
 
         if (currentUrl.includes('DiagCertificate')) {
             console.log("[DiagFiller] 偵測到診斷書頁面，啟動填入與連動模組...");
+            // 同意書 PDF 回傳的接收端：postMessage（有 opener 時）＋ GM 值變更（跨分頁）
+            window.addEventListener('message', function(event) {
+                if (event.origin !== 'https://ihisaw.ntuh.gov.tw') return;
+                handleConsentMessage(event.data);
+            });
+            if (typeof GM_addValueChangeListener === 'function') {
+                GM_addValueChangeListener(CONSENT_RESULT_KEY, function(_name, _oldValue, newValue) {
+                    handleConsentMessage(newValue);
+                });
+            }
             setTimeout(createDiagUI, 1500);
         }
         else if (currentUrl.includes('DREnterOPOrder.aspx')) {
@@ -44,6 +717,21 @@
             } else {
                 console.warn("[DiagFiller] 未執行掃描：isOrchestratorWindow 判定為假。原因：網址無 token 參數。");
             }
+        }
+        else if (currentUrl.includes('PatientConsentOrderEntry')) {
+            const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
+            if (ntuhToken) {
+                sessionStorage.setItem('ntuh_window_token', ntuhToken);
+                console.log("[DiagFiller] 偵測到背景同意書清單頁(PatientConsentOrderEntry)，啟動擷取…");
+                runConsentExtractorAndReturn();
+            }
+        }
+        else if (currentUrl.includes('SimpleInfoShowUsingPlaceHolder')) {
+            const params = new URLSearchParams(window.location.search);
+            const pendingTask = (typeof GM_getValue === 'function') ? GM_getValue(CONSENT_DETAIL_TASK_KEY, null) : null;
+            const ntuhToken = params.get('ntuh_token') ||
+                              (pendingTask && pendingTask.expiresAt > Date.now() ? pendingTask.token : '');
+            if (ntuhToken) runConsentDetailExtractor(pendingTask);
         }
     }
 
@@ -1083,6 +1771,51 @@
         }
     }
 
+    // 背景掃描手術同意書 PDF → 帶入建議手術名稱與診斷病名（按鈕與自動偵測共用）
+    function triggerConsentScan() {
+        try {
+            const currentUrlParams = new URLSearchParams(window.location.search);
+            let session = currentUrlParams.get('SESSION') || '';
+            let accountId = currentUrlParams.get('AccountIDSE') || '';
+            if (!session) { const sEl = document.querySelector('input[name*="SESSION"], input[id*="SESSION"]'); if (sEl) session = sEl.value; }
+            if (!accountId) { const aEl = document.querySelector('input[name*="AccountIDSE"], input[id*="AccountIDSE"]'); if (aEl) accountId = aEl.value; }
+            let personId = currentUrlParams.get('PersonID') || '';
+            if (!personId) {
+                const idEl = document.getElementById('NTUHWeb1_lblPersonID') || document.getElementById('NTUHWeb1_tbxPersonID');
+                if (idEl) personId = (idEl.textContent || idEl.value || '').trim();
+            }
+            if (!personId) { setDiagStatus('⚠ 無法取得病人 ID，略過同意書自動掃描', 'warn'); return; }
+
+            // 讀第一列手術日期/名稱供同意書排序評分
+            const firstRow = document.querySelector('#ntuh-diag-op-rows-container .ntuh-diag-op-row');
+            const opDateVal = firstRow ? (firstRow.querySelector('.ntuh-diag-op-date-input')?.value.trim() || '') : '';
+            const opNameVal = firstRow ? (firstRow.querySelector('.ntuh-diag-op-name-input')?.value.trim() || '') : '';
+
+            const token = 'ntuh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            currentScanToken = token;
+            if (currentScanTimer) clearTimeout(currentScanTimer);
+            currentScanTimer = setTimeout(() => {
+                if (currentScanToken !== token) return;
+                currentScanToken = null; currentScanTimer = null;
+                setDiagStatus('✗ 同意書背景讀取逾時。請確認背景分頁已登入。', 'err');
+            }, 40000);
+
+            const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx` +
+                              `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0` +
+                              `&ntuh_token=${token}` +
+                              `&ntuh_op_date=${encodeURIComponent(opDateVal)}` +
+                              `&ntuh_op_name=${encodeURIComponent(opNameVal)}`;
+
+            setDiagStatus('⏳ 正在跨網域背景開啟並撈取同意書…', 'warn');
+            GM_openInTab(targetUrl, { active: false, insert: true });
+        } catch (e) {
+            console.error('[DiagFiller]', e);
+            if (currentScanTimer) clearTimeout(currentScanTimer);
+            currentScanTimer = null; currentScanToken = null;
+            setDiagStatus('✗ 同意書掃描開啟失敗: ' + e.message, 'err');
+        }
+    }
+
     async function createDiagUI() {
         if (document.getElementById('ntuh-diag-fab')) return;
 
@@ -1143,8 +1876,10 @@
             </div>
             <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
+                <button id="ntuh-diag-scan-consent" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 檢查同意書並帶入術名/診斷（PDF）</button>
                 <button id="ntuh-diag-open-consent" type="button" style="padding:6px 0; border:1px solid #5a6a8a; border-radius:6px; background:transparent; color:#7a8aaa; cursor:pointer; font-size:11px; width:100%;">📄 開啟病患同意書（手動查閱）</button>
                 <div id="ntuh-diag-status"></div>
+                <div id="ntuh-diag-consent-result-box" style="display:none;"></div>
                 <div id="ntuh-diag-preview"></div>
             </div>
         `;
@@ -1247,6 +1982,9 @@
             window.open(url, '_blank');
         };
 
+        // 🔍 背景掃描同意書 PDF → 帶入建議手術名稱與診斷病名
+        document.getElementById('ntuh-diag-scan-consent').onclick = () => triggerConsentScan();
+
         // 啟動自動偵測與勾選
         setTimeout(autoDetectRecords, 100);
     }
@@ -1294,12 +2032,16 @@
                 document.getElementById('ntuh-diag-op-detail').style.display = 'none';
             }
 
-            // 3. 急診
+            // 3. 急診：只有「這次急診接著這次住院」(離部日=本次住院起日) 才自動勾；
+            //    有住院但急診離部日對不上（舊的、不相關急診）→ 不勾，避免把上一次住院的急診塞進本次診斷書
             setDiagStatus('自動偵測病歷中：展開急診資料…', 'warn');
             await expandOne('NTUHWeb1_btnEmgHistoryShowHide', '#NTUHWeb1_gvwEmgHistory tr.tableText, #NTUHWeb1_divEmgHistoryInfo');
             let emg = { arrivalDT: '', leaveDT: '', leaveDate: '' };
             try { emg = fetchEmgData(); } catch (e) { console.warn(e.message); }
-            if (emg.arrivalDT) {
+            const emgFeedsThisStay = !!(emg.leaveDate && inpat.inpatStartDate &&
+                emg.leaveDate.substring(0, 10) === inpat.inpatStartDate.substring(0, 10));
+            const shouldCheckEmg = !!emg.arrivalDT && (!inpat.inpatStartDate || emgFeedsThisStay);
+            if (shouldCheckEmg) {
                 document.getElementById('ntuh-diag-has-emg').checked = true;
                 document.getElementById('ntuh-diag-emg-detail').style.display = 'flex';
                 document.getElementById('ntuh-diag-emg-arrival').value = emg.arrivalDT;
@@ -1315,9 +2057,10 @@
 
             setDiagStatus('✓ 病歷自動偵測完成！', 'ok');
 
-            // 自動觸發背景擷取手術中文名稱（僅針對已帶入的刀）
+            // 本次住院期間有手術 → 自動觸發：①背景擷取手術入帳中文名稱 ②同意書 PDF 讀取
             if (autoOps.length > 0) {
                 triggerOpNameScan();
+                triggerConsentScan();
             }
         } catch (e) {
             console.warn('[DiagFiller] 自動偵測病歷失敗：', e);

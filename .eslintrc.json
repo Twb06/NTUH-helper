@@ -23,6 +23,7 @@
     "GM_registerMenuCommand": "readonly",
     "GM_unregisterMenuCommand": "readonly",
     "unsafeWindow": "readonly",
+    "pdfjsLib": "readonly",
     "OnClientClick_GetSelectedLabData": "readonly",
     "__doPostBack": "readonly"
   },
