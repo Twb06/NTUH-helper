@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.22.0
-// @description  自動填入診斷書（1.17 為底）＋手術同意書 PDF 解析：住院期間有手術時自動逐台配對同意書、帶入建議手術名稱與診斷病名（入帳名稱背景掃描已退場）
+// @version      1.23.0
+// @description  自動填入診斷書（1.17 為底）＋手術同意書 PDF 解析：住院期間有手術時自動抓第一台手術同意書、帶入建議手術名稱與診斷病名。pdf.js 改為僅背景分頁動態載入，主頁不載入以維持面板開啟速度
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -18,9 +18,9 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getResourceText
+// @grant        unsafeWindow
 // @connect      ihisaw.ntuh.gov.tw
 // @connect      cdnjs.cloudflare.com
-// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
 // @resource     pdfWorker https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js
 // ==/UserScript==
 
@@ -238,12 +238,46 @@
     // 'No "GlobalWorkerOptions.workerSrc" specified.'（disableWorker 在 v3 已無效）。
     // 用 @resource 於安裝時抓下的 worker 檔轉成同源 blob URL，可繞過頁面 CSP 的 script-src、
     // 並讓 new Worker(blob:) 正常啟動（已實測此網域允許 blob worker）。
+    // pdf.js 只在背景同意書分頁才需要，改為動態載入（不再用 @require），主頁不載入以維持面板開啟速度。
+    const PDFJS_MIN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    const PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    let __pdfLibPromise = null;
+    function ensurePdfLib() {
+        if (__pdfLibPromise) return __pdfLibPromise;
+        __pdfLibPromise = (async () => {
+            const uw = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+            if (typeof pdfjsLib !== 'undefined') return pdfjsLib; // 保險：若仍有 @require
+            if (uw.pdfjsLib) return uw.pdfjsLib;
+            const text = await new Promise((resolve) => {
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'GET', url: PDFJS_MIN_URL,
+                        onload: (r) => resolve((r && r.responseText) || ''),
+                        onerror: () => resolve(''), ontimeout: () => resolve(''), timeout: 20000
+                    });
+                } catch (e) { resolve(''); }
+            });
+            if (!text) throw new Error('pdf.js 下載失敗');
+            const blob = new Blob([text], { type: 'application/javascript' });
+            const blobUrl = URL.createObjectURL(blob);
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = blobUrl;
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error('pdf.js 注入失敗（可能被頁面 CSP 擋）'));
+                (document.head || document.documentElement).appendChild(s);
+            });
+            if (!uw.pdfjsLib) throw new Error('pdf.js 載入後仍取不到 pdfjsLib');
+            return uw.pdfjsLib;
+        })();
+        return __pdfLibPromise;
+    }
+
     let __pdfWorkerReadyPromise = null;
-    function ensurePdfWorker() {
+    function ensurePdfWorker(lib) {
         if (__pdfWorkerReadyPromise) return __pdfWorkerReadyPromise;
         __pdfWorkerReadyPromise = (async () => {
-            if (typeof pdfjsLib === 'undefined') return;
-            if (pdfjsLib.GlobalWorkerOptions.workerSrc) return;
+            if (!lib || lib.GlobalWorkerOptions.workerSrc) return;
             let workerText = '';
             try {
                 if (typeof GM_getResourceText === 'function') {
@@ -258,7 +292,7 @@
                     try {
                         GM_xmlhttpRequest({
                             method: 'GET',
-                            url: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+                            url: PDFJS_WORKER_URL,
                             onload: (r) => resolve((r && r.responseText) || ''),
                             onerror: () => resolve(''),
                             ontimeout: () => resolve('')
@@ -270,15 +304,15 @@
             }
             if (workerText) {
                 const blob = new Blob([workerText], { type: 'application/javascript' });
-                pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+                lib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
             }
         })();
         return __pdfWorkerReadyPromise;
     }
 
     async function extractSuggestedOperationNameFromPdf(url, visited = new Set()) {
-        if (typeof pdfjsLib === 'undefined') throw new Error('PDF 文字讀取元件未載入');
-        await ensurePdfWorker();
+        const lib = await ensurePdfLib();
+        await ensurePdfWorker(lib);
         if (visited.has(url) || visited.size >= 8) throw new Error('找不到實際 PDF 網址');
         visited.add(url);
         const downloaded = await requestArrayBuffer(url);
@@ -299,7 +333,7 @@
             throw lastError;
         }
 
-        const loadingTask = pdfjsLib.getDocument({
+        const loadingTask = lib.getDocument({
             data: bytes,
             isEvalSupported: false
         });
@@ -1830,12 +1864,12 @@
             }
             if (!personId) { setDiagStatus('⚠ 無法取得病人 ID，略過同意書自動掃描', 'warn'); return; }
 
-            // 讀所有手術列的日期/名稱，供同意書「每台刀各配一份」評分
+            // 只抓第一台手術（涵蓋約 95% 案例、只解析一份 PDF，避免多份 PDF 拖慢）
             const rows = Array.from(document.querySelectorAll('#ntuh-diag-op-rows-container .ntuh-diag-op-row'));
             const ops = rows.map(r => ({
                 date: r.querySelector('.ntuh-diag-op-date-input')?.value.trim() || '',
                 name: r.querySelector('.ntuh-diag-op-name-input')?.value.trim() || ''
-            })).filter(o => o.date);
+            })).filter(o => o.date).slice(0, 1);
             const opDateVal = ops[0]?.date || '';
             const opNameVal = ops[0]?.name || '';
 
