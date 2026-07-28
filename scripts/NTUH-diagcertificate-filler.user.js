@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.27.0
-// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.27.0：移除手動 PDF 掃描按鈕（已自動觸發）
+// @version      1.28.0
+// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.28.0：移除從未觸發的 SimpleInfo DOM 備援死碼
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @grant        GM_openInTab
@@ -33,7 +32,6 @@
     // 模組：手術同意書 PDF 解析（移植自 1.18.0；建議手術名稱＋診斷病名自動帶入）
     // =====================================================================
     const CONSENT_RESULT_KEY = 'ntuh_consent_scan_result';
-    const CONSENT_DETAIL_TASK_KEY = 'ntuh_consent_detail_task';
     let currentScanToken = null;
     let currentScanTimer = null;
 
@@ -588,101 +586,6 @@
         }
     }
 
-    async function runConsentDetailExtractor(pendingTask = null) {
-        const params = new URLSearchParams(window.location.search);
-        const token = params.get('ntuh_token') || pendingTask?.token || '';
-        const sourceTitle = params.get('ntuh_source_title') || pendingTask?.sourceTitle || '';
-
-        function accessiblePageText(targetWindow, depth = 0) {
-            if (!targetWindow || depth > 3) return '';
-            let text = '';
-            try {
-                const targetDocument = targetWindow.document;
-                text += '\n' + (targetDocument.body?.innerText || '');
-                text += '\n' + (targetDocument.documentElement?.outerHTML || '');
-                for (const element of Array.from(targetDocument.querySelectorAll('input, textarea, option, [aria-label], [title], svg text'))) {
-                    text += '\n' + [
-                        element.value,
-                        element.textContent,
-                        element.getAttribute?.('aria-label'),
-                        element.getAttribute?.('title')
-                    ].filter(Boolean).join('\n');
-                }
-                for (const frame of Array.from(targetWindow.frames || [])) {
-                    text += accessiblePageText(frame, depth + 1);
-                }
-            } catch (_error) {
-                // 無法存取的跨網域 frame 直接略過。
-            }
-            return text;
-        }
-
-        function detailPageLines() {
-            return accessiblePageText(window)
-                .replace(/\r/g, '')
-                .replace(/&nbsp;|&#160;/gi, ' ')
-                .replace(/<br\s*\/?>/gi, '\n')
-                .replace(/<\/(?:div|p|td|tr|span)>/gi, '\n')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/[ \t]+/g, ' ')
-                .split('\n')
-                .map(line => line.trim())
-                .filter(Boolean)
-                .filter(line => !isConsentNoiseLine(line.replace(/\s+/g, '')));
-        }
-
-        function findSuggestedOperationName() {
-            const lines = detailPageLines();
-            for (let i = 0; i < lines.length; i += 1) {
-                const labelMatch = lines[i].match(/(?:建議手術名稱|建議術式)\s*[:：]?\s*(.*)$/);
-                if (!labelMatch) continue;
-                const inlineValue = labelMatch[1].trim();
-                if (inlineValue) return inlineValue.replace(/^\d+[.、]\s*/, '').trim();
-                for (let j = i + 1; j < Math.min(lines.length, i + 4); j += 1) {
-                    if (/^(?:\d+[.、]\s*)?建議手術原因|^手術原因/.test(lines[j])) break;
-                    if (lines[j]) return lines[j].replace(/^\d+[.、]\s*/, '').trim();
-                }
-            }
-            return '';
-        }
-
-        function findDiseaseName() {
-            const lines = detailPageLines();
-            for (let i = 0; i < lines.length; i += 1) {
-                const labelMatch = lines[i].match(/疾病名稱\s*[:：]?\s*(.*)$/);
-                if (!labelMatch) continue;
-                const inlineValue = labelMatch[1].trim();
-                if (inlineValue) return inlineValue.replace(/^\d+[.、]\s*/, '').trim();
-                for (let j = i + 1; j < Math.min(lines.length, i + 4); j += 1) {
-                    if (/建議手術名稱|建議術式/.test(lines[j])) break;
-                    if (lines[j]) return lines[j].replace(/^\d+[.、]\s*/, '').trim();
-                }
-            }
-            return '';
-        }
-
-        try {
-            let operationName = '';
-            for (let i = 0; i < 24 && !operationName; i += 1) {
-                await sleep(500);
-                operationName = findSuggestedOperationName();
-            }
-            sendConsentResult({
-                token,
-                kind: 'operation-name',
-                operationName,
-                diseaseName: findDiseaseName(),
-                sourceTitle
-            });
-            await sleep(300);
-            window.close();
-        } catch (e) {
-            sendConsentResult({ token, error: '讀取建議手術名稱失敗：' + e.message });
-            await sleep(300);
-            window.close();
-        }
-    }
-
     // =========================================================================
     // 路由分流控制中心
     // =========================================================================
@@ -711,13 +614,6 @@
                 console.log("[DiagFiller] 偵測到背景同意書清單頁(PatientConsentOrderEntry)，啟動擷取…");
                 runConsentExtractorAndReturn();
             }
-        }
-        else if (currentUrl.includes('SimpleInfoShowUsingPlaceHolder')) {
-            const params = new URLSearchParams(window.location.search);
-            const pendingTask = (typeof GM_getValue === 'function') ? GM_getValue(CONSENT_DETAIL_TASK_KEY, null) : null;
-            const ntuhToken = params.get('ntuh_token') ||
-                              (pendingTask && pendingTask.expiresAt > Date.now() ? pendingTask.token : '');
-            if (ntuhToken) runConsentDetailExtractor(pendingTask);
         }
     }
 
