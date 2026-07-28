@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.28.0
+// @version      1.29.0
 // @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.28.0：移除從未觸發的 SimpleInfo DOM 備援死碼
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -76,6 +76,9 @@
         { english: /\b(orthopedic|arthroplasty|fracture|fixation)\b/i, chinese: /骨科|關節|骨折/ },
         { english: /\b(cardiac|heart|coronary)\b/i, chinese: /心臟|冠狀動脈/ }
     ];
+    // 非「主手術」的同意書（影像/檢查/導管等），從候選中排除，避免誤配到這些
+    // 註：若某病人的主手術本身就是中央靜脈導管置入(Port-A)，需把「中央靜脈導管」那段拿掉
+    const CONSENT_EXCLUDE = /電腦斷層|磁振造影|磁振|超音波|核醫|核子醫學|血管攝影|放射線|X\s*光|中央靜脈導管|靜脈導管置入/;
 
     function sendConsentResult(result) {
         GM_setValue(CONSENT_RESULT_KEY, { ntuh: true, sentAt: Date.now(), ...result });
@@ -502,7 +505,7 @@
                 const isConsent = title.includes('同意書') || /\bconsent\b/i.test(title);
                 const isProcedure = title.includes('術') || title.includes('檢查') ||
                                     /\b(surgery|surgical|operation|procedure|examination|exam)\b/i.test(title);
-                if (isConsent && isProcedure) {
+                if (isConsent && isProcedure && !CONSENT_EXCLUDE.test(title)) {
                     const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder.aspx` +
                                       `?SESSION=${session}&Func=EMRRecordSeries&EMRIDSE=${emrIdse}&EMRRecord=${emrCode}&AllowPrint=Y`;
 
