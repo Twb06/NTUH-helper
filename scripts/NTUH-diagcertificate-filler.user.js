@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.24.0
-// @description  自動填入診斷書（1.17 為底）＋移植 1.18 的手術同意書 PDF 解析：自動帶入建議手術名稱與診斷病名 ※ 1.24.0 = 回退至 1.20.0 內容（1.21~1.23 面板變慢，退回已知較快版本）
+// @version      1.25.0
+// @description  自動填入診斷書（1.17 為底）＋手術同意書 PDF 解析。※ 1.25.0：pdf.js 改由 GitHub 提供（醫院端 cdnjs 被擋會導致面板變慢），內容同 1.20.0
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -19,9 +19,10 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getResourceText
 // @connect      ihisaw.ntuh.gov.tw
-// @connect      cdnjs.cloudflare.com
-// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
-// @resource     pdfWorker https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js
+// @connect      github.com
+// @connect      raw.githubusercontent.com
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/vendor/pdf.min.js
+// @resource     pdfWorker https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/vendor/pdf.worker.min.js
 // ==/UserScript==
 
 (function () {
@@ -246,12 +247,12 @@
                 console.warn('[DiagFiller] GM_getResourceText 取 pdfWorker 失敗，改用網路後備', e);
             }
             if (!workerText) {
-                // 後備：直接抓 CDN 上的 worker（需 @connect cdnjs.cloudflare.com）
+                // 後備：直接抓 GitHub 上的 worker（需 @connect github.com / raw.githubusercontent.com）
                 workerText = await new Promise((resolve) => {
                     try {
                         GM_xmlhttpRequest({
                             method: 'GET',
-                            url: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+                            url: 'https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/vendor/pdf.worker.min.js',
                             onload: (r) => resolve((r && r.responseText) || ''),
                             onerror: () => resolve(''),
                             ontimeout: () => resolve('')
