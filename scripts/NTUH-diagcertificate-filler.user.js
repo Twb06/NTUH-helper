@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.26.0
-// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.26.0：整批移除「背景抓手術入帳名稱」功能
+// @version      1.27.0
+// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.27.0：移除手動 PDF 掃描按鈕（已自動觸發）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -1574,7 +1574,6 @@
             </div>
             <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
-                <button id="ntuh-diag-scan-consent" type="button" style="padding:6px 0; border:1px solid #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; font-weight:600; width:100%;">🔍 檢查同意書並帶入術名/診斷（PDF）</button>
                 <button id="ntuh-diag-open-consent" type="button" style="padding:6px 0; border:1px solid #5a6a8a; border-radius:6px; background:transparent; color:#7a8aaa; cursor:pointer; font-size:11px; width:100%;">📄 開啟病患同意書（手動查閱）</button>
                 <div id="ntuh-diag-status"></div>
                 <div id="ntuh-diag-consent-result-box" style="display:none;"></div>
@@ -1679,9 +1678,6 @@
             const url = `http://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}&PatClass=${patClass}&AccountIDSE=${accountIdse}&PersonID=${personId}&Hosp=${hosp}&Seed=${seed}`;
             window.open(url, '_blank');
         };
-
-        // 🔍 背景掃描同意書 PDF → 帶入建議手術名稱與診斷病名
-        document.getElementById('ntuh-diag-scan-consent').onclick = () => triggerConsentScan();
 
         // 啟動自動偵測與勾選
         setTimeout(autoDetectRecords, 100);
