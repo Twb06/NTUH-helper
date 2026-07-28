@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.25.0
-// @description  自動填入診斷書（1.17 為底）＋手術同意書 PDF 解析。※ 1.25.0：pdf.js 改由 GitHub 提供（醫院端 cdnjs 被擋會導致面板變慢），內容同 1.20.0
+// @version      1.26.0
+// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.26.0：整批移除「背景抓手術入帳名稱」功能
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
@@ -28,7 +27,6 @@
 (function () {
     'use strict';
 
-    let activeOpScanTokens = {};
     let detectedOpList = [];
 
     // =====================================================================
@@ -706,19 +704,6 @@
             }
             setTimeout(createDiagUI, 1500);
         }
-        else if (currentUrl.includes('DREnterOPOrder.aspx')) {
-            const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
-            const isOrchestratorWindow = !!ntuhToken;
-            console.log('[DiagFiller] 偵測到 DREnterOPOrder.aspx 頁面');
-            console.log('[DiagFiller] ntuh_token 狀態:', ntuhToken);
-            if (isOrchestratorWindow) {
-                sessionStorage.setItem('ntuh_window_token', ntuhToken);
-                console.log("[DiagFiller] 偵測到背景手術醫令入帳頁面(DREnterOPOrder)，啟動手術名稱擷取並準備回傳...");
-                runOpNameExtractorAndReturn();
-            } else {
-                console.warn("[DiagFiller] 未執行掃描：isOrchestratorWindow 判定為假。原因：網址無 token 參數。");
-            }
-        }
         else if (currentUrl.includes('PatientConsentOrderEntry')) {
             const ntuhToken = new URLSearchParams(window.location.search).get('ntuh_token');
             if (ntuhToken) {
@@ -759,29 +744,6 @@
             console.log('[DiagFiller] 已主動嘗試清理遺留之 ntuh_ 相關 Cookie，防範 HTTP 400 錯誤。');
         } catch (e) {
             console.error('[DiagFiller] 清理遺留 Cookie 失敗:', e);
-        }
-    }
-
-    function setSharedData(name, value) {
-        if (typeof GM_setValue !== 'undefined') {
-            GM_setValue(name, value);
-        } else {
-            localStorage.setItem(name, value);
-        }
-    }
-
-    function getSharedData(name) {
-        if (typeof GM_getValue !== 'undefined') {
-            return GM_getValue(name, '');
-        }
-        return localStorage.getItem(name) || '';
-    }
-
-    function deleteSharedData(name) {
-        if (typeof GM_deleteValue !== 'undefined') {
-            GM_deleteValue(name);
-        } else {
-            localStorage.removeItem(name);
         }
     }
 
@@ -1492,196 +1454,6 @@
         const runBtn = document.getElementById('ntuh-diag-run'); if (runBtn) runBtn.disabled = false;
     }
 
-    function handleReceivedOpName(opData) {
-        const container = document.getElementById('ntuh-diag-op-rows-container');
-        if (!container) return;
-
-        let mainOpName = '';
-        let mainIdse = '';
-        let otherOpMaps = {};
-        let opNames = [];
-
-        if (opData) {
-            if (typeof opData === 'string') {
-                if (opData.trim().startsWith('{')) {
-                    try {
-                        const parsed = JSON.parse(opData);
-                        mainOpName = parsed.mainOpName || '';
-                        mainIdse = parsed.opScheduleIdse || '';
-                        otherOpMaps = parsed.otherOpMaps || {};
-                        opNames = parsed.opNames || [];
-                    } catch (e) {
-                        mainOpName = opData;
-                    }
-                } else {
-                    mainOpName = opData;
-                }
-            } else if (typeof opData === 'object') {
-                mainOpName = opData.mainOpName || '';
-                mainIdse = opData.opScheduleIdse || '';
-                otherOpMaps = opData.otherOpMaps || {};
-                opNames = opData.opNames || [];
-            }
-        }
-
-        const normalizeIdse = s => s ? s.replace(/[^A-Za-z0-9]/g, '').toLowerCase().trim() : '';
-        console.log('[DiagFiller] 收到手術名稱資料, mainIdse:', mainIdse, 'mainOpName:', mainOpName, 'otherOpMaps:', otherOpMaps);
-
-        // 1. 更新 detectedOpList 中的手術名稱
-        if (detectedOpList && detectedOpList.length > 0) {
-            const normMainIdse = normalizeIdse(mainIdse);
-            
-            // 優先以流水號匹配更新 mainOpName
-            let updatedMain = false;
-            if (normMainIdse) {
-                for (let i = 0; i < detectedOpList.length; i++) {
-                    if (normalizeIdse(detectedOpList[i].opScheduleIdse) === normMainIdse) {
-                        detectedOpList[i].opName = mainOpName;
-                        updatedMain = true;
-                        console.log(`[DiagFiller] 依流水號匹配，將第 ${i} 筆手術名稱更新為 mainOpName: ${mainOpName}`);
-                        break;
-                    }
-                }
-            }
-            // 保底方案：若無匹配到流水號，則更新第一筆
-            if (!updatedMain) {
-                detectedOpList[0].opName = mainOpName;
-                console.log(`[DiagFiller] 未匹配到流水號，保底更新第一筆手術名稱為 mainOpName: ${mainOpName}`);
-            }
-
-            const normOtherOpMaps = {};
-            for (const key in otherOpMaps) {
-                normOtherOpMaps[normalizeIdse(key)] = otherOpMaps[key];
-            }
-            console.log('[DiagFiller] 轉換後的 normOtherOpMaps:', normOtherOpMaps);
-
-            // 更新其他在同意書表格中關聯的手術名稱
-            for (let i = 0; i < detectedOpList.length; i++) {
-                if (normMainIdse && normalizeIdse(detectedOpList[i].opScheduleIdse) === normMainIdse) {
-                    continue; // 剛才已經更新過 mainOpName 的不重複更新
-                }
-                const idse = detectedOpList[i].opScheduleIdse;
-                const normIdse = normalizeIdse(idse);
-                console.log(`[DiagFiller] 檢查第 ${i} 筆手術: idse=${idse}, normIdse=${normIdse}`);
-                if (normIdse && normOtherOpMaps[normIdse]) {
-                    detectedOpList[i].opName = normOtherOpMaps[normIdse];
-                    console.log(`[DiagFiller] 成功比對第 ${i} 筆手術名稱為: ${detectedOpList[i].opName}`);
-                } else {
-                    console.warn(`[DiagFiller] 第 ${i} 筆手術比對失敗，未在 normOtherOpMaps 中找到對應名稱`);
-                }
-            }
-        }
-
-        // 2. 確保至少有一個 row，並更新 UI 中所有已存在的 rows 的輸入值
-        const rows = container.getElementsByClassName('ntuh-diag-op-row');
-        if (rows.length === 0) {
-            const firstOp = detectedOpList && detectedOpList[0] ? detectedOpList[0] : { opDate: todayStr(), opName: mainOpName, opScheduleIdse: '' };
-            addOpRow(firstOp.opDate, mainOpName, firstOp.opScheduleIdse);
-        } else {
-            const opMapByIdse = {};
-            if (detectedOpList) {
-                detectedOpList.forEach(item => {
-                    const norm = normalizeIdse(item.opScheduleIdse);
-                    if (norm) opMapByIdse[norm] = item;
-                });
-            }
-
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                const idse = row.getAttribute('data-op-idse') || '';
-                const normIdse = normalizeIdse(idse);
-                
-                let targetName = '';
-                if (normIdse && opMapByIdse[normIdse]) {
-                    targetName = opMapByIdse[normIdse].opName;
-                } else if (i === 0) {
-                    targetName = mainOpName;
-                } else if (detectedOpList && detectedOpList[i]) {
-                    targetName = detectedOpList[i].opName;
-                }
-
-                if (targetName) {
-                    const nameInput = row.querySelector('.ntuh-diag-op-name-input');
-                    if (nameInput) {
-                        nameInput.value = targetName;
-                        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-                        nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }
-            }
-        }
-
-        // 若該手術有多筆入帳項目，列出讓使用者勾選要納入的項目
-        if (opNames && opNames.length > 1) {
-            const normMainIdse = normalizeIdse(mainIdse);
-            const allRows = container.getElementsByClassName('ntuh-diag-op-row');
-            let targetRow = null;
-            for (const r of allRows) {
-                if (normMainIdse && normalizeIdse(r.getAttribute('data-op-idse')) === normMainIdse) { targetRow = r; break; }
-            }
-            if (!targetRow && allRows.length > 0) targetRow = allRows[0];
-            if (targetRow) renderOpNameChoices(targetRow, opNames);
-        }
-
-        const cbxOp = document.getElementById('ntuh-diag-has-op');
-        if (cbxOp && !cbxOp.checked) {
-            cbxOp.checked = true;
-            const detailEl = document.getElementById('ntuh-diag-op-detail');
-            if (detailEl) detailEl.style.display = 'flex';
-        }
-
-        setDiagStatus('✓ 手術名稱背景讀取成功！', 'ok');
-    }
-
-    // 多筆入帳項目時，在該手術列下方列出勾選清單；勾選內容即時重組手術名稱
-    function renderOpNameChoices(row, opNames) {
-        if (!row || !opNames || opNames.length === 0) return;
-        const nameInput = row.querySelector('.ntuh-diag-op-name-input');
-        const old = row.querySelector('.ntuh-diag-op-choices');
-        if (old) old.remove();
-
-        // 單筆直接填入，不需勾選 UI
-        if (opNames.length === 1) {
-            if (nameInput) {
-                nameInput.value = ensureOpSuffix(opNames[0]);
-                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            return;
-        }
-
-        const box = document.createElement('div');
-        box.className = 'ntuh-diag-op-choices';
-        box.style.cssText = 'display:flex;flex-direction:column;gap:2px;margin-top:2px;padding:4px 6px;border:1px dashed #2d3650;border-radius:6px;background:#0f1420;';
-
-        const recompute = () => {
-            const picked = Array.from(box.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.value);
-            if (nameInput) {
-                nameInput.value = picked.map(ensureOpSuffix).join('併');
-                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        };
-
-        opNames.forEach(name => {
-            const isFee = /費|材料|器材/.test(name); // 儀器使用費等非術式項目，預設不勾
-            const label = document.createElement('label');
-            label.style.cssText = 'display:flex;align-items:flex-start;gap:4px;font-size:10px;line-height:1.3;color:#a8c0e8;cursor:pointer;';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox'; cb.value = name; cb.checked = !isFee;
-            cb.style.marginTop = '2px'; cb.style.flexShrink = '0';
-            cb.addEventListener('change', recompute);
-            const span = document.createElement('span');
-            span.textContent = name;
-            label.appendChild(cb); label.appendChild(span);
-            box.appendChild(label);
-        });
-
-        if (nameInput && nameInput.parentNode) nameInput.parentNode.insertBefore(box, nameInput.nextSibling);
-        else row.appendChild(box);
-        recompute();
-    }
-
     function makeDraggable(panel, handle) {
         let startX, startY, startLeft, startTop;
         handle.onmousedown = e => {
@@ -1698,81 +1470,6 @@
         };
     }
 
-    function triggerOpNameScan() {
-        try {
-            console.log('[DiagFiller] 自動觸發背景擷取手術中文名稱...');
-            const currentUrlParams = new URLSearchParams(window.location.search);
-            let session = currentUrlParams.get('SESSION') || '';
-            if (!session) { const sEl = document.querySelector('input[name*="SESSION"], input[id*="SESSION"]'); if (sEl) session = sEl.value; }
-            if (!session) { console.warn('[DiagFiller] 無法取得 SESSION，跳過背景掃描'); return; }
-
-            const rows = Array.from(document.getElementById('ntuh-diag-op-rows-container').getElementsByClassName('ntuh-diag-op-row'));
-            const scanTasks = [];
-
-            rows.forEach((row, index) => {
-                const nameInput = row.querySelector('.ntuh-diag-op-name-input');
-                const opName = nameInput ? nameInput.value.trim() : '';
-                const opScheduleIdse = row.getAttribute('data-op-idse') || '';
-                const needsScan = !opName || /[A-Za-z]/.test(opName);
-
-                if (needsScan && opScheduleIdse) {
-                    const opToken = 'ntuh_op_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '_' + index;
-                    scanTasks.push({ opScheduleIdse, opToken });
-                }
-            });
-
-            if (scanTasks.length === 0) return;
-
-            console.log('[DiagFiller] 規劃的手術背景掃描任務:', scanTasks);
-            setDiagStatus('⏳ 正在背景擷取手術中文名稱...', 'warn');
-
-            activeOpScanTokens = {};
-            scanTasks.forEach(task => {
-                const opTargetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DREnterOPOrder.aspx` +
-                                   `?SESSION=${session}&OperationIDSE=${task.opScheduleIdse}&ntuh_token=${task.opToken}`;
-
-                activeOpScanTokens[task.opToken] = task.opScheduleIdse;
-
-                if (typeof GM_openInTab !== 'undefined') {
-                    GM_openInTab(opTargetUrl, { active: false, insert: true, setParent: true });
-                } else {
-                    window.open(opTargetUrl, '_blank');
-                }
-            });
-
-            const startTime = Date.now();
-            const pollInterval = setInterval(() => {
-                if (Date.now() - startTime > 60000) {
-                    clearInterval(pollInterval);
-                    console.warn('[DiagFiller] 輪詢逾時 (60s)');
-                    if (document.getElementById('ntuh-diag-status').textContent.includes('⏳')) {
-                        setDiagStatus('⚠️ 擷取逾時，請重新整理頁面。', 'warn');
-                    }
-                    return;
-                }
-
-                for (const opToken in activeOpScanTokens) {
-                    const opNameData = getSharedData('ntuh_op_name_' + opToken);
-                    if (opNameData) {
-                        console.log(`[DiagFiller] 收到 Token ${opToken} 的手術名稱資料:`, opNameData);
-                        handleReceivedOpName(opNameData);
-                        deleteSharedData('ntuh_op_name_' + opToken);
-                        delete activeOpScanTokens[opToken];
-                    }
-                }
-
-                if (Object.keys(activeOpScanTokens).length === 0) {
-                    clearInterval(pollInterval);
-                    console.log('[DiagFiller] 所有手術名稱已成功接收，停止輪詢');
-                }
-            }, 1000);
-
-        } catch(e) {
-            console.error('[DiagFiller] 背景擷取手術名稱異常:', e);
-        }
-    }
-
-    // 背景掃描手術同意書 PDF → 帶入建議手術名稱與診斷病名（按鈕與自動偵測共用）
     function triggerConsentScan() {
         try {
             const currentUrlParams = new URLSearchParams(window.location.search);
@@ -2058,77 +1755,13 @@
 
             setDiagStatus('✓ 病歷自動偵測完成！', 'ok');
 
-            // 本次住院期間有手術 → 自動觸發：①背景擷取手術入帳中文名稱 ②同意書 PDF 讀取
+            // 本次住院期間有手術 → 自動觸發同意書 PDF 讀取
             if (autoOps.length > 0) {
-                triggerOpNameScan();
                 triggerConsentScan();
             }
         } catch (e) {
             console.warn('[DiagFiller] 自動偵測病歷失敗：', e);
             setDiagStatus('⚠️ 自動偵測病歷失敗', 'warn');
-        }
-    }
-
-    // =========================================================================
-    // 模組二：背景分頁自動擷取手術名稱，透過 GM_setValue 跨網域回傳
-    // =========================================================================
-    function extractOpNamesFromDOM() {
-        const names = [];
-        const spans = document.querySelectorAll('span[id*="InputOperationOrderCtrl1_OrderName"]');
-        for (const span of spans) {
-            const name = span.textContent.trim();
-            if (name) names.push(name);
-        }
-        console.log('[OpNameExtractor] 從手術醫令入帳頁面擷取到', names.length, '筆手術名稱:', names);
-        return names;
-    }
-
-    function formatCombinedOpName(items) {
-        if (!items || items.length === 0) return '';
-        const cleaned = items.map(s => s.replace(/[\r\n\t]+/g, ' ').trim()).filter(s => s.length > 0);
-        if (cleaned.length === 0) return '';
-        if (cleaned.length === 1) return cleaned[0];
-        return cleaned.join('併');
-    }
-
-    async function runOpNameExtractorAndReturn() {
-        const token = new URLSearchParams(window.location.search).get('ntuh_token') || '';
-        const opScheduleIdse = new URLSearchParams(window.location.search).get('OperationIDSE') || '';
-        try {
-            await sleep(1200);
-            const opNames = extractOpNamesFromDOM();
-            const cleanedNames = opNames.map(s => s.replace(/[\r\n\t]+/g, ' ').trim()).filter(s => s.length > 0);
-            const formatted = formatCombinedOpName(opNames);
-            console.log('[OpNameExtractor] 格式化後的手術名稱:', formatted, '｜原始項目:', cleanedNames);
-
-            const opResult = {
-                opScheduleIdse: opScheduleIdse,
-                mainOpName: formatted,
-                opNames: cleanedNames,   // 原始入帳項目清單，供主頁勾選
-                otherOpMaps: {}
-            };
-
-            const resultString = JSON.stringify(opResult);
-
-            if (token) {
-                console.log('[OpNameExtractor] 寫入傳遞資料, token:', token);
-                setSharedData('ntuh_op_name_' + token, resultString);
-            }
-
-            if (window.opener) {
-                window.opener.postMessage(
-                    { ntuh: true, token, type: 'opName', data: opResult },
-                    'https://hisaw.ntuh.gov.tw'
-                );
-                console.log('[OpNameExtractor] 手術名稱已回傳:', opResult);
-            } else {
-                console.log('[OpNameExtractor] 無法取得 opener，改以全域資料通訊機制回傳');
-            }
-
-            await sleep(100);
-            window.close();
-        } catch (e) {
-            console.error('[OpNameExtractor] 擷取失敗:', e.message);
         }
     }
 
