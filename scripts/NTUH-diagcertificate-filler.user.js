@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.29.0
+// @version      1.30.0
 // @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 1.28.0：移除從未觸發的 SimpleInfo DOM 備援死碼
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -500,6 +500,15 @@
                         title = simpleMatch[1].trim();
                         statusStr = '已簽署';
                     }
+                }
+
+                // 日期取用順序：綁定排程日期 > 簽署日期 > EMRIDSE 前8碼(建檔日)。
+                // 讓「未簽署」的主手術同意書（無括號日期）也能靠 EMRIDSE 取得日期來配對。
+                const schedMatch = fullTitle.match(/綁定排程日期\s*(\d{4})\/(\d{2})\/(\d{2})/);
+                if (schedMatch) {
+                    dateStr = `${schedMatch[1]}/${schedMatch[2]}/${schedMatch[3]}`;
+                } else if (!dateStr && /^\d{8}/.test(emrIdse)) {
+                    dateStr = `${emrIdse.slice(0, 4)}/${emrIdse.slice(4, 6)}/${emrIdse.slice(6, 8)}`;
                 }
 
                 const isConsent = title.includes('同意書') || /\bconsent\b/i.test(title);
