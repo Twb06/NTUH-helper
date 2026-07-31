@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.2.2
+// @version      0.2.3
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成結構化文字（支援清單版與綠單趨勢版）
 // @match        *://*/*MedicalReportContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js
@@ -63,6 +63,14 @@
 
     const URINE_ALWAYS_SHOW = ['RBC', 'WBC', 'Bac'];
 
+    // CSF：顯示順序（未列到的項目接在後面）
+    const CSF_ORDER = ['WBC', 'L/N', 'RBC', 'TP', 'Glucose', 'Lactate', 'LDH', 'ADA'];
+    const CSF_NAME_MAP = {
+        'WBC': 'WBC', 'RBC': 'RBC', 'L/N': 'L/N',
+        'TP(CSF)': 'TP', 'Glucose(CSF)': 'Glucose',
+        'Lactate(CSF)': 'Lactate', 'LDH(CSF)': 'LDH', 'ADA(CSF)': 'ADA',
+    };
+
     const NAME_MAP = {
         'Hb': 'HB', 'PLT': 'PLT', 'WBC': 'WBC', 'MCV': 'MCV',
         'Seg': 'Seg', 'Eos.': 'Eos.', 'Baso.': 'Baso.', 'Band': 'Band',
@@ -110,6 +118,7 @@
         'Venous', 'Catheter', 'Random', 'RANDOM',
         'Special Instructions',
         'RH', 'ABO Typing', 'antibody screen',
+        'Reference Comment',
     ];
 
     const GENUS_ABBR = [
@@ -252,6 +261,8 @@
         const aGasDates = [];
         const vGasData = {};
         const vGasDates = [];
+        const csfData = {};
+        const csfDates = [];
         const cultureItems = [];
         const structuredCultures = [];
         let collectDate = '';
@@ -317,6 +328,17 @@
                 if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) return;
 
                 const cleanName = parseGreenItemName(rawName);
+
+                // CSF 檢體：獨立分組，不套用 IGNORE / 血液項目對應
+                if (/C\.\s*S\.\s*F\.|\bCSF\b/i.test(headerText) && !cultureKeysMatch(rawName)) {
+                    const csfName = CSF_NAME_MAP[rawName]
+                        || (/\(CSF\)/i.test(rawName) ? cleanName : null);
+                    if (!csfName) return;
+                    if (!csfDates.includes(collectDate)) csfDates.push(collectDate);
+                    pushToStore(csfData, csfName, csfDates.indexOf(collectDate), cleanGreenValue(rawVal));
+                    return;
+                }
+
                 if (IGNORE.includes(cleanName)) return;
 
                 const val = cleanGreenValue(rawVal);
@@ -408,6 +430,7 @@
 
         padData(trendData, dates.length);
         padData(urineData, urineDates.length);
+        padData(csfData, csfDates.length);
         padData(aGasData, aGasDates.length);
         padData(vGasData, vGasDates.length);
 
@@ -415,8 +438,12 @@
         sortByDate(aGasDates, aGasData);
         sortByDate(vGasDates, vGasData);
         sortByDate(urineDates, urineData);
+        sortByDate(csfDates, csfData);
 
         const specialGroups = {};
+        if (Object.keys(csfData).length) {
+            specialGroups.CSF = { dates: csfDates, data: csfData };
+        }
         if (Object.keys(urineData).length) {
             specialGroups.Urine = { dates: urineDates, data: urineData };
         }
@@ -577,6 +604,7 @@
                     } else if (type === 'Punctate') {
                         const pm = legendText.match(/Punctate examination\s+(.*)/);
                         specialName = pm ? pm[1].trim() : 'Punctate';
+                        if (/C\.\s*S\.\s*F\.|\bCSF\b/i.test(specialName)) specialName = 'CSF';
                     }
                     break;
                 }
@@ -801,6 +829,10 @@
                 if (sgName === 'Urine') {
                     const u = buildUrinePara(sgData);
                     if (u) groups.push(u);
+                } else if (sgName === 'CSF') {
+                    const extra = Object.keys(sgData.data).filter(k => !CSF_ORDER.includes(k));
+                    const c = buildGroup('CSF', CSF_ORDER, extra, sgData.data, sgData.dates);
+                    if (c) groups.push(c);
                 } else if (sgName === 'Gas' || sgName === 'A gas' || sgName === 'V gas') {
                     const gasKeys = sgName === 'Gas' ? GAS : Object.keys(sgData.data);
                     const g = buildGroup(sgName, gasKeys, [], sgData.data, sgData.dates);
