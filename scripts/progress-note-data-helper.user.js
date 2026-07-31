@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.9.9
-// @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。
+// @version      1.0.0
+// @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
@@ -57,6 +57,10 @@
         return 'https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
             + `?PersonID=${p.PersonID}&Seed=${p.Seed || ''}`;
     }
+
+    // 檢驗報告要往前抓幾天（負數，MedicalReportContent.aspx 的 IntervalDay 參數）。
+    // 想改天數改這裡就好，[Lab] 區塊與點標題跳轉的網址都吃這個值。
+    const LAB_INTERVAL_DAY = -14;
 
     // ═════════════════════════════════════════════
     // 資料來源定義：每個來源 = 一個權威專頁
@@ -152,14 +156,16 @@
                 `&ntuh_token=${encodeURIComponent(token)}`,
         },
         // 檢驗報告：worker 是 lab-summary.user.js（跑在 MedicalReportContent.aspx，預設清單）
-        // 注意此頁參數異於其他頁：無 SESSION，改用 ChartNo/WardCode/HospitalCode。
+        // 此頁靠 ChartNo 定位病人，另帶 WardCode/HospitalCode。SESSION 一併帶上：
+        // 少了它第一次背景開頁常落在登入前院網，才需要下方 retryTab 重開一次。
+        // IntervalDay 為負數＝往前推幾天（-1 只有這兩天，實測 -14 可帶出 14 天）。
         lab: {
             label: '[Lab]',
             match: () => false, // MedicalReportContent.aspx 由 lab-summary 處理
             buildUrl: (p, token) =>
                 'https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx' +
-                `?PatClass=${p.PatClass || 'I'}&WardCode=${p.WardCode}&ChartNo=${p.ChartNo}` +
-                `&HospitalCode=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&IntervalDay=-1` +
+                `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&WardCode=${p.WardCode}&ChartNo=${p.ChartNo}` +
+                `&HospitalCode=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&IntervalDay=${LAB_INTERVAL_DAY}` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
         },
     };
@@ -310,18 +316,130 @@
         return lines.length ? lines.join('\n\n') : '（今日無護理紀錄）';
     }
 
+    // ═════════════════════════════════════════════
+    // 病人識別解析（參考 Better Portal 的 patient-page-context.js）
+    // ─────────────────────────────────────────────
+    // 舊版直接 getElementById('hidChartNo')。這頁是 ASP.NET WebForms，控制項 id 會被
+    // naming container 加前綴（NTUHWeb1_…），精確比對抓不到 → ChartNo 空 → 檢驗報告頁
+    // (MedicalReportContent.aspx) 開出空白/被導回登入頁。改成多來源解析＋尾綴選取器。
+    // ═════════════════════════════════════════════
+
+    // query 參數不分大小寫（各頁混用 SESSION/session、ChartNo/chartno）
+    function qGet(name) {
+        const want = name.toLowerCase();
+        for (const [k, v] of new URLSearchParams(window.location.search)) {
+            if (k.toLowerCase() === want && v) return v;
+        }
+        return '';
+    }
+
+    // 用「id 尾綴」比對，跳過 naming container 前綴；同時吃 input.value 與文字節點
+    function readIdSuffix(suffix) {
+        for (const el of document.querySelectorAll(`[id$="${suffix}" i]`)) {
+            const raw = el.value ?? el.getAttribute('value') ?? el.textContent ?? '';
+            const v = String(raw).trim();
+            if (v) return v;
+        }
+        return '';
+    }
+
+    // 病歷號：NTUH 為 7–8 碼數字。純數字直接收；文字區塊只收有標籤的形式，避免撈到日期
+    function pickChartNo(raw, loose = false) {
+        const s = String(raw || '').trim();
+        if (!s) return '';
+        if (/^\d{6,10}$/.test(s)) return s;
+        if (!loose) return '';
+        return s.replace(/\s+/g, ' ').match(/(?:病歷號|病歷|ChartNo)[:：\s]*(\d{6,10})/i)?.[1] || '';
+    }
+
+    // 檢驗報告頁的分頁 holder，其 name/param 形如 LabReport_{chartNo}_{accountIdSe}
+    const LAB_CTX_SELECTORS = [
+        '#lsvMenuGroup_ctrl0_lsvMenuItem_ctrl0_itemHolder',
+        '#rReportTab_lsvReportTab_ctrl0_tabHolder',
+    ];
+    function getLabReportContext() {
+        for (const attr of ['name', 'param']) {
+            for (const sel of LAB_CTX_SELECTORS) {
+                const m = document.querySelector(sel)?.getAttribute(attr)
+                    ?.match(/^LabReport_(\d+)_([^_]+)$/i);
+                if (m) return { chartNo: m[1], accountIdSe: m[2] };
+            }
+        }
+        return { chartNo: '', accountIdSe: '' };
+    }
+
+    function resolveChartNo() {
+        const labCtx = getLabReportContext();
+        const strict = [
+            qGet('ChartNo'),
+            readIdSuffix('hidChartNo'),
+            readIdSuffix('lblChartNo'),
+            readIdSuffix('ChartNo'),      // 任何 id 以 ChartNo 結尾者
+            labCtx.chartNo,
+        ];
+        for (const c of strict) {
+            const v = pickChartNo(c);
+            if (v) return v;
+        }
+        // 最後手段：病人資訊橫幅的文字（只收「病歷號 1234567」這種有標籤的）
+        const banner = document.getElementById('UpperBannerInfoTable')
+            || document.querySelector('[id*="PatientAbstractBasicInfo"]');
+        return pickChartNo(banner?.innerText || banner?.textContent, true);
+    }
+
+    function resolveAccountIdSe() {
+        return qGet('AccountIDSE') || qGet('AccountIDSEList')
+            || readIdSuffix('hidAccountNo') || readIdSuffix('hidAccountIdse')
+            || getLabReportContext().accountIdSe;
+    }
+
+    function resolvePersonId() {
+        return qGet('PersonID') || readIdSuffix('hidPersonId');
+    }
+
+    // 病房代碼：BedIDSE 形如 "T0-08C -01-01" → 取第二段 08C；另留 hidWardCode 備援
+    function resolveWardCode() {
+        const bedIdse = readIdSuffix('HiddenFieldBedIDSE');
+        return bedIdse.split('-')[1]?.trim() || qGet('WardCode') || readIdSuffix('hidWardCode');
+    }
+
+    // SESSION：URL 沒帶時從整頁 HTML 撈（頁內連結都帶著），再不行用 6 小時內的快取
+    const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+    const SESSION_CACHE_KEY = 'ntuh_portal_session';
+
+    function saveSession(session) {
+        if (!session) return;
+        try {
+            localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
+                origin: window.location.origin, session, savedAt: Date.now(),
+            }));
+        } catch (e) { /* noop */ }
+    }
+    function getCachedSession() {
+        try {
+            const o = JSON.parse(localStorage.getItem(SESSION_CACHE_KEY) || 'null');
+            if (o && o.origin === window.location.origin && typeof o.session === 'string'
+                && Date.now() - o.savedAt < SESSION_TTL_MS) return o.session;
+        } catch (e) { /* noop */ }
+        return '';
+    }
+    function resolveSession() {
+        const found = qGet('SESSION')
+            || document.documentElement.innerHTML.match(/SESSION=([a-zA-Z0-9]{34})/i)?.[1] || '';
+        if (found) { saveSession(found); return found; }
+        return getCachedSession();
+    }
+
     // ─────────────────────────────────────────────
     // fetch 模式來源：直接打 Progress 頁的 OuterData API（同源，不開分頁）
     // ─────────────────────────────────────────────
     function getOuterParams() {
-        const v = (id) => document.getElementById(id)?.value || '';
-        const q = new URLSearchParams(window.location.search);
         return {
-            AccountIdse: v('hidAccountNo') || q.get('AccountIDSE') || '',
-            PersonId:    v('hidPersonId')  || q.get('PersonID')   || '',
-            ChartNo:     v('hidChartNo')   || '',
-            DeptCode:    v('hidDeptCode')  || '',
-            EmpDeptCode: v('hidEmpDeptCode') || '',
+            AccountIdse: resolveAccountIdSe(),
+            PersonId:    resolvePersonId(),
+            ChartNo:     resolveChartNo(),
+            DeptCode:    readIdSuffix('hidDeptCode'),
+            EmpDeptCode: readIdSuffix('hidEmpDeptCode'),
         };
     }
 
@@ -538,19 +656,32 @@
     // 協調器：從 Progress 頁 URL 取參數，開背景頁、輪詢、渲染
     // ═════════════════════════════════════════════
     function getPageParams() {
-        const q = new URLSearchParams(window.location.search);
-        const bedIdse = document.getElementById('NTUHWeb1_PatientAbstractBasicInfo1_HiddenFieldBedIDSE')?.value || '';
         return {
-            SESSION:     q.get('SESSION') || q.get('session') || '',
-            AccountIDSE: q.get('AccountIDSE') || '',
-            PatClass:    q.get('PatClass') || 'I',
-            PersonID:    q.get('PersonID') || '',
-            Hosp:        q.get('Hosp') || 'T0',
-            Seed:        q.get('Seed') || '',
-            // 檢驗報告頁(MedicalReportContent)專用：另一套參數，非 SESSION 系
-            ChartNo:     document.getElementById('hidChartNo')?.value || '',
-            WardCode:    bedIdse.split('-')[1]?.trim() || '', // "T0-08C -01-01" → 08C
+            SESSION:     resolveSession(),
+            AccountIDSE: resolveAccountIdSe(),
+            PatClass:    qGet('PatClass') || 'I',
+            PersonID:    resolvePersonId(),
+            Hosp:        qGet('Hosp') || 'T0',
+            Seed:        qGet('Seed') || '',
+            // 檢驗報告頁(MedicalReportContent)專用
+            ChartNo:     resolveChartNo(),
+            WardCode:    resolveWardCode(),
         };
+    }
+
+    // 各來源開頁前的必要參數；缺就別開（開了也是空白頁或被導回登入，白等 30 秒再重試）
+    const SOURCE_REQUIRES = {
+        catheter: ['SESSION', 'AccountIDSE'],
+        consult:  ['SESSION', 'AccountIDSE', 'PersonID'],
+        diet:     ['SESSION', 'AccountIDSE', 'PersonID'],
+        handover: ['SESSION', 'AccountIDSE'],
+        nursing:  ['SESSION', 'AccountIDSE'],
+        meds:     ['SESSION', 'AccountIDSE', 'PersonID'],
+        rx:       ['SESSION', 'AccountIDSE', 'PersonID'],
+        lab:      ['ChartNo'],
+    };
+    function missingParams(key, params) {
+        return (SOURCE_REQUIRES[key] || []).filter((f) => !params[f]);
     }
 
     // 純英數 token（不用 Date：SimileAjax 在這些頁改寫了 Date.now，會回傳含空格的日期字串）
@@ -591,6 +722,10 @@
         const params = getPageParams();
         const results = {};
         outerCache = {}; // 清掉上一輪 OuterData 快取
+        // 抓不到某來源時，先看這行判斷是哪個識別參數沒解析到（SESSION 只印長度）
+        console.log(LOG, '解析到的參數', {
+            ...params, SESSION: params.SESSION ? `(${params.SESSION.length} 碼)` : '(無)',
+        });
 
         // ── fetch 模式：直接打 OuterData，同源、不開分頁 ──
         const fetchKeys = keys.filter((k) => SOURCES[k].mode === 'fetch');
@@ -605,7 +740,17 @@
         });
 
         // ── tab 模式：背景開權威專頁 → localStorage 回傳 ──
-        const tabKeys = keys.filter((k) => SOURCES[k].mode !== 'fetch');
+        // 先擋掉缺參數的來源：開了也只會拿到空白頁或登入頁，還會白等到逾時
+        const tabKeys = [];
+        keys.filter((k) => SOURCES[k].mode !== 'fetch').forEach((key) => {
+            const miss = missingParams(key, params);
+            if (miss.length) {
+                results[key] = { label: SOURCES[key].label, ok: false, error: '缺少 ' + miss.join('/') };
+                console.warn(LOG, '略過', key, '缺少參數', miss);
+            } else {
+                tabKeys.push(key);
+            }
+        });
         // 清掉先前殘留（token 不符而未被刪除的）鍵
         Object.keys(localStorage).filter((k) => k.startsWith('ntuh_data_'))
             .forEach((k) => localStorage.removeItem(k));
@@ -650,7 +795,8 @@
 
         await Promise.all([...fetchPromises, pollPromise]);
         // lab 第一次常落在登入前院網而失敗 → 重開一次（第一次開已把 session 建起來）
-        if (keys.includes('lab') && (!results.lab || !results.lab.ok)) {
+        // 缺 ChartNo 時不重試：重開幾次都一樣，直接留著錯誤訊息讓使用者看到原因
+        if (tabKeys.includes('lab') && (!results.lab || !results.lab.ok)) {
             await retryTab('lab', params, results);
         }
         // 每個結果掛上「點標題跳轉」網址：fetch 來源用 navUrl；tab 來源用 buildUrl 去掉 token
