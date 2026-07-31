@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.2.3
-// @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成結構化文字（支援清單版與綠單趨勢版）
+// @version      0.3.0
+// @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）
 // @match        *://*/*MedicalReportContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js
@@ -14,6 +14,24 @@
     'use strict';
 
     // ====== 分類定義 ======
+
+    // 呈現方式：table＝日期為列的對齊表格，trend＝單行段落（值以 → 串接）。
+    // 存 localStorage 讓下次開啟沿用；背景 worker 也讀同一把 key，
+    // 兩者都跑在 MedicalReportContent.aspx 同源，不需另外傳遞。
+    const VIEW_KEY = 'ntuh_lab_view_mode';
+    const VIEW_TABLE = 'table';
+    const VIEW_TREND = 'trend';
+
+    function getViewPref() {
+        try {
+            return localStorage.getItem(VIEW_KEY) === VIEW_TREND ? VIEW_TREND : VIEW_TABLE;
+        } catch (e) {
+            return VIEW_TABLE;
+        }
+    }
+    function setViewPref(v) {
+        try { localStorage.setItem(VIEW_KEY, v); } catch (e) { /* noop */ }
+    }
 
     const IGNORE = ['HCT', 'Hct', 'MCH', 'MCHC', 'RDW-CV', 'PS', 'RBC', 'Sugar'];
 
@@ -249,7 +267,7 @@
 
     // ====== 清單版 DOM 讀取 ======
 
-    function readListView() {
+    function readListView(view) {
         const tables = document.querySelectorAll('table.DetailedSheet');
         if (!tables.length) return null;
 
@@ -481,9 +499,9 @@
             cultureItems.push('[' + dt + '] ' + cByDate[dt].join('\n[' + dt + '] '));
         }
 
-        let result = formatTrendParagraph(dates, trendData, Object.keys(specialGroups).length ? specialGroups : null);
+        let result = formatTrend(dates, trendData, Object.keys(specialGroups).length ? specialGroups : null, view);
         if (cultureItems.length) {
-            result = (result || '') + (result ? '\n' : '') + '#. Culture:\n' + cultureItems.join('\n');
+            result = (result || '') + (result ? '\n\n' : '') + '#. Culture:\n' + cultureItems.join('\n');
         }
         return result;
     }
@@ -579,7 +597,7 @@
         'Punctate examination': 'Punctate',
     };
 
-    function readGreenSheetView() {
+    function readGreenSheetView(view) {
         const fieldsets = document.querySelectorAll('fieldset');
         if (!fieldsets.length) return null;
 
@@ -700,11 +718,73 @@
 
         if (!dates.length && !Object.keys(specialGroups).length) return null;
 
-        return formatTrendParagraph(dates, data, specialGroups);
+        return formatTrend(dates, data, specialGroups, view);
     }
 
-    // ====== 段落式趨勢格式化 ======
+    // ====== 表格式趨勢格式化 ======
 
+    const COL_GAP = 2;    // 欄與欄之間的空格數
+    const MAX_COLS = 8;   // 單一表格最多幾欄，超過就再開一段表格（避免過寬）
+    const EMPTY = '-';    // 該日無此項目時填的符號
+
+    // 以顯示寬度計（中文/全形算 2 格），純 ASCII 算 1 格
+    function dispWidth(s) {
+        let w = 0;
+        for (const ch of String(s)) {
+            w += /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦]/.test(ch) ? 2 : 1;
+        }
+        return w;
+    }
+
+    function padCell(s, w) {
+        return s + ' '.repeat(Math.max(0, w - dispWidth(s)));
+    }
+
+    // 07/21 → 0721
+    function fmtDateLabel(d) {
+        return String(d || '').replace(/\//g, '');
+    }
+
+    // colNames: 欄位名陣列；rowLabels: 每列的日期；cells[列][欄]: 值
+    function buildTable(title, colNames, rowLabels, cells) {
+        if (!colNames.length || !rowLabels.length) return null;
+
+        const labelW = Math.max(...rowLabels.map(dispWidth));
+        const blocks = [];
+
+        for (let start = 0; start < colNames.length; start += MAX_COLS) {
+            const idx = [];
+            for (let c = start; c < Math.min(start + MAX_COLS, colNames.length); c++) idx.push(c);
+
+            const colW = idx.map(c => Math.max(
+                dispWidth(colNames[c]),
+                ...cells.map(row => dispWidth(row[c]))
+            ));
+
+            const line = (label, get) => (
+                padCell(label, labelW) +
+                idx.map((c, k) => ' '.repeat(COL_GAP) + padCell(get(c), colW[k])).join('')
+            ).replace(/\s+$/, '');
+
+            const lines = [line('', c => colNames[c])];
+            rowLabels.forEach((lb, r) => lines.push(line(lb, c => cells[r][c])));
+            blocks.push(lines.join('\n'));
+        }
+
+        return (title ? title + '\n' : '') + blocks.join('\n\n');
+    }
+
+    function findActiveIdx(refDates, allKeys, dd2) {
+        const activeIdx = [];
+        for (let i = 0; i < refDates.length; i++) {
+            for (const nm of allKeys) {
+                if (dd2[nm] && dd2[nm][i]) { activeIdx.push(i); break; }
+            }
+        }
+        return activeIdx;
+    }
+
+    // 值以 → 串接；中間有沒抽的日期就多一個箭頭表示間隔（段落模式用）
     function compactTrend(vals) {
         const filled = vals.filter(x => x);
         if (filled.length === 0) return null;
@@ -723,17 +803,14 @@
         return parts.map((p, i) => i === 0 ? p.val : p.arrow + p.val).join('');
     }
 
-    function findActiveIdx(refDates, allKeys, dd2) {
-        const activeIdx = [];
-        for (let i = 0; i < refDates.length; i++) {
-            for (const nm of allKeys) {
-                if (dd2[nm] && dd2[nm][i]) { activeIdx.push(i); break; }
-            }
-        }
-        return activeIdx;
-    }
+    // 兩種呈現共用同一套分組流程，差別只在「單一群組怎麼畫」：
+    //   VIEW_TABLE → 日期為列、檢驗項目為欄的等寬對齊表格
+    //   VIEW_TREND → 單行段落（原作者格式）
+    // 分組清單與 #. 前綴都只寫一次。先前前綴由各群組自帶時，上游新加的 CSF
+    // 分組就漏掉了前綴，集中處理可避免再發生。
+    function formatTrend(dates, data, specialGroups, view) {
+        const isTable = view !== VIEW_TREND;
 
-    function formatTrendParagraph(dates, data, specialGroups) {
         function isAbnormal(nm, vals) {
             const range = HEMO_EXT_RANGE[nm];
             if (!range) return true;
@@ -771,92 +848,125 @@
             const activeIdx = findActiveIdx(refDates, allKeys, dd2);
             if (!activeIdx.length) return null;
 
-            const filtered = {};
-            for (const nm of allKeys) {
-                if (!dd2[nm]) continue;
-                filtered[nm] = activeIdx.map(i => dd2[nm][i] || '');
+            if (!isTable) {
+                const filtered = {};
+                for (const nm of allKeys) {
+                    if (!dd2[nm]) continue;
+                    filtered[nm] = activeIdx.map(i => dd2[nm][i] || '');
+                }
+                const items = [];
+                for (const nm of allKeys) {
+                    if (ATTACHED.has(nm)) continue;
+                    const s = fmtItem(nm, filtered);
+                    if (s) items.push(s);
+                }
+                if (!items.length) return null;
+                const gd = activeIdx.map(i => refDates[i]);
+                return title + ' [' + gd.join(', ') + ']: ' + items.join(', ');
             }
 
-            const items = [];
-            for (const nm of [...keys, ...(extKeys || [])]) {
+            // 欄位順序：附屬項目（Seg / MCV / eGFR）緊接在主項目後面
+            const colKeys = [];
+            for (const nm of allKeys) {
                 if (ATTACHED.has(nm)) continue;
-                const s = fmtItem(nm, filtered);
-                if (s) items.push(s);
+                if (!colKeys.includes(nm)) colKeys.push(nm);
+                const an = ATTACH[nm];
+                if (an && !colKeys.includes(an)) colKeys.push(an);
             }
-            if (!items.length) return null;
-            const gd = activeIdx.map(i => refDates[i]);
-            return title + ' [' + gd.join(', ') + ']: ' + items.join(', ');
+
+            const cols = colKeys.filter(nm => {
+                const v = dd2[nm];
+                if (!v) return false;
+                if (!activeIdx.some(i => v[i])) return false;
+                // Eos./Baso./Band/Lym./Mono. 全在正常範圍就不列
+                if (HEMO_EXT_RANGE[nm] && !isAbnormal(nm, activeIdx.map(i => v[i]))) return false;
+                return true;
+            });
+            if (!cols.length) return null;
+
+            const rowLabels = activeIdx.map(i => fmtDateLabel(refDates[i]));
+            const cells = activeIdx.map(i => cols.map(nm => dd2[nm][i] || EMPTY));
+            return buildTable(title, cols, rowLabels, cells);
         }
 
-        function buildUrinePara(sg) {
+        function buildUrine(sg) {
             const dt = sg.data;
-            const items = [];
+            const uDates = sg.dates || [];
+            const cols = [];
+            const colVals = [];
             for (const k of Object.keys(dt)) {
                 const always = URINE_ALWAYS_SHOW.includes(k);
-                const vals = dt[k];
-                const pts = vals.map(v => {
-                    if (always) return v || '-';
-                    return (v && isUrineAbnormal(v)) ? displayUrineVal(v) : '-';
+                const pts = dt[k].map(v => {
+                    if (always) return v || EMPTY;
+                    return (v && isUrineAbnormal(v)) ? displayUrineVal(v) : EMPTY;
                 });
-                if (pts.every(p => p === '-')) continue;
-                items.push(k + ' ' + pts.join('→'));
+                if (pts.every(p => p === EMPTY)) continue;
+                cols.push(k);
+                colVals.push(pts);
             }
-            if (!items.length) return null;
-            const ud = sg.dates || [];
-            return 'Urine [' + ud.join(', ') + ']: ' + items.join(', ');
+            if (!cols.length) return null;
+            if (!isTable) {
+                return 'Urine [' + uDates.join(', ') + ']: '
+                    + cols.map((k, c) => k + ' ' + colVals[c].join('→')).join(', ');
+            }
+            const rowLabels = uDates.map(d => fmtDateLabel(d));
+            const cells = uDates.map((d, i) => colVals.map(v => v[i] || EMPTY));
+            return buildTable('Urine', cols, rowLabels, cells);
+        }
+
+        // 未特別處理的特殊分組（例如各種體液）走通用路徑
+        function buildOther(sgName, sgData) {
+            const sDates = sgData.dates || [];
+            const cols = Object.keys(sgData.data).filter(k => sgData.data[k].some(v => v));
+            if (!cols.length) return null;
+            if (!isTable) {
+                const items = [];
+                for (const k of cols) {
+                    const trend = compactTrend(sgData.data[k]);
+                    if (trend) items.push(k + ' ' + trend);
+                }
+                return items.length ? sgName + ' [' + sDates.join(', ') + ']: ' + items.join(', ') : null;
+            }
+            const rowLabels = sDates.map(d => fmtDateLabel(d));
+            const cells = sDates.map((d, i) => cols.map(k => sgData.data[k][i] || EMPTY));
+            return buildTable(sgName, cols, rowLabels, cells);
         }
 
         const groups = [];
+        const push = (g) => { if (g) groups.push(g); };
 
-        const hemo = buildGroup('Hemogram', HEMOGRAM_MAIN, [...HEMOGRAM_EXT, ...RARE_DIFF]);
-        if (hemo) groups.push(hemo);
-
-        const lr = buildGroup('Liver/Renal', LIVER_RENAL);
-        if (lr) groups.push(lr);
-
-        const el = buildGroup('Electrolytes', ELECTROLYTES);
-        if (el) groups.push(el);
-
+        push(buildGroup('Hemogram', HEMOGRAM_MAIN, [...HEMOGRAM_EXT, ...RARE_DIFF]));
+        push(buildGroup('Liver/Renal', LIVER_RENAL));
+        push(buildGroup('Electrolytes', ELECTROLYTES));
         const unknowns = Object.keys(data).filter(k => !ALL_KNOWN.includes(k) && !IGNORE.includes(k));
-        const ot = buildGroup('Others', OTHERS, unknowns);
-        if (ot) groups.push(ot);
-
-        const coag = buildGroup('Coagulation', COAG);
-        if (coag) groups.push(coag);
+        push(buildGroup('Others', OTHERS, unknowns));
+        push(buildGroup('Coagulation', COAG));
 
         if (specialGroups) {
             for (const [sgName, sgData] of Object.entries(specialGroups)) {
                 if (sgName === 'Urine') {
-                    const u = buildUrinePara(sgData);
-                    if (u) groups.push(u);
+                    push(buildUrine(sgData));
                 } else if (sgName === 'CSF') {
                     const extra = Object.keys(sgData.data).filter(k => !CSF_ORDER.includes(k));
-                    const c = buildGroup('CSF', CSF_ORDER, extra, sgData.data, sgData.dates);
-                    if (c) groups.push(c);
+                    push(buildGroup('CSF', CSF_ORDER, extra, sgData.data, sgData.dates));
                 } else if (sgName === 'Gas' || sgName === 'A gas' || sgName === 'V gas') {
                     const gasKeys = sgName === 'Gas' ? GAS : Object.keys(sgData.data);
-                    const g = buildGroup(sgName, gasKeys, [], sgData.data, sgData.dates);
-                    if (g) groups.push(g);
+                    push(buildGroup(sgName, gasKeys, [], sgData.data, sgData.dates));
                 } else {
-                    const items = [];
-                    for (const [k, vals] of Object.entries(sgData.data)) {
-                        const trend = compactTrend(vals);
-                        if (trend) items.push(k + ' ' + trend);
-                    }
-                    if (items.length) groups.push(sgName + ' [' + sgData.dates.join(', ') + ']: ' + items.join(', '));
+                    push(buildOther(sgName, sgData));
                 }
             }
         }
 
         if (!groups.length) return null;
 
-        const prefixed = groups.map(g => '#. ' + g);
-        return prefixed.join('\n');
+        // #. 前綴集中在這裡加，兩種模式都吃得到
+        return groups.map(g => '#. ' + g).join(isTable ? '\n\n' : '\n');
     }
 
     // ====== 橫式版 DOM 讀取 ======
 
-    function readHorizontalView() {
+    function readHorizontalView(view) {
         const allTables = document.querySelectorAll('table');
         if (!allTables.length) return null;
 
@@ -914,7 +1024,7 @@
 
         padData(data, dates.length);
 
-        return formatTrendParagraph(dates, data, null);
+        return formatTrend(dates, data, null, view);
     }
 
     // ====== 偵測目前的樣式（清單/橫式/直式/綠單） ======
@@ -936,21 +1046,25 @@
     // ====== 主流程 ======
 
     // 依目前 view mode 讀出整理後文字（無資料回 null）。worker 與 run() 共用。
-    function computeReport() {
+    // view：VIEW_TABLE / VIEW_TREND，決定輸出格式；mode 是頁面本身的檢視樣式，兩者無關
+    function computeReport(view) {
         const mode = detectViewMode();
-        if (mode === 'green') return readGreenSheetView();
-        if (mode === 'list') return readListView();
-        if (mode === 'horizontal') return readHorizontalView();
+        if (mode === 'green') return readGreenSheetView(view);
+        if (mode === 'list') return readListView(view);
+        if (mode === 'horizontal') return readHorizontalView(view);
         return '（直式模式不支援，請切換至清單、橫式或綠單）';
     }
 
     function run() {
-        const result = computeReport();
-        if (!result) {
+        // 兩種格式各算一次存起來，之後切換只換 textContent，不必重讀 DOM
+        const texts = {};
+        texts[VIEW_TABLE] = computeReport(VIEW_TABLE);
+        texts[VIEW_TREND] = computeReport(VIEW_TREND);
+        if (!texts[VIEW_TABLE] && !texts[VIEW_TREND]) {
             alert('未偵測到檢驗項目');
             return;
         }
-        showResult(result);
+        showResult(texts);
     }
 
     // ====== 背景 worker：被 progress-note-data-helper 以 ntuh_token 開頁時 ======
@@ -965,7 +1079,7 @@
         const t0 = performance.now();
         const iv = setInterval(() => {
             let res = null;
-            try { res = computeReport(); } catch (e) { /* 尚未就緒 */ }
+            try { res = computeReport(getViewPref()); } catch (e) { /* 尚未就緒 */ }
             if (res) { clearInterval(iv); done({ ok: true, text: res }); return; }
             // 防呆：頁面就緒（view-mode radio 出現）但 computeReport 仍無資料 → 回「無檢驗資料」，避免空等逾時。
             // 就緒後給 8s 寬限（背景分頁被瀏覽器節流時，DetailedSheet 表格 render 可能 >3s，太短會誤判空）；最終 20s 也回無資料訊息而非 error。
@@ -979,27 +1093,73 @@
 
     // ====== UI ======
 
-    function showResult(text) {
+    // texts: { table: '...', trend: '...' }
+    function showResult(texts) {
         const old = document.getElementById('lab-summary-box');
         if (old) old.remove();
+
+        // 記住的模式若剛好沒算出東西，就退到另一種，免得開出空白框
+        let view = getViewPref();
+        if (!texts[view]) view = view === VIEW_TABLE ? VIEW_TREND : VIEW_TABLE;
 
         const box = document.createElement('div');
         box.id = 'lab-summary-box';
         box.style.cssText = [
             'position:fixed', 'bottom:20px', 'right:20px', 'z-index:999999',
             'background:#fff', 'border:2px solid #1a6fa8', 'border-radius:6px',
-            'box-shadow:0 4px 16px rgba(0,0,0,.25)', 'padding:0', 'width:20%',
+            'box-shadow:0 4px 16px rgba(0,0,0,.25)', 'padding:0',
+            'max-width:calc(100vw - 40px)',
             'font-family:sans-serif', 'font-size:13px', 'overflow:hidden',
         ].join(';');
 
         const header = document.createElement('div');
-        header.style.cssText = 'background:#1a6fa8;color:#fff;padding:8px 12px;font-weight:500;';
-        header.textContent = '檢驗整理';
+        header.style.cssText = 'background:#1a6fa8;color:#fff;padding:7px 10px 7px 12px;font-weight:500;display:flex;align-items:center;justify-content:space-between;gap:12px;';
+        const title = document.createElement('span');
+        title.textContent = '檢驗整理';
+
+        // 呈現方式切換：放標題列，下方工具列留給「複製」「關閉」等動作
+        const seg = document.createElement('span');
+        seg.style.cssText = 'display:flex;background:#15537f;border-radius:4px;padding:2px;';
+        const segBtns = {};
+        [[VIEW_TREND, '趨勢'], [VIEW_TABLE, '表格']].forEach(([v, label]) => {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.style.cssText = 'padding:3px 12px;border:none;border-radius:3px;cursor:pointer;font-size:12px;font-family:inherit;background:transparent;color:#bcd7ee;';
+            b.onclick = () => { if (texts[v]) apply(v); };
+            segBtns[v] = b;
+            seg.appendChild(b);
+        });
+
+        header.appendChild(title);
+        header.appendChild(seg);
 
         const content = document.createElement('div');
         content.id = 'lab-summary-text';
-        content.style.cssText = 'padding:10px 14px;background:#f7f7f7;line-height:1.9;white-space:pre-wrap;max-height:70vh;overflow-y:auto;';
-        content.textContent = text;
+
+        // 表格靠等寬字型 + white-space:pre 對齊；段落版要能自動換行，兩者不可共用
+        function apply(v) {
+            view = v;
+            setViewPref(v);
+            const isTable = v === VIEW_TABLE;
+            box.style.width = isTable ? 'min(46vw,760px)' : 'min(34vw,520px)';
+            content.style.cssText = [
+                'padding:10px 14px', 'background:#f7f7f7',
+                'max-height:70vh', 'overflow:auto',
+                isTable ? 'font-family:Consolas,"Courier New",monospace' : 'font-family:sans-serif',
+                isTable ? 'font-size:12.5px' : 'font-size:13px',
+                isTable ? 'line-height:1.5' : 'line-height:1.9',
+                isTable ? 'white-space:pre' : 'white-space:pre-wrap',
+                'tab-size:4',
+            ].join(';');
+            content.textContent = texts[v];
+            Object.entries(segBtns).forEach(([k, b]) => {
+                const on = k === v;
+                b.style.background = on ? '#fff' : 'transparent';
+                b.style.color = on ? '#1a6fa8' : '#bcd7ee';
+                b.disabled = !texts[k];
+                b.style.cursor = texts[k] ? 'pointer' : 'not-allowed';
+            });
+        }
 
         const toolbar = document.createElement('div');
         toolbar.style.cssText = 'padding:6px 12px 10px;background:#f7f7f7;display:flex;gap:8px;';
@@ -1008,7 +1168,7 @@
         copyBtn.textContent = '複製';
         copyBtn.style.cssText = 'padding:3px 14px;border:1px solid #ccc;border-radius:4px;cursor:pointer;background:#fff;font-size:12px;';
         copyBtn.onclick = () => {
-            navigator.clipboard.writeText(content.innerText).then(
+            navigator.clipboard.writeText(texts[view]).then(
                 () => { copyBtn.textContent = '已複製 ✓'; setTimeout(() => copyBtn.textContent = '複製', 1500); },
                 () => { copyBtn.textContent = '複製失敗'; }
             );
@@ -1024,6 +1184,7 @@
         box.appendChild(header);
         box.appendChild(content);
         box.appendChild(toolbar);
+        apply(view);
         document.body.appendChild(box);
     }
 
