@@ -2,7 +2,7 @@
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
 // @version      1.0.0
-// @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時。
+// @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
@@ -58,9 +58,9 @@
             + `?PersonID=${p.PersonID}&Seed=${p.Seed || ''}`;
     }
 
-    // 檢驗報告要往前抓幾天（負數，MedicalReportContent.aspx 的 IntervalDay 參數）。
+    // 檢驗報告要往前多抓幾天（負數，MedicalReportContent.aspx 的 IntervalDay 參數）。
     // 想改天數改這裡就好，[Lab] 區塊與點標題跳轉的網址都吃這個值。
-    const LAB_INTERVAL_DAY = -14;
+    const LAB_INTERVAL_DAY = -13;
 
     // ═════════════════════════════════════════════
     // 資料來源定義：每個來源 = 一個權威專頁
@@ -158,7 +158,7 @@
         // 檢驗報告：worker 是 lab-summary.user.js（跑在 MedicalReportContent.aspx，預設清單）
         // 此頁靠 ChartNo 定位病人，另帶 WardCode/HospitalCode。SESSION 一併帶上：
         // 少了它第一次背景開頁常落在登入前院網，才需要下方 retryTab 重開一次。
-        // IntervalDay 為負數＝往前推幾天（-1 只有這兩天，實測 -14 可帶出 14 天）。
+        // IntervalDay 為負數＝往前推幾天（-1 只有這兩天，實測 -13 可帶出 14 天）。
         lab: {
             label: '[Lab]',
             match: () => false, // MedicalReportContent.aspx 由 lab-summary 處理
