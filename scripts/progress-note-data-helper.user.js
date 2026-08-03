@@ -59,7 +59,8 @@
     }
 
     // 檢驗報告要往前多抓幾天（負數，MedicalReportContent.aspx 的 IntervalDay 參數）。
-    // 想改天數改這裡就好，[Lab] 區塊與點標題跳轉的網址都吃這個值。
+    // 語意是「往前多推 n 天」且含當日，所以拿到的是 n+1 天：-1 是兩天、-13 是 14 天。
+    // 想要 14 天請填 -13 而不是 -14。改這裡就好，[Lab] 區塊與跳轉網址都吃這個值。
     const LAB_INTERVAL_DAY = -13;
 
     // ═════════════════════════════════════════════
@@ -156,9 +157,11 @@
                 `&ntuh_token=${encodeURIComponent(token)}`,
         },
         // 檢驗報告：worker 是 lab-summary.user.js（跑在 MedicalReportContent.aspx，預設清單）
-        // 此頁靠 ChartNo 定位病人，另帶 WardCode/HospitalCode。SESSION 一併帶上：
-        // 少了它第一次背景開頁常落在登入前院網，才需要下方 retryTab 重開一次。
-        // IntervalDay 為負數＝往前推幾天（-1 只有這兩天，實測 -13 可帶出 14 天）。
+        // 此頁靠 ChartNo 定位病人，另帶 WardCode/HospitalCode。
+        // SESSION 是選填不是必要：不帶它這頁一樣開得起來（手動貼不含 SESSION 的網址
+        // 可正常帶出資料），但第一次背景開頁比較容易落在登入前院網，有就帶上以減少
+        // 下方 retryTab 重開。因此 SOURCE_REQUIRES.lab 只要求 ChartNo。
+        // IntervalDay 為負數＝往前多推幾天（-1 只有這兩天，-13 可帶出 14 天）。
         lab: {
             label: '[Lab]',
             match: () => false, // MedicalReportContent.aspx 由 lab-summary 處理
@@ -407,17 +410,34 @@
     const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
     const SESSION_CACHE_KEY = 'ntuh_portal_session';
 
+    // SESSION 是憑證，優先存進 userscript 專屬的 GM storage（同網域的其他腳本讀不到），
+    // 沒有 GM API 時才退回 localStorage。刻意不沿用 setSharedData：那個會兩邊都寫，
+    // 等於還是把 token 留在 localStorage，失去隔離的意義。
     function saveSession(session) {
         if (!session) return;
-        try {
-            localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
-                origin: window.location.origin, session, savedAt: Date.now(),
-            }));
-        } catch (e) { /* noop */ }
+        const payload = JSON.stringify({
+            origin: window.location.origin, session, savedAt: Date.now(),
+        });
+        if (typeof GM_setValue !== 'undefined') {
+            try {
+                GM_setValue(SESSION_CACHE_KEY, payload);
+                // 清掉舊版留在 localStorage 的 token
+                try { localStorage.removeItem(SESSION_CACHE_KEY); } catch (e) { /* noop */ }
+                return;
+            } catch (e) { /* 落到 localStorage */ }
+        }
+        try { localStorage.setItem(SESSION_CACHE_KEY, payload); } catch (e) { /* noop */ }
     }
     function getCachedSession() {
+        let raw = '';
+        if (typeof GM_getValue !== 'undefined') {
+            try { raw = GM_getValue(SESSION_CACHE_KEY, '') || ''; } catch (e) { raw = ''; }
+        }
+        if (!raw) {
+            try { raw = localStorage.getItem(SESSION_CACHE_KEY) || ''; } catch (e) { raw = ''; }
+        }
         try {
-            const o = JSON.parse(localStorage.getItem(SESSION_CACHE_KEY) || 'null');
+            const o = JSON.parse(raw || 'null');
             if (o && o.origin === window.location.origin && typeof o.session === 'string'
                 && Date.now() - o.savedAt < SESSION_TTL_MS) return o.session;
         } catch (e) { /* noop */ }
