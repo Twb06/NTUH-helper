@@ -501,7 +501,10 @@
 
         let result = formatTrend(dates, trendData, Object.keys(specialGroups).length ? specialGroups : null, view);
         if (cultureItems.length) {
-            result = (result || '') + (result ? '\n\n' : '') + '#. Culture:\n' + cultureItems.join('\n');
+            // 分隔符要跟著呈現方式走：表格模式各區塊之間空一行，趨勢模式維持單行
+            // 換行（與 v0.2.3 相同）。之前固定用 \n\n，會讓趨勢模式多一個空白行。
+            const sep = view === VIEW_TREND ? '\n' : '\n\n';
+            result = (result || '') + (result ? sep : '') + '#. Culture:\n' + cultureItems.join('\n');
         }
         return result;
     }
