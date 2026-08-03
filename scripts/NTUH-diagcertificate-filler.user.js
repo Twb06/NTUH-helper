@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
-// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 2.0.0：新增手術同意書 PDF 解析（自動帶入建議手術名稱與診斷病名、多台刀逐台配對）
+// @version      2.1.0
+// @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 2.1.0：新增「自費」項目（多筆+可編輯常用項目快選）＋「常用字串」一鍵接入醫師囑言（可編輯）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
@@ -981,6 +981,192 @@
         container.appendChild(row);
     }
 
+    function addFeeRow(date = '', name = '') {
+        const container = document.getElementById('ntuh-diag-fee-rows-container');
+        if (!container) return;
+
+        const isFirst = container.children.length === 0;
+        const row = document.createElement('div');
+        row.className = 'ntuh-diag-fee-row';
+        row.style.cssText = 'display:flex; flex-direction:column; gap:4px; padding:6px; border:1px solid #2d3650; border-radius:6px; background:#141824; position:relative; margin-bottom:4px;';
+
+        let removeBtnHtml = '';
+        if (!isFirst) {
+            removeBtnHtml = `<button class="ntuh-diag-remove-fee-btn" type="button" style="background:none; border:none; color:#e05c5c; cursor:pointer; font-size:14px; padding:0 4px; line-height:1;">✕</button>`;
+        }
+
+        row.innerHTML = `
+            <div style="display:flex; align-items:center; gap:4px;">
+                <input class="ntuh-diag-fee-date-input" type="text" placeholder="自費日期 YYYY/MM/DD" value="${date}" style="flex:1; background:#0f1420; border:1px solid #2d3650; border-radius:6px; color:#c8d3e8; padding:4px 6px; font-size:11px;" />
+                ${removeBtnHtml}
+            </div>
+            <input class="ntuh-diag-fee-name-input" type="text" placeholder="自費項目（如：吉舒達注射劑）" value="${name}" style="background:#0f1420; border:1px solid #2d3650; border-radius:6px; color:#c8d3e8; padding:4px 6px; font-size:11px;" />
+        `;
+
+        if (!isFirst) {
+            row.querySelector('.ntuh-diag-remove-fee-btn').addEventListener('click', () => {
+                row.remove();
+            });
+        }
+
+        container.appendChild(row);
+    }
+
+    // 自費常用項目（可編輯、GM 儲存，換病人/重開仍記得）
+    const FEE_PRESETS_KEY = 'ntuh_fee_presets';
+    const FEE_PRESETS_DEFAULT = ['吉舒達注射劑', '癌思停注射劑'];
+    function getFeePresets() {
+        try {
+            if (typeof GM_getValue !== 'undefined') {
+                const v = GM_getValue(FEE_PRESETS_KEY, null);
+                if (Array.isArray(v)) return v;
+            } else {
+                const v = JSON.parse(localStorage.getItem(FEE_PRESETS_KEY) || 'null');
+                if (Array.isArray(v)) return v;
+            }
+        } catch (e) { /* ignore */ }
+        return FEE_PRESETS_DEFAULT.slice();
+    }
+    function saveFeePresets(arr) {
+        try {
+            if (typeof GM_setValue !== 'undefined') GM_setValue(FEE_PRESETS_KEY, arr);
+            else localStorage.setItem(FEE_PRESETS_KEY, JSON.stringify(arr));
+        } catch (e) { /* ignore */ }
+    }
+    // 點常用 → 填進第一個名稱空著的自費列，沒有就新增一列
+    function fillFeeFromPreset(text) {
+        const container = document.getElementById('ntuh-diag-fee-rows-container');
+        if (!container) return;
+        let target = Array.from(container.getElementsByClassName('ntuh-diag-fee-row'))
+            .find(r => !(r.querySelector('.ntuh-diag-fee-name-input')?.value.trim()));
+        if (!target) { addFeeRow(todayStr(), ''); target = container.lastElementChild; }
+        const nameInput = target ? target.querySelector('.ntuh-diag-fee-name-input') : null;
+        if (nameInput) {
+            nameInput.value = text;
+            nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+            nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+    function renderFeePresets() {
+        const box = document.getElementById('ntuh-diag-fee-presets');
+        if (!box) return;
+        box.innerHTML = '';
+        const lbl = document.createElement('span');
+        lbl.textContent = '常用：';
+        lbl.style.cssText = 'color:#7a8aaa;font-size:10px;margin-right:2px;';
+        box.appendChild(lbl);
+        getFeePresets().forEach(p => {
+            const chip = document.createElement('span');
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#0f1420;border:1px solid #2d3650;border-radius:10px;padding:2px 7px;margin:2px;font-size:10px;color:#a8c0e8;';
+            const label = document.createElement('span');
+            label.textContent = p;
+            label.style.cursor = 'pointer';
+            label.title = '點擊填入自費列';
+            label.addEventListener('click', () => fillFeeFromPreset(p));
+            const del = document.createElement('span');
+            del.textContent = '✕';
+            del.style.cssText = 'color:#e05c5c;cursor:pointer;font-size:9px;';
+            del.title = '移除常用';
+            del.addEventListener('click', (e) => {
+                e.stopPropagation();
+                saveFeePresets(getFeePresets().filter(x => x !== p));
+                renderFeePresets();
+            });
+            chip.appendChild(label);
+            chip.appendChild(del);
+            box.appendChild(chip);
+        });
+        const add = document.createElement('span');
+        add.textContent = '＋';
+        add.style.cssText = 'display:inline-block;background:transparent;border:1px dashed #9a7cdc;border-radius:10px;padding:2px 8px;margin:2px;font-size:10px;color:#9a7cdc;cursor:pointer;';
+        add.title = '新增常用項目';
+        add.addEventListener('click', () => {
+            const v = prompt('新增常用自費項目：');
+            if (v && v.trim()) {
+                const arr = getFeePresets();
+                if (!arr.includes(v.trim())) { arr.push(v.trim()); saveFeePresets(arr); renderFeePresets(); }
+            }
+        });
+        box.appendChild(add);
+    }
+
+    // 常用字串（可編輯、GM 儲存）：點擊把字串接到醫師囑言後面
+    const INSTR_PRESETS_KEY = 'ntuh_instr_presets';
+    const INSTR_PRESETS_DEFAULT = ['宜休養一個月', '經醫師評估需使用背架'];
+    function getInstrPresets() {
+        try {
+            if (typeof GM_getValue !== 'undefined') {
+                const v = GM_getValue(INSTR_PRESETS_KEY, null);
+                if (Array.isArray(v)) return v;
+            } else {
+                const v = JSON.parse(localStorage.getItem(INSTR_PRESETS_KEY) || 'null');
+                if (Array.isArray(v)) return v;
+            }
+        } catch (e) { /* ignore */ }
+        return INSTR_PRESETS_DEFAULT.slice();
+    }
+    function saveInstrPresets(arr) {
+        try {
+            if (typeof GM_setValue !== 'undefined') GM_setValue(INSTR_PRESETS_KEY, arr);
+            else localStorage.setItem(INSTR_PRESETS_KEY, JSON.stringify(arr));
+        } catch (e) { /* ignore */ }
+    }
+    // 把常用字串接到醫師囑言：去掉尾句號後以「，」接續，再補回句號
+    function appendInstruction(str) {
+        const el = document.getElementById('NTUHWeb1_InstructionSetItem');
+        if (!el) { setDiagStatus('⚠ 找不到醫師囑言欄位', 'warn'); return; }
+        let cur = (el.value || '').trim();
+        cur = cur ? cur.replace(/[。\s]*$/, '') + '，' + str + '。' : str + '。';
+        el.value = cur;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        const pv = document.getElementById('ntuh-diag-preview');
+        if (pv && pv.style.display !== 'none') pv.textContent = cur;
+        setDiagStatus('✓ 已加入囑言：' + str, 'ok');
+    }
+    function renderInstrPresets() {
+        const box = document.getElementById('ntuh-diag-instr-presets');
+        if (!box) return;
+        box.innerHTML = '';
+        const lbl = document.createElement('span');
+        lbl.textContent = '常用字串：';
+        lbl.style.cssText = 'color:#7a8aaa;font-size:10px;margin-right:2px;';
+        box.appendChild(lbl);
+        getInstrPresets().forEach(p => {
+            const chip = document.createElement('span');
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#0f1420;border:1px solid #2d3650;border-radius:10px;padding:2px 7px;margin:2px;font-size:10px;color:#a8c0e8;';
+            const label = document.createElement('span');
+            label.textContent = p;
+            label.style.cursor = 'pointer';
+            label.title = '點擊加入醫師囑言';
+            label.addEventListener('click', () => appendInstruction(p));
+            const del = document.createElement('span');
+            del.textContent = '✕';
+            del.style.cssText = 'color:#e05c5c;cursor:pointer;font-size:9px;';
+            del.title = '移除常用字串';
+            del.addEventListener('click', (e) => {
+                e.stopPropagation();
+                saveInstrPresets(getInstrPresets().filter(x => x !== p));
+                renderInstrPresets();
+            });
+            chip.appendChild(label);
+            chip.appendChild(del);
+            box.appendChild(chip);
+        });
+        const add = document.createElement('span');
+        add.textContent = '＋';
+        add.style.cssText = 'display:inline-block;background:transparent;border:1px dashed #9a7cdc;border-radius:10px;padding:2px 8px;margin:2px;font-size:10px;color:#9a7cdc;cursor:pointer;';
+        add.title = '新增常用字串';
+        add.addEventListener('click', () => {
+            const v = prompt('新增常用字串（會接在醫師囑言後面）：');
+            if (v && v.trim()) {
+                const arr = getInstrPresets();
+                if (!arr.includes(v.trim())) { arr.push(v.trim()); saveInstrPresets(arr); renderInstrPresets(); }
+            }
+        });
+        box.appendChild(add);
+    }
+
     function fetchEmgData() {
         // 適配 DiagCertificate_New.aspx：檢傷=lblTriageDate、離部=lblDischargeDate（隱藏 span，text 含 HH:mm）
         let arrivalDT = '', leaveDT = '', leaveDate = '';
@@ -1030,11 +1216,17 @@
         return `於${dateStr}至本院${deptName}門診追蹤`;
     }
 
+    // 自費事件敘述：「於{日期}接受自費{項目}治療」（項目若已含「自費」開頭則去除避免重複）
+    function feeEventText(evt) {
+        const item = String(evt.name || '').replace(/^自費/, '').trim();
+        return `於${fmtDate(evt.date)}接受自費${item}治療`;
+    }
+
     function buildText({
         hasInpat, hasOpd, hasOp, hasEmg,
         opdDates, opdStartDate,
         inpat, emg, dept,
-        opEvents, dischargeDate
+        opEvents, feeEvents, dischargeDate
     }) {
         const events = [];
 
@@ -1073,6 +1265,20 @@
                     mergedOps.push(evt);
                 } else {
                     unmergedOps.push(evt);
+                }
+            });
+        }
+
+        const mergedFees = [];
+        const unmergedFees = [];
+
+        if (feeEvents && feeEvents.length > 0) {
+            feeEvents.forEach(evt => {
+                const evtDateObj = parseDate(evt.date);
+                if (hasInpat && inpatStartDateObj && dischargeDateObj && evtDateObj && evtDateObj >= inpatStartDateObj && evtDateObj <= dischargeDateObj) {
+                    mergedFees.push(evt);
+                } else {
+                    unmergedFees.push(evt);
                 }
             });
         }
@@ -1140,6 +1346,18 @@
                 });
             }
 
+            // 4b. 合併住院期間的自費項目
+            if (mergedFees.length > 0) {
+                mergedFees.forEach(evt => {
+                    const evtDateObj = parseDate(evt.date) || inpatStartDateObj;
+                    inpatSubEvents.push({
+                        date: evtDateObj,
+                        priority: 2,
+                        text: feeEventText(evt)
+                    });
+                });
+            }
+
             // 5. 出院子事件
             if (dischargeDate) {
                 const dp = dischargeDate.split('/');
@@ -1193,6 +1411,20 @@
                         type: 'op',
                         date: dObj,
                         text: `於${fmtDate(evt.date)}接受${ensureOpSuffix(evt.name) || '手術'}`
+                    });
+                }
+            });
+        }
+
+        // 獨立的自費事件（不在住院區間內），按日期排序
+        if (unmergedFees.length > 0) {
+            unmergedFees.forEach(evt => {
+                const dObj = parseDate(evt.date);
+                if (dObj) {
+                    events.push({
+                        type: 'fee',
+                        date: dObj,
+                        text: feeEventText(evt)
                     });
                 }
             });
@@ -1302,6 +1534,19 @@
                 }
             }
 
+            const feeEvents = [];
+            const hasFeeUI = document.getElementById('ntuh-diag-has-fee')?.checked;
+            if (hasFeeUI) {
+                const feeContainer = document.getElementById('ntuh-diag-fee-rows-container');
+                if (feeContainer) {
+                    for (const row of feeContainer.getElementsByClassName('ntuh-diag-fee-row')) {
+                        const dateVal = row.querySelector('.ntuh-diag-fee-date-input')?.value.trim() || '';
+                        const nameVal = row.querySelector('.ntuh-diag-fee-name-input')?.value.trim() || '';
+                        if (dateVal && nameVal) feeEvents.push({ date: dateVal, name: nameVal });
+                    }
+                }
+            }
+
             const cleanInpatStart = inpat.inpatStartDate ? inpat.inpatStartDate.substring(0, 10).trim().replace(/-/g, '/') : '';
             const fromEmg = !!(emg.leaveDate && cleanInpatStart && emg.leaveDate === cleanInpatStart);
 
@@ -1309,7 +1554,7 @@
                 hasInpat: hasInpatUI, hasOpd: hasOpdUI, hasOp: (opEvents.length > 0), hasEmg: hasEmgUI,
                 opdDates, opdStartDate,
                 inpat, emg, dept,
-                opEvents, dischargeDate
+                opEvents, feeEvents, dischargeDate
             });
 
             fillField('NTUHWeb1_InstructionSetItem', txt);
@@ -1359,6 +1604,12 @@
             }
 
             opEvents.forEach(evt => {
+                if (evt.date) {
+                    dateCandidates.push({ start: evt.date, end: evt.date });
+                }
+            });
+
+            feeEvents.forEach(evt => {
                 if (evt.date) {
                     dateCandidates.push({ start: evt.date, end: evt.date });
                 }
@@ -1530,6 +1781,17 @@
                     <div id="ntuh-diag-op-rows-container" style="display:flex;flex-direction:column;gap:6px;"></div>
                     <button id="ntuh-diag-add-op-btn" type="button" style="padding:4px; border:1px dashed #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; margin-top:4px;">➕ 新增手術</button>
                 </div>
+
+                <div style="display:flex;align-items:center;gap:6px;"><label><input type="checkbox" id="ntuh-diag-has-fee" /> <span>自費</span></label></div>
+                <div id="ntuh-diag-fee-detail" style="display:none;flex-direction:column;gap:6px;">
+                    <div id="ntuh-diag-fee-presets" style="display:flex;flex-wrap:wrap;align-items:center;"></div>
+                    <div id="ntuh-diag-fee-rows-container" style="display:flex;flex-direction:column;gap:6px;"></div>
+                    <button id="ntuh-diag-add-fee-btn" type="button" style="padding:4px; border:1px dashed #9a7cdc; border-radius:6px; background:transparent; color:#9a7cdc; cursor:pointer; font-size:11px; margin-top:4px;">➕ 新增自費</button>
+                </div>
+
+                <div style="border-top:1px dashed #2d3650; padding-top:6px; margin-top:2px;">
+                    <div id="ntuh-diag-instr-presets" style="display:flex;flex-wrap:wrap;align-items:center;"></div>
+                </div>
             </div>
             <div id="ntuh-diag-footer">
                 <button id="ntuh-diag-run">✨ 自動填入囑言</button>
@@ -1620,6 +1882,22 @@
             }
         });
 
+        document.getElementById('ntuh-diag-has-fee').addEventListener('change', function() {
+            const detailEl = document.getElementById('ntuh-diag-fee-detail');
+            if (this.checked) {
+                detailEl.style.display = 'flex';
+                renderFeePresets();
+                const container = document.getElementById('ntuh-diag-fee-rows-container');
+                if (container && container.children.length === 0) addFeeRow(todayStr(), '');
+            } else {
+                detailEl.style.display = 'none';
+            }
+        });
+
+        document.getElementById('ntuh-diag-add-fee-btn').addEventListener('click', function() {
+            addFeeRow(todayStr(), '');
+        });
+
         fab.onclick = () => { fab.style.display = 'none'; panel.style.display = 'flex'; };
         document.getElementById('ntuh-diag-close').onclick = () => { panel.style.display = 'none'; fab.style.display = 'flex'; };
         makeDraggable(panel, document.getElementById('ntuh-diag-header'));
@@ -1637,6 +1915,9 @@
             const url = `http://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}&PatClass=${patClass}&AccountIDSE=${accountIdse}&PersonID=${personId}&Hosp=${hosp}&Seed=${seed}`;
             window.open(url, '_blank');
         };
+
+        // 常用字串（永遠可見）
+        renderInstrPresets();
 
         // 啟動自動偵測與勾選
         setTimeout(autoDetectRecords, 100);
