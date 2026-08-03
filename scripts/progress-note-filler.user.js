@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.51
-// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
+// @version      1.52
+// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
@@ -610,6 +610,13 @@ After the admission, the patient was in stable condition, the physical examinati
             #ntuh-tpl-modal .tm-side li:hover { background: #eef3e8; }
             #ntuh-tpl-modal .tm-side li.on { background: #2c5f54; color: #fff; }
             #ntuh-tpl-modal .tm-side li.empty { color: #8a9a82; cursor: default; }
+            /* 拖曳排序：li[data-id] 才可拖，empty 那筆不行 */
+            #ntuh-tpl-modal .tm-side li[data-id] { cursor: grab; }
+            #ntuh-tpl-modal .tm-side li[data-id]:active { cursor: grabbing; }
+            #ntuh-tpl-modal .tm-side li.dragging { opacity: 0.4; }
+            /* 插入位置指示線：用 inset box-shadow 才不會撐開版面 */
+            #ntuh-tpl-modal .tm-side li.drop-before { box-shadow: inset 0 2px 0 0 #4caf7d; }
+            #ntuh-tpl-modal .tm-side li.drop-after  { box-shadow: inset 0 -2px 0 0 #4caf7d; }
             #ntuh-tpl-modal .tm-side #ntuh-tm-new,
             #ntuh-tpl-modal .tm-side #ntuh-tm-reset {
                 margin: 6px 6px 0; padding: 8px; border: none; border-radius: 6px; cursor: pointer;
@@ -1019,6 +1026,7 @@ After the admission, the patient was in stable condition, the physical examinati
                         <div class="tm-help">
                             <b>儲存</b>＝把上面的編輯結果寫進瀏覽器（新的一筆／或更新左邊選到的那筆）。
                             <b>刪除</b>＝移除左邊選到的那筆，無法復原。<br>
+                            左邊清單可<u>直接拖曳調整上下順序</u>，順序會同步到下拉選單並自動保存。<br>
                             <b>匯出 JSON</b>＝備份用。模板存在這台電腦的瀏覽器裡，<u>清除瀏覽資料、換電腦、換瀏覽器就會消失</u>；
                             設定好之後按一次，把出現在內容框的文字複製到你自己的筆記存著。
                             按完<u>先別按儲存</u>（會把 JSON 存成一筆模板），複製完直接關掉視窗或點左邊任一筆即可。<br>
@@ -1046,13 +1054,71 @@ After the admission, the patient was in stable condition, the physical examinati
             }
         };
 
+        // 拖曳排序狀態：拖曳生命週期都在同一次 render 內，但放外層才不會被 renderList 重設
+        let dragId = null;
+        const clearDropMarks = () => {
+            $('ntuh-tm-list').querySelectorAll('li').forEach((el) => {
+                el.classList.remove('drop-before', 'drop-after');
+            });
+        };
+
+        // 把 srcId 搬到 targetId 的前／後。順序＝陣列順序，所以只要動陣列再存回去。
+        const reorderTemplates = (srcId, targetId, after) => {
+            const list = loadTemplates();
+            const from = list.findIndex((t) => t.id === srcId);
+            if (from < 0 || !list.some((t) => t.id === targetId)) return;
+            const [moved] = list.splice(from, 1);
+            // 注意：splice 拿掉一筆後索引會位移，target 的位置要重新找，不能沿用抽掉前的 index
+            let insertAt = list.findIndex((t) => t.id === targetId);
+            if (after) insertAt += 1;
+            list.splice(insertAt, 0, moved);
+            const err = saveTemplates(list);
+            if (err) { note('✗ 排序儲存失敗：' + err, 'err'); return; }
+            refreshTemplateSelect();   // 不帶參數＝沿用使用者目前選的那筆
+            renderList();
+            note('✓ 已調整順序', 'ok');
+        };
+
         const renderList = () => {
             const list = loadTemplates();
             $('ntuh-tm-list').innerHTML = list.length
-                ? list.map((t) => `<li data-id="${t.id}" class="${t.id === currentId ? 'on' : ''}">${escapeHtml(t.name || t.title || '(未命名)')}</li>`).join('')
+                ? list.map((t) => `<li data-id="${t.id}" draggable="true" title="可拖曳調整順序" class="${t.id === currentId ? 'on' : ''}">${escapeHtml(t.name || t.title || '(未命名)')}</li>`).join('')
                 : '<li class="empty">尚無模板</li>';
             $('ntuh-tm-list').querySelectorAll('li[data-id]').forEach((li) => {
                 li.onclick = () => { select(li.dataset.id); };
+
+                li.ondragstart = (ev) => {
+                    dragId = li.dataset.id;
+                    ev.dataTransfer.effectAllowed = 'move';
+                    // Firefox 要有 setData 才會真的啟動拖曳
+                    ev.dataTransfer.setData('text/plain', dragId);
+                    li.classList.add('dragging');
+                };
+                li.ondragend = () => {
+                    dragId = null;
+                    clearDropMarks();
+                    li.classList.remove('dragging');
+                };
+                // 必須 preventDefault，瀏覽器才允許在這裡放開
+                li.ondragover = (ev) => {
+                    if (!dragId || li.dataset.id === dragId) return;
+                    ev.preventDefault();
+                    ev.dataTransfer.dropEffect = 'move';
+                    const rect = li.getBoundingClientRect();
+                    const after = ev.clientY > rect.top + rect.height / 2;
+                    clearDropMarks();
+                    li.classList.add(after ? 'drop-after' : 'drop-before');
+                };
+                li.ondragleave = () => li.classList.remove('drop-before', 'drop-after');
+                li.ondrop = guard((ev) => {
+                    ev.preventDefault();
+                    if (!dragId || li.dataset.id === dragId) return;
+                    const after = li.classList.contains('drop-after');
+                    const srcId = dragId;
+                    dragId = null;
+                    clearDropMarks();
+                    reorderTemplates(srcId, li.dataset.id, after);
+                });
             });
         };
         const select = (id) => {
