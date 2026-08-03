@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.41
-// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，並可一鍵填入 Duty Note 模板並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
+// @version      1.51
+// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
@@ -12,6 +12,10 @@
 
 (function () {
     'use strict';
+
+    // HIS 頁面的 date.js 覆寫了 Date.now（回傳 Date 物件而非數字）與 Date.prototype.toString（吃 format 參數），
+    // 所以 `Date.now().toString(36)` 之類的寫法會直接丟 TypeError。全 script 一律走這個安全版取毫秒。
+    function nowMs() { return new Date().getTime(); }
 
     // ─────────────────────────────────────────────
     // Duty Note 模板
@@ -131,7 +135,56 @@ After the admission, the patient was in stable condition, the physical examinati
         }
         return { ok: true };
     }
-    function fillDutyNote(autoConfirm = true) { return fillBlankNote(DUTY_TITLE, DUTY_TPL, autoConfirm); }
+
+    // ─────────────────────────────────────────────
+    // 自訂模板（存 localStorage，使用者自己新增／編輯／刪除）
+    // 每筆：{ id, name, title, content, target: 'blank' | 'notebook' }
+    //   blank    = 右側「新增Note」free note（duty note 走的那條）
+    //   notebook = 左上角筆記本「新增筆記」（primary note 走的那條）
+    // ─────────────────────────────────────────────
+    const TPL_STORE_KEY = 'ntuh_custom_templates';
+
+    function loadTemplates() {
+        try {
+            const arr = JSON.parse(localStorage.getItem(TPL_STORE_KEY) || '[]');
+            return Array.isArray(arr) ? arr.filter((t) => t && t.id && typeof t.content === 'string') : [];
+        } catch (e) { return []; }
+    }
+    // 寫入後立刻讀回驗證——localStorage 在某些環境（隱私模式、企業政策、配額滿）會靜默或丟例外
+    // 回傳 null 代表成功，否則回傳錯誤字串（呼叫端要顯示給使用者，別靜默吞掉）
+    function saveTemplates(list) {
+        let json;
+        try { json = JSON.stringify(list); } catch (e) { return 'JSON 序列化失敗：' + e.message; }
+        try { localStorage.setItem(TPL_STORE_KEY, json); }
+        catch (e) { return 'localStorage 寫入被拒：' + (e.name || '') + ' ' + (e.message || ''); }
+        const back = localStorage.getItem(TPL_STORE_KEY);
+        if (back !== json) return 'localStorage 寫入後讀回不一致（可能被瀏覽器政策擋下）';
+        console.log('[NTUH filler] 已儲存自訂模板', list.length, '筆');
+        return null;
+    }
+    function newTemplateId() { return 't' + String(nowMs()) + '-' + String(Math.floor(Math.random() * 1e6)); }
+
+    // 預設模板：Duty / Primary。首次使用時種進 localStorage 後就跟自訂模板一視同仁（可改可刪），
+    // 改壞了可在管理視窗按「加回預設」重新拿一份原始版本。
+    const DEFAULT_TEMPLATES = [
+        { name: '🌙 Duty note', title: DUTY_TITLE, content: DUTY_TPL, target: 'blank' },
+        { name: '🗒 Primary note', title: PRIMARY_TITLE, content: PRIMARY_TPL, target: 'notebook' },
+    ];
+    const TPL_SEED_KEY = 'ntuh_custom_templates_seeded';
+
+    function defaultTemplatesCopy() {
+        return DEFAULT_TEMPLATES.map((t) => Object.assign({ id: newTemplateId() }, t));
+    }
+    // 只在「從未種過」時種一次——已種過就算使用者把兩筆都刪了也不再自動長回來
+    function seedTemplatesOnce() {
+        let seeded;
+        try { seeded = localStorage.getItem(TPL_SEED_KEY); } catch (e) { return; }
+        if (seeded === '1') return;
+        const list = loadTemplates();
+        const err = saveTemplates(list.concat(defaultTemplatesCopy()));
+        if (err) { console.warn('[NTUH filler] 種入預設模板失敗：' + err); return; }
+        try { localStorage.setItem(TPL_SEED_KEY, '1'); } catch (e) { /* noop */ }
+    }
 
     // ─────────────────────────────────────────────
     // 把 Today's Events 裡按日期分塊
@@ -499,18 +552,120 @@ After the admission, the patient was in stable condition, the physical examinati
                 color: #7adba0;
             }
             #ntuh-filler-today:hover { opacity: 0.85; }
-            #ntuh-filler-duty {
-                background: #3a2a4a;
-                color: #c89adc;
+            #ntuh-filler-fillrow .ntuh-tplrow { display: flex; gap: 6px; margin-top: 7px; align-items: stretch; }
+            #ntuh-filler-fillrow .ntuh-tplrow select {
+                flex: 1;
+                min-width: 0;
+                border: 1px solid #9db98a;
+                border-radius: 6px;
+                padding: 6px 8px;
+                font-size: 12px;
+                font-family: inherit;
+                background: #fff;
+                color: #2b3a2b;
             }
-            #ntuh-filler-duty:hover { opacity: 0.85; }
-            #ntuh-filler-primary {
-                background: #2a4a4a;
-                color: #7ad0c8;
+            #ntuh-filler-fillrow .ntuh-tplrow button {
+                margin-top: 0;
+                padding: 0 10px;
+                background: #2c5f54;
+                color: #fff;
             }
-            #ntuh-filler-primary:hover { opacity: 0.85; }
-            #ntuh-filler-fillrow .ntuh-duo { display: flex; gap: 6px; margin-top: 5px; }
-            #ntuh-filler-fillrow .ntuh-duo button { flex: 1; width: auto !important; margin-top: 0; }
+            #ntuh-filler-fillrow .ntuh-tplrow #ntuh-tpl-fill { width: 56px !important; flex: 0 0 56px; }
+            #ntuh-filler-fillrow .ntuh-tplrow #ntuh-tpl-manage {
+                width: 38px !important; flex: 0 0 38px; padding: 0; font-size: 15px;
+            }
+            #ntuh-filler-fillrow .ntuh-tplrow button:hover { opacity: 0.85; }
+            #ntuh-filler-fillrow .ntuh-tplrow button:disabled { opacity: 0.4; cursor: not-allowed; }
+            /* 自訂模板管理視窗 */
+            #ntuh-tpl-modal {
+                position: fixed; inset: 0; z-index: 100000;
+                background: rgba(0,0,0,0.45);
+                display: flex; align-items: center; justify-content: center;
+                font-family: 'Consolas', 'Courier New', monospace;
+                color: #2b3a2b;
+            }
+            #ntuh-tpl-modal .tm-box {
+                width: 760px; max-width: 94vw;
+                height: 92vh; min-height: 520px; max-height: 900px;
+                background: #fff; border: 1px solid #9db98a; border-radius: 12px;
+                display: flex; flex-direction: column; overflow: hidden;
+                box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+            }
+            #ntuh-tpl-modal .tm-head {
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 10px 14px; background: #2c5f54; color: #fff;
+                font-size: 13px; font-weight: 600;
+            }
+            #ntuh-tpl-modal .tm-x { background: none; border: none; color: #dfe8d4; cursor: pointer; font-size: 16px; }
+            #ntuh-tpl-modal .tm-main { flex: 1; display: flex; min-height: 0; }
+            #ntuh-tpl-modal .tm-side {
+                width: 200px; flex: 0 0 200px; border-right: 1px solid #9db98a;
+                display: flex; flex-direction: column; min-height: 0;
+            }
+            #ntuh-tpl-modal .tm-side ul { flex: 1; margin: 0; padding: 6px; list-style: none; overflow-y: auto; min-height: 0; }
+            #ntuh-tpl-modal .tm-side li {
+                padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 12px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            }
+            #ntuh-tpl-modal .tm-side li:hover { background: #eef3e8; }
+            #ntuh-tpl-modal .tm-side li.on { background: #2c5f54; color: #fff; }
+            #ntuh-tpl-modal .tm-side li.empty { color: #8a9a82; cursor: default; }
+            #ntuh-tpl-modal .tm-side #ntuh-tm-new,
+            #ntuh-tpl-modal .tm-side #ntuh-tm-reset {
+                margin: 6px 6px 0; padding: 8px; border: none; border-radius: 6px; cursor: pointer;
+                background: #4a7cdc; color: #fff; font-size: 12px; font-weight: 600;
+            }
+            #ntuh-tpl-modal .tm-side #ntuh-tm-reset {
+                margin-bottom: 6px; background: #e3ecd9; color: #2b3a2b; font-weight: 400;
+            }
+            /* 用 grid 而非 flex 分配高度：列數固定對應 7 個子元素（名稱/標題/開在哪裡/內容/按鈕/備註/訊息），
+               第 4 列 1fr 明確吃掉剩餘高度。flex 版本會被 HIS 頁面的全域 CSS 干擾導致內容框撐不滿。 */
+            #ntuh-tpl-modal .tm-edit {
+                flex: 1;
+                display: grid !important;
+                grid-template-rows: auto auto auto minmax(90px, 1fr) auto auto auto;
+                gap: 8px; padding: 12px; min-width: 0; min-height: 0;
+            }
+            #ntuh-tpl-modal .tm-edit label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #4a5a72; }
+            #ntuh-tpl-modal .tm-edit input,
+            #ntuh-tpl-modal .tm-edit select,
+            #ntuh-tpl-modal .tm-edit textarea {
+                border: 1px solid #9db98a; border-radius: 6px; padding: 6px 8px;
+                font-size: 12px; font-family: inherit; color: #2b3a2b; background: #fff;
+            }
+            /* 內容那一格佔滿 1fr 列，textarea 再撐滿該格（!important 防頁面 CSS 覆寫尺寸） */
+            #ntuh-tpl-modal .tm-edit .tm-content-label { min-height: 0 !important; overflow: hidden; }
+            #ntuh-tpl-modal .tm-edit .tm-content-label textarea {
+                flex: 1 1 0 !important; min-height: 0 !important; height: 100% !important;
+                resize: none; line-height: 1.5; white-space: pre; overflow: auto;
+            }
+            #ntuh-tpl-modal .tm-actions { display: flex; gap: 6px; }
+            #ntuh-tpl-modal .tm-actions button {
+                flex: 1; padding: 8px 0; border: none; border-radius: 6px; cursor: pointer;
+                font-size: 12px; font-weight: 600; background: #e3ecd9; color: #2b3a2b;
+            }
+            #ntuh-tpl-modal .tm-actions button:hover { opacity: 0.85; }
+            #ntuh-tpl-modal .tm-actions .tm-ok { background: #4caf7d; color: #fff; }
+            #ntuh-tpl-modal .tm-actions .tm-danger { background: #e05c5c; color: #fff; }
+            #ntuh-tpl-modal .tm-help {
+                font-size: 10.5px;
+                line-height: 1.6;
+                color: #5f6f57;
+                background: #f4f7f0;
+                border: 1px solid #dde6d4;
+                border-radius: 6px;
+                padding: 7px 9px;
+            }
+            #ntuh-tpl-modal .tm-help b { color: #2c5f54; }
+            #ntuh-tpl-modal .tm-help u { text-decoration-color: #b0692a; color: #b0692a; }
+            #ntuh-tpl-modal .tm-note {
+                font-size: 12px; font-weight: 600; color: #b0692a;
+                min-height: 22px; line-height: 1.4; padding: 4px 8px;
+                border-radius: 6px; word-break: break-word;
+            }
+            #ntuh-tpl-modal .tm-note.ok   { color: #2f7d55; background: #e4f5ea; }
+            #ntuh-tpl-modal .tm-note.err  { color: #b02a2a; background: #fbe6e6; }
+            #ntuh-tpl-modal .tm-note.warn { color: #b0692a; background: #fdf0dd; }
             #ntuh-filler-grab-outer {
                 background: #e8862e;
                 color: #fff;
@@ -653,11 +808,12 @@ After the admission, the patient was in stable condition, the physical examinati
                     <div class="ntuh-hint">自動新增 progress，將 primary note 內容依序貼上後確認</div>
                     <button id="ntuh-filler-weekly">📅 填入weekly</button>
                     <div class="ntuh-hint">自動新增 weekly，將 primary note 內容依序貼上後暫存</div>
-                    <div class="ntuh-duo">
-                        <button id="ntuh-filler-duty">🌙 Duty note</button>
-                        <button id="ntuh-filler-primary">🗒 Primary note</button>
+                    <div class="ntuh-tplrow">
+                        <select id="ntuh-tpl-select"></select>
+                        <button type="button" id="ntuh-tpl-fill" title="填入所選模板">填入</button>
+                        <button type="button" id="ntuh-tpl-manage" title="管理自訂模板">⚙</button>
                     </div>
-                    <div class="ntuh-hint">貼上模板後暫存（Duty＝新增 free note模板／Primary＝左上角新增病歷模板）</div>
+                    <div class="ntuh-hint">選模板後按「填入」：自動貼上模板後暫存<br>按「⚙」 可編輯自訂模板</div>
                 </div>
                 <hr class="ntuh-divider">
                 <div id="ntuh-filler-grabrow">
@@ -768,49 +924,222 @@ After the admission, the patient was in stable condition, the physical examinati
             try { await grabAll(); } finally { btn.disabled = false; }
         };
 
-        // Duty note：自動點「新增Note」開 free note → 貼模板 → 暫存
-        document.getElementById('ntuh-filler-duty').onclick = async (e) => {
-            const btn = e.currentTarget;
-            btn.disabled = true;
-            try {
-                await clickAndWaitPostback('NTUHWeb1_btnInsertBlankNote'); // 開新 free note
-                if (!await waitForEl('NTUHWeb1_BlankNoteMainTab_txbBlankContnt')) {
-                    setStatus('✗ Note 表單未出現', 'err'); return;
-                }
-                const r = await fillStable(() => fillDutyNote(false),
-                    'NTUHWeb1_BlankNoteMainTab_txbBlankContnt');
-                if (r.ok) {
-                    document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1')?.click();
-                    setStatus('✓ 成功填入 duty note', 'ok');
-                } else {
-                    setStatus('⚠ 填入後被系統清空，未自動暫存，請檢查後手動暫存', 'warn');
-                }
-            } finally { btn.disabled = false; }
-        };
-
-        // Primary note：自動點左上角筆記本的「+ 新增筆記」→ 貼 primary note 模板 → 暫存
-        // （primary note 屬於筆記本 ucProgressNoteBookList，非 duty 用的 free note btnInsertBlankNote）
-        document.getElementById('ntuh-filler-primary').onclick = async (e) => {
-            const btn = e.currentTarget;
-            btn.disabled = true;
-            try {
-                await clickAndWaitPostback('NTUHWeb1_ucProgressNoteBookList_btnNoteBook'); // 開新筆記
-                if (!await waitForEl('NTUHWeb1_BlankNoteMainTab_txbBlankContnt')) {
-                    setStatus('✗ Note 表單未出現', 'err'); return;
-                }
-                const r = await fillStable(() => fillBlankNote(PRIMARY_TITLE, PRIMARY_TPL, false),
-                    'NTUHWeb1_BlankNoteMainTab_txbBlankContnt');
-                if (r.ok) {
-                    document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1')?.click();
-                    setStatus('✓ 已建立 primary note 模板', 'ok');
-                } else {
-                    setStatus('⚠ 填入後被系統清空，未自動暫存，請檢查後手動暫存', 'warn');
-                }
-            } finally { btn.disabled = false; }
-        };
+        wireCustomTemplates();
 
         // 先畫出資料區骨架（群組＋分項標題，收合、顯示「尚未抓取」），不用等 data
         renderBlocks();
+    }
+
+    // 共用：開新 note（free note 或筆記本）→ 貼模板 → 驗證沒被洗掉 → 暫存
+    async function runTemplate(tpl, btn, okMsg) {
+        if (btn) btn.disabled = true;
+        try {
+            const openBtnId = tpl.target === 'notebook'
+                ? 'NTUHWeb1_ucProgressNoteBookList_btnNoteBook'  // 左上角筆記本「新增筆記」
+                : 'NTUHWeb1_btnInsertBlankNote';                 // 右側 free note「新增Note」
+            await clickAndWaitPostback(openBtnId);
+            if (!await waitForEl('NTUHWeb1_BlankNoteMainTab_txbBlankContnt')) {
+                setStatus('✗ Note 表單未出現', 'err'); return;
+            }
+            const r = await fillStable(() => fillBlankNote(tpl.title || '', tpl.content, false),
+                'NTUHWeb1_BlankNoteMainTab_txbBlankContnt');
+            if (r.ok) {
+                document.getElementById('NTUHWeb1_BlankNoteMainTab_Button1')?.click();
+                setStatus(okMsg || ('✓ 已填入模板：' + (tpl.name || tpl.title || '')), 'ok');
+            } else {
+                setStatus('⚠ 填入後被系統清空，未自動暫存，請檢查後手動暫存', 'warn');
+            }
+        } finally { if (btn) btn.disabled = false; }
+    }
+
+    // ─────────────────────────────────────────────
+    // 自訂模板 UI：下拉選擇 → 填入；⚙ 開管理視窗（新增／編輯／刪除／匯出匯入）
+    // ─────────────────────────────────────────────
+    function findTemplate(id) { return loadTemplates().find((t) => t.id === id) || null; }
+
+    function refreshTemplateSelect(keepId) {
+        const sel = document.getElementById('ntuh-tpl-select');
+        if (!sel) return;
+        const list = loadTemplates();
+        const prev = keepId !== undefined ? keepId : sel.value;
+        sel.innerHTML = list.length
+            ? list.map((t) => `<option value="${t.id}">${escapeHtml(t.name || t.title || '(未命名)')}</option>`).join('')
+            : '<option value="">（尚無模板，按 ⚙ 新增）</option>';
+        if (prev && findTemplate(prev)) sel.value = prev;
+        const fillBtn = document.getElementById('ntuh-tpl-fill');
+        if (fillBtn) fillBtn.disabled = list.length === 0;
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function wireCustomTemplates() {
+        seedTemplatesOnce();
+        refreshTemplateSelect();
+
+        document.getElementById('ntuh-tpl-fill').onclick = (e) => {
+            const tpl = findTemplate(document.getElementById('ntuh-tpl-select').value);
+            if (!tpl) { setStatus('⚠ 請先選擇模板', 'warn'); return; }
+            return runTemplate(tpl, e.currentTarget);
+        };
+        document.getElementById('ntuh-tpl-manage').onclick = () => openTemplateManager();
+    }
+
+    function openTemplateManager() {
+        if (document.getElementById('ntuh-tpl-modal')) return;
+        const modal = document.createElement('div');
+        modal.id = 'ntuh-tpl-modal';
+        modal.innerHTML = `
+            <div class="tm-box">
+                <div class="tm-head"><span>⚙ 自訂模板管理</span><button type="button" class="tm-x" id="ntuh-tm-close">✕</button></div>
+                <div class="tm-main">
+                    <div class="tm-side">
+                        <ul id="ntuh-tm-list"></ul>
+                        <button type="button" id="ntuh-tm-new">＋ 新增模板</button>
+                        <button type="button" id="ntuh-tm-reset" title="以原始內容重新加入 Duty / Primary 各一筆（不會覆蓋現有模板）">↺ 加回預設</button>
+                    </div>
+                    <div class="tm-edit">
+                        <label>名稱（顯示在下拉選單）<input id="ntuh-tm-name" type="text" placeholder="例：ICU 交班"></label>
+                        <label>Note 標題（填進病歷標題欄）<input id="ntuh-tm-title" type="text" placeholder="例：ICU Note"></label>
+                        <label>開在哪裡
+                            <select id="ntuh-tm-target">
+                                <option value="blank">Free note（同 Duty note）</option>
+                                <option value="notebook">左上角筆記本（同 Primary note）</option>
+                            </select>
+                        </label>
+                        <label class="tm-content-label">內容<textarea id="ntuh-tm-content" placeholder="貼上模板內容…"></textarea></label>
+                        <div class="tm-actions">
+                            <button type="button" id="ntuh-tm-save" class="tm-ok">儲存</button>
+                            <button type="button" id="ntuh-tm-del" class="tm-danger">刪除</button>
+                            <button type="button" id="ntuh-tm-export">匯出 JSON</button>
+                            <button type="button" id="ntuh-tm-import">匯入 JSON</button>
+                        </div>
+                        <div class="tm-help">
+                            <b>儲存</b>＝把上面的編輯結果寫進瀏覽器（新的一筆／或更新左邊選到的那筆）。
+                            <b>刪除</b>＝移除左邊選到的那筆，無法復原。<br>
+                            <b>匯出 JSON</b>＝備份用。模板存在這台電腦的瀏覽器裡，<u>清除瀏覽資料、換電腦、換瀏覽器就會消失</u>；
+                            設定好之後按一次，把出現在內容框的文字複製到你自己的筆記存著。
+                            按完<u>先別按儲存</u>（會把 JSON 存成一筆模板），複製完直接關掉視窗或點左邊任一筆即可。<br>
+                            <b>匯入 JSON</b>＝還原備份。換電腦或模板不見時按這顆，貼上先前備份的文字，會<u>附加</u>到現有模板後面（不覆蓋、不去重，重複按會重複匯入）。
+                        </div>
+                        <div class="tm-note" id="ntuh-tm-note"></div>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+
+        let currentId = null;
+        const $ = (id) => document.getElementById(id);
+        const note = (msg, type) => {
+            const el = $('ntuh-tm-note');
+            el.textContent = msg || '';
+            el.className = 'tm-note' + (type ? ' ' + type : '');
+        };
+        // HIS 頁面會污染全域內建物件（見 nowMs 註解），任何例外都要現形，不能讓 handler 中途死掉還沒訊息
+        const guard = (fn) => (ev) => {
+            try { return fn(ev); }
+            catch (err) {
+                console.error('[NTUH filler] 模板操作失敗', err);
+                note('✗ 發生錯誤：' + (err && err.message ? err.message : String(err)), 'err');
+            }
+        };
+
+        const renderList = () => {
+            const list = loadTemplates();
+            $('ntuh-tm-list').innerHTML = list.length
+                ? list.map((t) => `<li data-id="${t.id}" class="${t.id === currentId ? 'on' : ''}">${escapeHtml(t.name || t.title || '(未命名)')}</li>`).join('')
+                : '<li class="empty">尚無模板</li>';
+            $('ntuh-tm-list').querySelectorAll('li[data-id]').forEach((li) => {
+                li.onclick = () => { select(li.dataset.id); };
+            });
+        };
+        const select = (id) => {
+            const t = loadTemplates().find((x) => x.id === id);
+            currentId = t ? t.id : null;
+            $('ntuh-tm-name').value = t ? (t.name || '') : '';
+            $('ntuh-tm-title').value = t ? (t.title || '') : '';
+            $('ntuh-tm-target').value = t ? (t.target || 'blank') : 'blank';
+            $('ntuh-tm-content').value = t ? (t.content || '') : '';
+            note('');
+            renderList();
+        };
+
+        $('ntuh-tm-new').onclick = guard(() => { select(null); $('ntuh-tm-name').focus(); });
+
+        // 加回預設：附加一份原始 Duty / Primary，不動現有模板（改壞了的逃生口）
+        $('ntuh-tm-reset').onclick = guard(() => {
+            if (!confirm('會以原始內容「新增」Duty note、Primary note 各一筆（現有模板不受影響）。要繼續嗎？')) return;
+            const err = saveTemplates(loadTemplates().concat(defaultTemplatesCopy()));
+            if (err) { note('✗ 加回預設失敗：' + err, 'err'); return; }
+            refreshTemplateSelect();
+            renderList();
+            note('✓ 已加回預設模板 2 筆', 'ok');
+        });
+
+        $('ntuh-tm-save').onclick = guard(() => {
+            const name = $('ntuh-tm-name').value.trim();
+            const content = $('ntuh-tm-content').value;
+            if (!name) { note('⚠ 請輸入名稱', 'warn'); $('ntuh-tm-name').focus(); return; }
+            if (!content.trim()) { note('⚠ 內容不可空白', 'warn'); $('ntuh-tm-content').focus(); return; }
+            const list = loadTemplates();
+            const data = { name, title: $('ntuh-tm-title').value.trim() || name, target: $('ntuh-tm-target').value, content };
+            const idx = list.findIndex((t) => t.id === currentId);
+            const isNew = idx < 0;
+            if (!isNew) list[idx] = Object.assign({}, list[idx], data);
+            else { data.id = newTemplateId(); list.push(data); currentId = data.id; }
+            const err = saveTemplates(list);
+            if (err) { note('✗ 儲存失敗：' + err, 'err'); return; }
+            refreshTemplateSelect(currentId);
+            renderList();
+            note(`✓ 已${isNew ? '新增' : '更新'}「${name}」，目前共 ${list.length} 筆`, 'ok');
+        });
+
+        $('ntuh-tm-del').onclick = guard(() => {
+            if (!currentId) { note('⚠ 尚未選擇模板'); return; }
+            const t = loadTemplates().find((x) => x.id === currentId);
+            if (!confirm(`確定刪除模板「${t ? (t.name || t.title) : ''}」？此動作無法復原。`)) return;
+            const err = saveTemplates(loadTemplates().filter((x) => x.id !== currentId));
+            if (err) { note('✗ 刪除失敗：' + err, 'err'); return; }
+            select(null);
+            refreshTemplateSelect('');
+            note('✓ 已刪除', 'ok');
+        });
+
+        $('ntuh-tm-export').onclick = guard(() => {
+            const json = JSON.stringify(loadTemplates(), null, 2);
+            $('ntuh-tm-content').value = json;
+            $('ntuh-tm-content').select();
+            note(`已把全部 ${loadTemplates().length} 筆模板的 JSON 放進內容框並選取，請按 Ctrl+C 複製後貼到自己的筆記保存（別按儲存）`, 'warn');
+        });
+
+        $('ntuh-tm-import').onclick = guard(() => {
+            const raw = prompt('貼上先前匯出的模板 JSON（會「附加」到現有模板，不會覆蓋）：');
+            if (!raw) return;
+            let arr;
+            try { arr = JSON.parse(raw); } catch (e) { note('✗ JSON 格式錯誤', 'err'); return; }
+            if (!Array.isArray(arr)) { note('✗ 內容不是陣列', 'err'); return; }
+            const list = loadTemplates();
+            let n = 0;
+            arr.forEach((t) => {
+                if (!t || typeof t.content !== 'string') return;
+                list.push({ id: newTemplateId(), name: t.name || t.title || '匯入模板', title: t.title || t.name || '', target: t.target === 'notebook' ? 'notebook' : 'blank', content: t.content });
+                n++;
+            });
+            const err2 = saveTemplates(list);
+            if (err2) { note('✗ 匯入失敗：' + err2, 'err'); return; }
+            refreshTemplateSelect();
+            renderList();
+            note(`✓ 已匯入 ${n} 筆`, 'ok');
+        });
+
+        $('ntuh-tm-close').onclick = () => modal.remove();
+        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+        renderList();
+        const first = loadTemplates()[0];
+        if (first) select(first.id);
     }
 
     // 區塊分組：key → 群組（顏色對應面板卡標題）
@@ -988,13 +1317,13 @@ After the admission, the patient was in stable condition, the physical examinati
         return new Promise((resolve) => {
             const prm = window.Sys && window.Sys.WebForms && window.Sys.WebForms.PageRequestManager.getInstance();
             if (!prm) return setTimeout(resolve, 400);
-            let last = Date.now();
-            const bump = () => { last = Date.now(); };
+            let last = nowMs();
+            const bump = () => { last = nowMs(); };
             prm.add_beginRequest(bump);
             prm.add_endRequest(bump);
-            const start = Date.now();
+            const start = nowMs();
             const iv = setInterval(() => {
-                if (Date.now() - last >= quietMs || Date.now() - start > maxWait) {
+                if (nowMs() - last >= quietMs || nowMs() - start > maxWait) {
                     clearInterval(iv);
                     prm.remove_beginRequest(bump);
                     prm.remove_endRequest(bump);
@@ -1025,11 +1354,11 @@ After the admission, the patient was in stable condition, the physical examinati
     // 輪詢等某 id 元素出現（局部更新後表單/欄位是 async 塞進 DOM）
     function waitForEl(id, timeout = 6000) {
         return new Promise((resolve) => {
-            const t0 = Date.now();
+            const t0 = nowMs();
             const tick = () => {
                 const el = document.getElementById(id);
                 if (el) return resolve(el);
-                if (Date.now() - t0 > timeout) return resolve(null);
+                if (nowMs() - t0 > timeout) return resolve(null);
                 setTimeout(tick, 150);
             };
             tick();
