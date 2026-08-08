@@ -6,6 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint scripts/**/*.js",
+    "build:bookmarklet": "node tools/build-bookmarklet.js",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -26,6 +27,7 @@
   "devDependencies": {
     "eslint": "^8.57.1",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.6"
+    "lint-staged": "^17.0.6",
+    "terser": "^5.49.2"
   }
 }

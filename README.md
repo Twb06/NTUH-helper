@@ -52,6 +52,7 @@
 | `goto-nursing-notes` | 新開分頁跳轉到該病人的「護理紀錄」頁面 | 通用 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-notes.js) |
 | `goto-emergency` | 新開分頁跳轉到「急診」頁面 | 通用 | Portal 任一網域 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-emergency.js) |
 | `renew-orders` | 勾選目前全部 orders，隔離部分自動選擇繼續隔離 | 通用 | Portal renew 頁面 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/renew-orders.js) |
+| `login-express` | 1. 首次使用：填寫帳號與密碼，工具會保存 Portal 處理後的雜湊密碼，辨識驗證碼並完成登入；2. 快速登入：後續登入時直接使用已儲存的登入資訊，辨識驗證碼並完成登入；3. 清除資訊：在驗證碼欄輸入 `remove` 後執行，即可刪除已保存的登入資訊。 | 通用 | Portal 登入頁面（Login.aspx） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/login-express.js) |
 
 ### 安裝方式
 
