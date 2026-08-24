@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 照會紀錄新分頁
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.0.2
-// @description  QueryNotifyRecordByDr：指定照會連結改以新分頁開啟查詢結果；NotifyOtherDoctor：popup 按鈕改以新分頁開啟正確目標
+// @version      0.1.0
+// @description  QueryNotifyRecordByDr / NotifyOtherDoctor：攔截 window.open，將照會目標頁改以新分頁開啟，避免額外彈窗或重複分頁
 // @author       Twb06
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/QueryNotifyRecordByDr.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
@@ -17,159 +17,74 @@
 
     /* global unsafeWindow */
 
+    // ─── 根因說明 ─────────────────────────────────────────────
+    //
+    // QueryNotifyRecordByDr.aspx 上的「查」與「回」按鈕觸發
+    // ASP.NET WebForms 的 __doPostBack；伺服器處理後，回應的
+    // inline script 呼叫 window.open('NotifyOtherDoctor.aspx?...')
+    // 以彈出視窗開啟照會頁面。
+    //
+    // 舊版修正錯誤地將 form.target 指向新分頁，導致：
+    //   1. 新分頁載入與目前頁面一模一樣的 postback 回應（重複頁面）
+    //   2. window.open 在新分頁 context 執行，不受舊覆寫影響
+    //
+    // 正確策略：
+    //   - 完全不動 form.target，讓 postback 在目前分頁正常執行
+    //   - 在 document-start 覆寫 window.open，讓所有照會目標
+    //     URL（NotifyOtherDoctor.aspx?...）改以 _blank 新分頁開啟
+    //   - 因為 @run-at document-start，覆寫在頁面任何 inline
+    //     script 執行前即已生效，全頁 postback 後重載也一樣
+    //
+    // ────────────────────────────────────────────────────────
+
     const LOG = '[NotifyRecordTab]';
-    const PATH = window.location.pathname;
 
-    function parseDoPostBack(href) {
-        const match = href.match(
-            /__doPostBack\(\s*(['"])(.*?)\1\s*,\s*(['"])(.*?)\3\s*\)/
-        );
-        if (!match) return null;
-        return { eventTarget: match[2], eventArgument: match[4] };
-    }
+    // 需要攔截並改以新分頁開啟的 URL pattern（照會目標頁）
+    const NOTIFY_URL_PATTERN = /NotifyOtherDoctor\.aspx/i;
 
-    // ═══════════════════════════════════════════════════════════
-    // QueryNotifyRecordByDr.aspx — 指定照會連結在新分頁開啟
-    // ═══════════════════════════════════════════════════════════
+    const pageWin = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const _originalOpen = pageWin.open.bind(pageWin);
 
-    function initQueryNotifyRecord() {
-        // 僅處理目前確認的兩個連結，避免攔截頁面上的其他 postback：
-        //   NTUHWeb1_NotifyDrRecord_ctl02_SelectButton（查）
-        //   NTUHWeb1_NotifyDrRecord_ctl02_lbtnReply（回）
-        const LINK_SELECTOR = [
-            '#NTUHWeb1_NotifyDrRecord_ctl02_SelectButton',
-            '#NTUHWeb1_NotifyDrRecord_ctl02_lbtnReply',
-        ].join(',');
-
-        function handleSelectClick(event) {
-            const link = /** @type {HTMLAnchorElement} */ (event.currentTarget);
-            const args = parseDoPostBack(link.getAttribute('href') || '');
-            if (!args) return;
-
-            event.preventDefault();
-            event.stopImmediatePropagation();
-
-            const form = document.forms[0];
-            if (!form) {
-                console.warn(LOG, '找不到表單');
-                return;
-            }
-
-            const tabName = 'ntuh_consult_' + Date.now();
-            window.open('about:blank', tabName);
-
-            const prevTarget = form.getAttribute('target') || '';
-            form.target = tabName;
-
-            try {
-                const pageDoPostBack = unsafeWindow.__doPostBack;
-                if (typeof pageDoPostBack !== 'function') {
-                    console.error(LOG, '__doPostBack 不存在');
-                    return;
-                }
-                console.log(LOG, 'postback →', args.eventTarget, args.eventArgument, '→ tab:', tabName);
-                pageDoPostBack(args.eventTarget, args.eventArgument);
-            } catch (e) {
-                console.error(LOG, 'postback 失敗', e);
-            } finally {
-                setTimeout(() => { form.target = prevTarget; }, 0);
-            }
+    /**
+     * 覆寫 window.open：
+     *   - about:blank / 空字串 → 保留原行為（讓網站內部邏輯正常運作）
+     *   - 符合 NOTIFY_URL_PATTERN 的 URL → 強制 _blank 新分頁
+     *   - 其餘 URL → 保留原行為，不干預
+     */
+    pageWin.open = function ntuhNotifyOpenInterceptor(url, name, features) {
+        if (!url || url === 'about:blank') {
+            return _originalOpen(url, name, features);
         }
-
-        function patchLinks() {
-            document.querySelectorAll(LINK_SELECTOR).forEach((link) => {
-                if (link.dataset.ntuhNotifyTabPatched) return;
-                link.dataset.ntuhNotifyTabPatched = '1';
-                link.addEventListener('click', handleSelectClick, true);
-                console.log(LOG, '已綁定指定照會連結', link.id || link.textContent.trim());
-            });
-        }
-
-        function init() {
-            patchLinks();
-
-            const observer = new MutationObserver(patchLinks);
-            observer.observe(document.documentElement, { childList: true, subtree: true });
-        }
-
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', init, { once: true });
-        } else {
-            init();
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // NotifyOtherDoctor.aspx — popup 按鈕改以新分頁開啟目標
-    // ═══════════════════════════════════════════════════════════
-
-    const POPUP_BUTTON_IDS = [
-        'NTUHWeb1_btnPopupEMR',
-        'NTUHWeb1_btnPopupProgressNote',
-        'NTUHWeb1_btnPopupVitalSign',
-        'NTUHWeb1_btnPopupAdmissionNote',
-        'NTUHWeb1_btnPopupReport',
-        'NTUHWeb1_btnPopupNursingHealthEducationNote',
-        'NTUHWeb1_btnPopupPACS',
-        'NTUHWeb1_btnBloodRecord',
-        'NTUHWeb1_btnPopupNursingProgressNote',
-        'NTUHWeb1_btnPopupStablePatientTransmission',
-        'NTUHWeb1_btnPopupConsentForm',
-    ];
-
-    function initNotifyOtherDoctor() {
-        const pageWin = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-        const _originalOpen = pageWin.open.bind(pageWin);
-
-        pageWin.open = function ntuhOpenInterceptor(url, name, features) {
-            if (!url || url === '' || url === 'about:blank') {
-                return _originalOpen(url, name, features);
-            }
+        if (NOTIFY_URL_PATTERN.test(url)) {
             console.log(LOG, 'window.open 攔截 →', url, '→ 新分頁');
             return _originalOpen(url, '_blank');
-        };
-
-        console.log(LOG, 'window.open 已覆寫');
-
-        function patchButton(btn) {
-            if (btn.dataset.ntuhNotifyDoctorPatched) return;
-            btn.dataset.ntuhNotifyDoctorPatched = '1';
-
-            btn.addEventListener('click', function (event) {
-                console.log(LOG, '按下 popup 按鈕', btn.id);
-
-                if (!event.defaultPrevented && !btn.onclick && btn.form) {
-                    console.warn(LOG, btn.id, '無 onclick，可能行為異常');
-                }
-            }, false);
-
-            console.log(LOG, '已綁定按鈕', btn.id);
         }
+        return _originalOpen(url, name, features);
+    };
 
-        function patchButtons() {
-            POPUP_BUTTON_IDS.forEach((id) => {
-                const btn = document.getElementById(id);
-                if (btn) patchButton(btn);
-            });
-        }
-
-        function init() {
-            patchButtons();
-
-            const observer = new MutationObserver(patchButtons);
-            observer.observe(document.documentElement, { childList: true, subtree: true });
-        }
-
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', init, { once: true });
-        } else {
-            init();
-        }
-    }
-
-    if (/QueryNotifyRecordByDr\.aspx/i.test(PATH)) {
-        initQueryNotifyRecord();
-    } else if (/NotifyOtherDoctor\.aspx/i.test(PATH)) {
-        initNotifyOtherDoctor();
-    }
+    console.log(LOG, 'window.open 覆寫完成（', pageWin.location.pathname, '）');
 })();
+
+// ─── 驗證方式 ─────────────────────────────────────────────────
+//
+// QueryNotifyRecordByDr.aspx — 「查」流程
+//   1. 開啟 https://ihisaw.ntuh.gov.tw/.../QueryNotifyRecordByDr.aspx
+//   2. 點擊任一列的「查」連結
+//   3. 預期：目前頁面維持不動（或重整後仍停留在 QueryNotifyRecordByDr.aspx）
+//            NotifyOtherDoctor.aspx?... 在新分頁開啟，不彈出視窗
+//            不出現與目前頁面相同的重複分頁
+//
+// QueryNotifyRecordByDr.aspx — 「回」流程
+//   1. 同上，點擊「回」連結
+//   2. 預期：同「查」流程
+//
+// NotifyOtherDoctor.aspx — popup 按鈕
+//   1. 在新開的照會頁點擊任一 popup 按鈕（如 EMR、進度記錄等）
+//   2. 預期：目標頁在新分頁開啟，不彈出視窗
+//
+// 主控台驗證：
+//   開啟 DevTools > Console，應可看到：
+//   [NotifyRecordTab] window.open 覆寫完成 ( /WebApplication/InPatient/Ward/QueryNotifyRecordByDr.aspx )
+//   點擊後應看到：
+//   [NotifyRecordTab] window.open 攔截 → https://...NotifyOtherDoctor.aspx?... → 新分頁
+// ─────────────────────────────────────────────────────────────
