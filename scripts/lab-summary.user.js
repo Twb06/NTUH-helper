@@ -64,6 +64,7 @@
     const LIPID = ['T-CHO', 'TG', 'LDL-C', 'HDL-C'];
     const TUMOR_MARKER = ['CgA', 'CEA', 'CA19-9', 'AFP', 'PSA', 'CA-125', 'CA15-3', 'SCC', 'NSE'];
     const SEROLOGY = ['HBsAg', 'Anti-HBs', 'Anti-HCV', 'HIV', 'VDRL'];
+    const THYROID = ['TSH', 'Free T4', 'T4', 'T3'];
     const OTHERS = ['Glucose', 'HbA1c', 'LDH', 'AMY', 'Lip', 'VIT. B12', 'Folic Acid', 'LA'];
     const GAS = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
     // VBG 的 PO2 沒有臨床意義，只有 ABG 才看；LA 併進氣體分析一起呈現
@@ -119,13 +120,14 @@
         ['Coagulation', COAG, []],
         ['Lipid', LIPID, []],
         ['Tumor marker', TUMOR_MARKER, []],
+        ['Thyroid', THYROID, []],
         ['Serology', SEROLOGY, []],
     ];
 
     const ALL_KNOWN = [
         ...HEMOGRAM_MAIN, ...HEMOGRAM_EXT, ...RARE_DIFF,
         ...LIVER, ...RENAL, ...ELECTROLYTES, ...CARDIAC,
-        ...LIPID, ...TUMOR_MARKER, ...SEROLOGY, ...OTHERS,
+        ...LIPID, ...TUMOR_MARKER, ...SEROLOGY, ...THYROID, ...OTHERS,
         ...GAS, ...COAG, 'MCV', 'Seg', 'eGFR',
     ];
 
@@ -195,6 +197,8 @@
         // 腫瘤標記
         'Chromogranin A': 'CgA', 'CEA': 'CEA', 'AFP': 'AFP', 'PSA': 'PSA',
         'CA19-9': 'CA19-9', 'CA-125': 'CA-125', 'CA15-3': 'CA15-3',
+        // 甲狀腺
+        'hsTSH': 'TSH', 'TSH': 'TSH', 'Free T4': 'Free T4', 'T4': 'T4', 'T3': 'T3',
         // 血清學（B/C 肝、HIV、梅毒）
         'HBsAg': 'HBsAg', 'Anti-HBs': 'Anti-HBs', 'Anti-HCV Ab': 'Anti-HCV',
         'Anti-HCV': 'Anti-HCV',
@@ -421,13 +425,30 @@
         }
     }
 
+    // 列的鍵是「MM/DD HH:MM」：同一天抽兩次以上時才分得開，
+    // 只有日期的舊格式（沒有時間）也吃得下
+    function dayPart(key) {
+        return String(key || '').split(' ')[0];
+    }
+    function timeValue(key) {
+        const m = String(key || '').match(/(\d{1,2}):(\d{2})/);
+        return m ? Number(m[1]) * 60 + Number(m[2]) : -1;
+    }
+    function dateKeyOrder(key) {
+        const [mo, dd] = dayPart(key).split('/').map(Number);
+        return [mo || 0, dd || 0, timeValue(key)];
+    }
+
     function sortByDate(dArr, dataMap) {
         if (dArr.length <= 1) return;
         const order = dArr.map((d, i) => i);
         order.sort((a, b) => {
-            const [am, ad] = dArr[a].split('/').map(Number);
-            const [bm, bd] = dArr[b].split('/').map(Number);
-            return am !== bm ? am - bm : ad - bd;
+            const ka = dateKeyOrder(dArr[a]);
+            const kb = dateKeyOrder(dArr[b]);
+            for (let i = 0; i < ka.length; i++) {
+                if (ka[i] !== kb[i]) return ka[i] - kb[i];
+            }
+            return 0;
         });
         const sortedDates = order.map(i => dArr[i]);
         for (let i = 0; i < sortedDates.length; i++) dArr[i] = sortedDates[i];
@@ -510,7 +531,8 @@
         const fluidGroups = {};
         const cultureItems = [];
         const structuredCultures = [];
-        let collectDate = '';
+        let collectDate = '';   // MM/DD HH:MM，同日多次抽血要分得開
+        let collectDay = '';    // MM/DD，培養報告用
         let headerText = '';
 
         const AGAS_SKIP = ['Hct'];
@@ -519,9 +541,10 @@
             let prev = table.previousElementSibling;
             while (prev && prev.tagName !== 'TABLE') {
                 const txt = prev.textContent || '';
-                const dm = txt.match(/採檢:(\d{4})\/(\d{2})\/(\d{2})/);
+                const dm = txt.match(/採檢:(\d{4})\/(\d{2})\/(\d{2})(?:\s+(\d{1,2}):(\d{2}))?/);
                 if (dm) {
-                    collectDate = dm[2] + '/' + dm[3];
+                    collectDay = dm[2] + '/' + dm[3];
+                    collectDate = collectDay + (dm[4] ? ' ' + ('0' + dm[4]).slice(-2) + ':' + dm[5] : '');
                     headerText = txt;
                     break;
                 }
@@ -601,7 +624,7 @@
                     let specialMatched = false;
                     for (const [key, label] of Object.entries(SPECIAL_CULTURE_MAP)) {
                         if (rawName.toLowerCase().indexOf(key.toLowerCase()) > -1) {
-                            structuredCultures.push({ date: collectDate, label: label, result: cResult });
+                            structuredCultures.push({ date: collectDay, label: label, result: cResult });
                             specialMatched = true;
                             break;
                         }
@@ -620,11 +643,11 @@
                             const words2 = raw2.split(/\s+/).filter(w => /^[A-Z]+$/.test(w));
                             if (words2.length) scrLabel = words2[words2.length - 1].charAt(0).toUpperCase() + words2[words2.length - 1].slice(1).toLowerCase();
                         }
-                        structuredCultures.push({ date: collectDate, label: scrLabel, result: scrName + ' (' + (scrNeg ? '-' : '+') + ')' });
+                        structuredCultures.push({ date: collectDay, label: scrLabel, result: scrName + ' (' + (scrNeg ? '-' : '+') + ')' });
                     } else if (/ID\+DS|ID C\.|ID Campy\.|^Anaerobic|^Gram's|^Blood Culture/i.test(rawName)) {
-                        structuredCultures.push({ date: collectDate, label: specimenLabel(headerText), result: cResult });
+                        structuredCultures.push({ date: collectDay, label: specimenLabel(headerText), result: cResult });
                     } else {
-                        cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + rawName + ': ' + val);
+                        cultureItems.push((collectDay ? '[' + collectDay + '] ' : '') + rawName + ': ' + val);
                     }
                     return;
                 }
@@ -632,13 +655,14 @@
                 const pcrName = PCR_MAP[rawName];
                 if (pcrName) {
                     const pcrResult = (val === 'Not Detected' || val === 'Negative') ? '-' : '+';
-                    cultureItems.push((collectDate ? '[' + collectDate + '] ' : '') + pcrName + ' ' + pcrResult);
+                    cultureItems.push((collectDay ? '[' + collectDay + '] ' : '') + pcrName + ' ' + pcrResult);
                     return;
                 }
 
                 // 以下依「檢體種類」分流。舊版只看項目名，所以尿液的 PH 會被當成
                 // 靜脈血氣的 pH、CRE(U)/UN(U) 會蓋掉血中 CRE/BUN。
                 if (sClass === 'vgas') {
+                    if (AGAS_SKIP.includes(cleanName)) return;
                     const gasName = GAS_NAME_MAP[rawName] || GAS_NAME_MAP[cleanName] || cleanName;
                     if (!vGasDates.includes(collectDate)) vGasDates.push(collectDate);
                     pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val);
@@ -704,13 +728,25 @@
 
         // Lactate 是生化機驗的（跟血氣不同單），但臨床上要跟酸鹼一起看，
         // 所以把血液欄位裡的 LA 併進氣體分析那張表（有動脈血就掛動脈）。
-        const gasForLA = aGasDates.length ? { d: aGasDates, v: aGasData } : (vGasDates.length ? { d: vGasDates, v: vGasData } : null);
-        if (gasForLA && trendData.LA) {
+        // 血氣機自己驗的 LA 留在該張氣體分析表（動脈就在動脈）；
+        // 另外送檢驗科的 LacticAcid 一律掛到 VBG 欄位。
+        // 同一天已有靜脈血氣、採檢時間又相近（90 分鐘內）就併到同一列，不另開一列。
+        if (trendData.LA) {
             trendData.LA.forEach((v, i) => {
                 if (!v) return;
                 const dt = dates[i];
-                if (!gasForLA.d.includes(dt)) gasForLA.d.push(dt);
-                pushToStore(gasForLA.v, 'LA', gasForLA.d.indexOf(dt), v);
+                let best = null;
+                let bestGap = Infinity;
+                vGasDates.forEach((k, ki) => {
+                    if (dayPart(k) !== dayPart(dt)) return;
+                    if (vGasData.LA && vGasData.LA[ki]) return;   // 該列已經有 LA 了
+                    const ta = timeValue(k);
+                    const tb = timeValue(dt);
+                    const gap = (ta < 0 || tb < 0) ? 0 : Math.abs(ta - tb);
+                    if (gap <= 90 && gap < bestGap) { best = k; bestGap = gap; }
+                });
+                if (!best) { best = dt; vGasDates.push(best); }
+                pushToStore(vGasData, 'LA', vGasDates.indexOf(best), v);
             });
             delete trendData.LA;
         }
@@ -1026,6 +1062,17 @@
         return String(d || '');
     }
 
+    // 該分組裡同一天只有一筆就只顯示 MM/DD，有兩筆以上才把時間帶出來，
+    // 這樣常見的「一天抽一次」維持原本的緊湊樣子
+    function rowLabelsFor(keys) {
+        const perDay = {};
+        for (const k of keys) {
+            const d = dayPart(k);
+            perDay[d] = (perDay[d] || 0) + 1;
+        }
+        return keys.map(k => (perDay[dayPart(k)] > 1 ? fmtDateLabel(k) : dayPart(k)));
+    }
+
     // colNames: 欄位名陣列；rowLabels: 每列的日期；cells[列][欄]: 值
     function buildTable(title, colNames, rowLabels, cells) {
         if (!colNames.length || !rowLabels.length) return null;
@@ -1155,7 +1202,7 @@
                     if (s) items.push(s);
                 }
                 if (!items.length) return null;
-                const gd = activeIdx.map(i => refDates[i]);
+                const gd = rowLabelsFor(activeIdx.map(i => refDates[i]));
                 return title + ' [' + gd.join(', ') + ']' + headingSep + items.join(', ');
             }
 
@@ -1178,7 +1225,7 @@
             });
             if (!cols.length) return null;
 
-            const rowLabels = activeIdx.map(i => fmtDateLabel(refDates[i]));
+            const rowLabels = rowLabelsFor(activeIdx.map(i => refDates[i]));
             const cells = activeIdx.map(i => cols.map(nm => dd2[nm][i] || EMPTY));
             return buildTable(title, cols, rowLabels, cells);
         }
@@ -1200,10 +1247,10 @@
             }
             if (!cols.length) return null;
             if (!isTable) {
-                return 'Urine [' + uDates.join(', ') + ']' + headingSep
+                return 'Urine [' + rowLabelsFor(uDates).join(', ') + ']' + headingSep
                     + cols.map((k, c) => k + ' ' + colVals[c].join('→')).join(', ');
             }
-            const rowLabels = uDates.map(d => fmtDateLabel(d));
+            const rowLabels = rowLabelsFor(uDates);
             const cells = uDates.map((d, i) => colVals.map(v => v[i] || EMPTY));
             return buildTable('Urine', cols, rowLabels, cells);
         }
