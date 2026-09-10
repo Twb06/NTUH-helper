@@ -16,7 +16,7 @@
 |------|------|----------|----------|----------|
 | `chart-medication` | 藥歷圖整理用藥為「商品名 起日-迄日」，區分進行中／已停用並顯示療程天數；也支援 Progress Note Data Helper 背景抓取抗生素藥歷 | 通用 | 藥歷圖頁點右上角「整理藥物」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
 | `prescription-viewer` | 處方頁整理目前用藥為「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內／自備藥分組，供一眼檢視與複製；也支援背景抓取現行處方 | 通用 | 處方頁點右上角「整理處方」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
-| `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；支援 Culture／PCR、抗藥性標註、清單／橫式／綠單模式；也支援背景抓取檢驗摘要 | 通用 | 報告頁點右下角「整理檢驗」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
+| `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；結果可在「趨勢」段落與「表格」對齊兩種呈現間切換，並記住呈現與輸出疏密設定；支援 Culture／PCR、CSF 獨立分組、PCT、抗藥性標註、清單／橫式／綠單模式，以及背景抓取檢驗摘要 | 通用 | 報告頁點右下角「整理檢驗」，結果框標題列可切換趨勢／表格與輸出疏密 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
 | `nursing-handover-summary` | 護理交班頁擷取飲食、管路、照會等，整理成精簡 note | 通用 | 開啟護理交班頁右下角自動顯示 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/nursing-handover-summary.user.js) |
 
 ### 自動執行型
@@ -31,6 +31,7 @@
 | `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |
 | `weekend-progress` | 病房列表一鍵對全病人撰寫週末病程：複製最新 progress、填 stable 並確認 | 通用 | 病房列表頁點右下角「⚡ 週末病程」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js) |
 | `login-ocr` | 登入頁面自動輸入驗證碼：透過連接物件標記與模板匹配演算法實作的零依賴驗證碼識別，輸入帳號密碼後按下 Enter 完成登入 | 通用 | Portal 登入頁面（Login.aspx）自動辨識並填入 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-ocr.user.js) |
+| `notify-record-tab` | 照會紀錄查詢開窗修正：QueryNotifyRecordByDr 的「查」連結改以新分頁開啟查詢結果；NotifyOtherDoctor 的 popup 按鈕改以新分頁開啟正確目標頁面，避免一直開啟目前頁面 | 通用 | 安裝後自動生效，無需額外操作；於 `QueryNotifyRecordByDr.aspx` 點「查」即在新分頁開啟，於 `NotifyOtherDoctor.aspx` 點各 popup 按鈕即在新分頁開啟對應頁面 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/notify-record-tab.user.js) |
 
 ### Note 撰寫相關
 
@@ -52,6 +53,7 @@
 | `goto-nursing-notes` | 新開分頁跳轉到該病人的「護理紀錄」頁面 | 通用 | Portal 病人專屬頁面（TPR、病程、處方、診療等） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-nursing-notes.js) |
 | `goto-emergency` | 新開分頁跳轉到「急診」頁面 | 通用 | Portal 任一網域 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/goto-emergency.js) |
 | `renew-orders` | 勾選目前全部 orders，隔離部分自動選擇繼續隔離 | 通用 | Portal renew 頁面 | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/renew-orders.js) |
+| `login-express` | 1. 首次使用：填寫帳號與密碼，工具會保存 Portal 處理後的雜湊密碼，辨識驗證碼並完成登入；2. 快速登入：後續登入時直接使用已儲存的登入資訊，辨識驗證碼並完成登入；3. 清除資訊：在驗證碼欄輸入 `remove` 後執行，即可刪除已保存的登入資訊。 | 通用 | Portal 登入頁面（Login.aspx） | [raw](https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/bookmarklets/login-express.js) |
 
 ### 安裝方式
 

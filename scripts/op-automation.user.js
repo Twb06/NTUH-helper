@@ -1,14 +1,19 @@
 // ==UserScript==
 // @name         NTUH 手術排程自動化
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.2.0
+// @version      1.2.1
 // @description  批次執行術前評估、當日評估、同意書綁定，支援依主治醫師或手術房依序查詢執行
 // @author       YT
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/SimpleQueryOpSchedule_New.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/SimpleQueryOpSchedule_New.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/PreOperativeAssessment_New.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/PreOperativeAssessment_New.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DayOperativeAssessment.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/DayOperativeAssessment.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentBinding.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentBinding.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentFormManagement.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/OPManagement/ConsentFormManagement.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/op-automation.user.js
 // @grant        none

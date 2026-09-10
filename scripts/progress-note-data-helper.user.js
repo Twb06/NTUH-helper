@@ -5,11 +5,17 @@
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @grant        GM_openInTab
@@ -45,16 +51,24 @@
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+    // HIS 頁的 date.js 把 Date.now 覆寫成回傳 Date 物件（非數字）。做減法時靠隱式
+    // valueOf 還能僥倖過關，但一旦 JSON.stringify（SESSION 快取的 savedAt）就會變成
+    // ISO 字串，讀回來相減得 NaN、快取永遠失效。取毫秒一律走這個安全版。
+    function nowMs() { return new Date().getTime(); }
+
+    // 院區網域：總院 ihisaw / 新竹分院 hchihisaw。一律取當前頁面 origin，跨院區自動對應。
+    const HIS_ORIGIN = location.origin;
+
     // ─────────────────────────────────────────────
     // fetch 來源的「點標題跳轉」網址（tab 來源直接用 buildUrl 去 token；fetch 來源沒有頁，另給）
     // 皆為 function 宣告（hoist），供下方 SOURCES 物件字面量引用
     // ─────────────────────────────────────────────
     function vitalsNavUrl(p) {
-        return 'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/VitalSign_TPR.aspx'
+        return HIS_ORIGIN + '/WebApplication/InPatient/Nursing/VitalSign_TPR.aspx'
             + `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}`;
     }
     function pacsNavUrl(p) {
-        return 'https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
+        return HIS_ORIGIN + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
             + `?PersonID=${p.PersonID}&Seed=${p.Seed || ''}`;
     }
 
@@ -75,7 +89,7 @@
             label: '[Tubes]',
             match: (u) => /\/Nursing\/CatheterCare\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Nursing/CatheterCare.aspx' +
                 `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}&PatClass=${p.PatClass || 'I'}` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
             extract: extractCatheter,
@@ -84,7 +98,7 @@
             label: '[Consult]',
             match: (u) => /\/Ward\/NotifyOtherDoctor\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -94,7 +108,7 @@
             label: '[Diet]',
             match: (u) => /\/Ward\/DoctorDietMain\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/DoctorDietMain.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -104,7 +118,7 @@
             label: '[Handover]',
             match: (u) => /\/Ward\/OffDutyNurV2\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/OffDutyNurV2.aspx' +
                 `?SESSION=${p.SESSION}&InQuerySortMode=QByEmp&AccountIDSE=${p.AccountIDSE}&Type=Nur` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
             extract: extractHandover,
@@ -113,7 +127,7 @@
             label: '[Nursing]',
             match: (u) => /\/Nursing\/NursingProgressNote\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Nursing/NursingProgressNote.aspx' +
                 `?SESSION=${p.SESSION}&AccountIDSE=${p.AccountIDSE}` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
             prepare: prepareNursing,
@@ -141,7 +155,7 @@
             label: '[Abx]',
             match: () => false, // Chart.aspx 由 chart-medication 處理，data-helper 不 @match
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/MedicationHistory/Chart.aspx' +
+                HIS_ORIGIN + '/WebApplication/OtherIndependentProj/MedicationHistory/Chart.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -151,7 +165,7 @@
             label: '[Rx]',
             match: () => false, // MedicationV2.aspx 由 prescription-viewer 處理
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/MedicationV2.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/MedicationV2.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -166,7 +180,7 @@
             label: '[Lab]',
             match: () => false, // MedicalReportContent.aspx 由 lab-summary 處理
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx' +
+                HIS_ORIGIN + '/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&WardCode=${p.WardCode}&ChartNo=${p.ChartNo}` +
                 `&HospitalCode=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&IntervalDay=${LAB_INTERVAL_DAY}` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -416,7 +430,7 @@
     function saveSession(session) {
         if (!session) return;
         const payload = JSON.stringify({
-            origin: window.location.origin, session, savedAt: Date.now(),
+            origin: window.location.origin, session, savedAt: nowMs(),
         });
         if (typeof GM_setValue !== 'undefined') {
             try {
@@ -439,7 +453,7 @@
         try {
             const o = JSON.parse(raw || 'null');
             if (o && o.origin === window.location.origin && typeof o.session === 'string'
-                && Date.now() - o.savedAt < SESSION_TTL_MS) return o.session;
+                && nowMs() - o.savedAt < SESSION_TTL_MS) return o.session;
         } catch (e) { /* noop */ }
         return '';
     }
@@ -651,10 +665,10 @@
             // prepare：抓取前的一次性動作（如點「顯示紀錄」）
             if (typeof src.prepare === 'function') { try { src.prepare(); } catch (e) { console.warn(LOG, 'prepare 失敗', e); } }
             // 輪詢 extract：資料（timeline/table）為 async 載入，回 null 代表尚未就緒
-            const t0 = Date.now();
+            const t0 = nowMs();
             const TIMEOUT = 15000;
             let text = null;
-            while (Date.now() - t0 < TIMEOUT) {
+            while (nowMs() - t0 < TIMEOUT) {
                 text = src.extract();
                 if (text !== null) break;
                 await sleep(500);
@@ -723,8 +737,8 @@
         console.log(LOG, '重試背景頁', key, token);
         deleteSharedData('ntuh_data_' + token);
         openTab(src.buildUrl(params, token));
-        const start = Date.now();
-        while (Date.now() - start < 20000) {
+        const start = nowMs();
+        while (nowMs() - start < 20000) {
             const raw = getSharedData('ntuh_data_' + token);
             if (raw) {
                 deleteSharedData('ntuh_data_' + token);
@@ -785,7 +799,7 @@
 
         const pollPromise = new Promise((resolve) => {
             if (!tasks.length) return resolve();
-            const startTime = Date.now();
+            const startTime = nowMs();
             const TIMEOUT = 30000; // 藥歷圖 worker 需 postback reload、lab 重頁背景節流（其自身 20s 逾時），給足時間
             const poll = setInterval(() => {
                 for (const t of tasks) {
@@ -802,8 +816,8 @@
                 // 只剩 lab 沒回時提早收尾（12s），好早點觸發 lab 重試，不必空等到 30s
                 const onlyLabLeft = tabKeys.includes('lab') && !results['lab']
                     && tasks.filter((t) => t.key !== 'lab').every((t) => results[t.key]);
-                if (tasks.every((t) => results[t.key]) || Date.now() - startTime > TIMEOUT
-                    || (onlyLabLeft && Date.now() - startTime > 12000)) {
+                if (tasks.every((t) => results[t.key]) || nowMs() - startTime > TIMEOUT
+                    || (onlyLabLeft && nowMs() - startTime > 12000)) {
                     clearInterval(poll);
                     for (const t of tasks) {
                         if (!results[t.key]) results[t.key] = { label: t.src.label, ok: false, error: '逾時' };
