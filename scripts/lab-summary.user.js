@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.1
+// @version      0.5.2
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -333,6 +333,19 @@
         'Reference Comment',
     ];
 
+    // 「整列名稱剛好等於」才濾掉的項目。SKIP_KEYWORDS 是子字串比對，
+    // 像 'Others' 這種通用字放進去會誤殺任何含該字的項目名，故獨立一組精確比對。
+    //   Others / Auto DC：新竹 LU 科室 CBC 的末列，只是註記「這份 DC 由儀器自動判讀」，
+    //   不是檢驗值，會多佔一個欄位。
+    const SKIP_EXACT = new Set(['Others']);
+
+    function shouldSkipRow(rawName) {
+        const n = String(rawName || '').trim();
+        if (!n) return true;
+        if (SKIP_EXACT.has(n)) return true;
+        return SKIP_KEYWORDS.some((kw) => n.indexOf(kw) > -1);
+    }
+
     const GENUS_ABBR = [
         'Enterococcus', 'Staphylococcus', 'Streptococcus', 'Klebsiella',
         'Pseudomonas', 'Escherichia', 'Acinetobacter', 'Stenotrophomonas',
@@ -596,7 +609,7 @@
                     const rawName = (cells[0].textContent || '').trim();
                     const rawVal = (cells[1].textContent || '').trim();
                     if (!rawName || !rawVal) return;
-                    if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) return;
+                    if (shouldSkipRow(rawName)) return;
                     const cleanName = parseGreenItemName(rawName);
                     if (AGAS_SKIP.includes(cleanName) || IGNORE.includes(cleanName)) return;
                     const gasName = GAS_NAME_MAP[rawName] || GAS_NAME_MAP[cleanName] || cleanName;
@@ -618,7 +631,7 @@
 
                 if (!rawName || !rawVal) return;
                 if (/^\d{2}:\d{2}/.test(rawName)) return;
-                if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) return;
+                if (shouldSkipRow(rawName)) return;
 
                 const cleanName = parseGreenItemName(rawName);
 
@@ -1016,7 +1029,7 @@
                     if (!rawName) continue;
 
                     if (/^\d{2}:\d{2}/.test(rawName)) continue;
-                    if (SKIP_KEYWORDS.some(kw => rawName.indexOf(kw) > -1)) continue;
+                    if (shouldSkipRow(rawName)) continue;
 
                     const cleanName = parseGreenItemName(rawName);
                     if (IGNORE.includes(cleanName)) continue;
