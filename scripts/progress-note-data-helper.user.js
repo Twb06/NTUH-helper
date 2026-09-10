@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.0.0
+// @version      1.0.1
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -360,13 +360,19 @@
         return '';
     }
 
-    // 病歷號：NTUH 為 7–8 碼數字。純數字直接收；文字區塊只收有標籤的形式，避免撈到日期
+    // 病歷號格式**依院區而異**：總院為 6–10 碼純數字；新竹分院帶英文前綴（如 HB14397）。
+    // 別把總院格式當成 NTUH 格式——原本寫死 /^\d{6,10}$/，在新竹會把六層解析鏈撈到的
+    // 正確值全部擋掉，然後回報「缺少 ChartNo」。前綴放寬到 0–3 碼英文。
+    // 仍保留「不含分隔符」的限制，避免把 2026/07/29 這種日期當病歷號收進來；
+    // 有英文前綴時數字段收緊到 4–8 碼，讓身分證形狀（1 碼英文 + 9 碼數字）落在範圍外。
+    const CHART_NO_RE = /^(?:\d{6,10}|[A-Za-z]{1,3}\d{4,8})$/;
     function pickChartNo(raw, loose = false) {
         const s = String(raw || '').trim();
         if (!s) return '';
-        if (/^\d{6,10}$/.test(s)) return s;
+        if (CHART_NO_RE.test(s)) return s;
         if (!loose) return '';
-        return s.replace(/\s+/g, ' ').match(/(?:病歷號|病歷|ChartNo)[:：\s]*(\d{6,10})/i)?.[1] || '';
+        return s.replace(/\s+/g, ' ')
+            .match(/(?:病歷號|病歷|ChartNo)[:：\s]*(\d{6,10}|[A-Za-z]{1,3}\d{4,8})/i)?.[1] || '';
     }
 
     // 檢驗報告頁的分頁 holder，其 name/param 形如 LabReport_{chartNo}_{accountIdSe}
