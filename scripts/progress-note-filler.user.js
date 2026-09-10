@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.53
+// @version      1.54
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -724,6 +724,27 @@ After the admission, the patient was in stable condition, the physical examinati
                 flex: 0 0 auto;
             }
             .ntuh-blk-copy:hover { color: #2c5f54; background: #e3ecd9; }
+            /* Lab 區塊的排版切換（趨勢/表格 · 緊湊/寬鬆），沿用 lab-summary 的兩組偏好 */
+            .ntuh-blk-seg {
+                display: flex;
+                gap: 2px;
+                margin: -3px 6px -3px auto;
+                flex: 0 0 auto;
+            }
+            .ntuh-blk-seg + .ntuh-blk-seg { margin-left: 4px; }
+            .ntuh-blk-seg button {
+                background: rgba(255,255,255,.10);
+                border: none;
+                color: #cfe0d6;
+                font-size: 11px;
+                line-height: 1;
+                padding: 4px 7px;
+                border-radius: 5px;
+                cursor: pointer;
+                font-family: inherit;
+            }
+            .ntuh-blk-seg button:hover { background: rgba(255,255,255,.22); }
+            .ntuh-blk-seg button.on { background: #e3ecd9; color: #2c5f54; font-weight: 700; }
             .ntuh-blk-body {
                 margin: 0;
                 padding: 8px 10px;
@@ -1266,8 +1287,10 @@ After the admission, the patient was in stable condition, the physical examinati
             g.keys.forEach((k) => {
                 const r = byKey[k];
                 const label = KEY_LABELS[k] || k;
-                const text = !r ? '尚未抓取'
-                    : (r.ok ? (r.text || '（無資料）') : ('抓取失敗：' + r.error));
+                // Lab 有四種排版版本時，依偏好挑一個；其餘來源照舊用 r.text
+                const variantText = k === 'lab' ? labVariantText(r) : null;
+                let text = !r ? '尚未抓取'
+                    : (r.ok ? (variantText || r.text || '（無資料）') : ('抓取失敗：' + r.error));
 
                 const card = document.createElement('div');
                 card.className = 'ntuh-blk';
@@ -1286,6 +1309,44 @@ After the admission, the patient was in stable condition, the physical examinati
                 copy.textContent = '⧉';
                 copy.title = '複製這段';
                 head.appendChild(title);
+
+                // Lab 排版切換：只在真的拿到多版本時才畫（舊版 lab-summary 沒有 variants）
+                if (k === 'lab' && r && r.ok && r.variants) {
+                    const seg = (prefKey, options, getCur) => {
+                        const box = document.createElement('span');
+                        box.className = 'ntuh-blk-seg';
+                        box.onclick = (ev) => ev.stopPropagation();   // 別觸發標題列的收合
+                        options.forEach(([val, lbl]) => {
+                            const b = document.createElement('button');
+                            b.type = 'button';
+                            b.textContent = lbl;
+                            b.dataset.val = val;
+                            if (getCur() === val) b.classList.add('on');
+                            b.onclick = () => {
+                                setLabPref(prefKey, val);
+                                renderLabVariant();
+                            };
+                            box.appendChild(b);
+                        });
+                        return box;
+                    };
+                    const viewSeg = seg(LAB_VIEW_KEY, LAB_VIEWS, getLabView);
+                    const spaceSeg = seg(LAB_OUTPUT_KEY, LAB_SPACINGS, getLabSpacing);
+                    head.appendChild(viewSeg);
+                    head.appendChild(spaceSeg);
+
+                    // 切換後：重畫內容、更新按鈕高亮，並讓「複製」跟著拿到新內容
+                    var renderLabVariant = () => {
+                        text = labVariantText(r) || r.text || '（無資料）';
+                        body.textContent = text;
+                        [[viewSeg, getLabView], [spaceSeg, getLabSpacing]].forEach(([box, cur]) => {
+                            box.querySelectorAll('button').forEach((b) => {
+                                b.classList.toggle('on', b.dataset.val === cur());
+                            });
+                        });
+                    };
+                }
+
                 head.appendChild(copy);
 
                 const body = document.createElement('pre');
@@ -1310,6 +1371,32 @@ After the admission, the patient was in stable condition, the physical examinati
                 wrap.appendChild(card);
             });
         });
+    }
+
+    // ── Lab 排版切換 ────────────────────────────────────────────
+    // key 與 lab-summary 完全相同：兩支腳本跑在同一個 origin，共用同一份偏好，
+    // 在這裡切換，下次直接開檢驗報告頁也會是同一個排版。
+    const LAB_VIEW_KEY = 'ntuh_lab_view_mode';
+    const LAB_OUTPUT_KEY = 'ntuh_lab_output_spacing';
+    const LAB_VIEWS = [['trend', '趨勢'], ['table', '表格']];
+    const LAB_SPACINGS = [['compact', '緊湊'], ['spacious', '寬鬆']];
+
+    function labPref(key, allowed, dflt) {
+        try {
+            const v = localStorage.getItem(key);
+            return allowed.includes(v) ? v : dflt;
+        } catch (e) { return dflt; }
+    }
+    const getLabView = () => labPref(LAB_VIEW_KEY, ['trend', 'table'], 'table');
+    const getLabSpacing = () => labPref(LAB_OUTPUT_KEY, ['compact', 'spacious'], 'spacious');
+    const setLabPref = (key, v) => { try { localStorage.setItem(key, v); } catch (e) { /* noop */ } };
+
+    // 依目前偏好取出對應版本；該組合沒算出東西時退回 r.text，不要開出空白框
+    function labVariantText(r) {
+        const v = r && r.variants;
+        if (!v) return null;
+        return v[getLabView() + '_' + getLabSpacing()]
+            || v[getLabView() + '_spacious'] || v[getLabView() + '_compact'] || null;
     }
 
     // 抓 primary note，回傳內容（無則回 null）。狀態統一由 setStatus（上方狀態框）呈現

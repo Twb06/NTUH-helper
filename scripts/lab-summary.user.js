@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.4
+// @version      0.5.5
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -53,7 +53,18 @@
     function setViewPref(v) {
         try { localStorage.setItem(VIEW_KEY, v); } catch (e) { /* noop */ }
     }
+    // 背景 worker 要一次算出四種組合（趨勢/表格 × 緊湊/寬鬆）給 progress-note-filler
+    // 即時切換用。疏密是在各 format 函式內部讀 getOutputPref()，所以用一個暫時覆寫值
+    // 包起來，而不是把 spacing 一路傳參數穿過整條格式化鏈。
+    let outputOverride = null;
+    function withOutputPref(v, fn) {
+        const prev = outputOverride;
+        outputOverride = v;
+        try { return fn(); } finally { outputOverride = prev; }
+    }
+
     function getOutputPref() {
+        if (outputOverride) return outputOverride;
         try {
             return localStorage.getItem(OUTPUT_KEY) === OUTPUT_COMPACT ? OUTPUT_COMPACT : OUTPUT_SPACIOUS;
         } catch (e) {
@@ -1518,7 +1529,22 @@
             let res = null;
             const reportDoc = getReportDocument();
             try { if (reportDoc) res = computeReport(getViewPref(), reportDoc); } catch (e) { /* 尚未就緒 */ }
-            if (res) { clearInterval(iv); done({ ok: true, text: res }); return; }
+            if (res) {
+                clearInterval(iv);
+                // 四種呈現組合一次算完隨結果帶走：filler 端切換排版就不必重開背景分頁。
+                // key 格式 `${view}_${spacing}`，與 filler 的 LAB_VARIANT_KEY 對應。
+                const variants = {};
+                for (const view of [VIEW_TREND, VIEW_TABLE]) {
+                    for (const sp of [OUTPUT_COMPACT, OUTPUT_SPACIOUS]) {
+                        try {
+                            const t = withOutputPref(sp, () => computeReport(view, reportDoc));
+                            if (t) variants[view + '_' + sp] = t;
+                        } catch (e) { /* 單一組合失敗不影響其他組合 */ }
+                    }
+                }
+                done({ ok: true, text: res, variants });
+                return;
+            }
             // 防呆：頁面就緒（view-mode radio 出現）但 computeReport 仍無資料 → 回「無檢驗資料」，避免空等逾時。
             // 就緒後給 8s 寬限（背景分頁被瀏覽器節流時，DetailedSheet 表格 render 可能 >3s，太短會誤判空）；最終 20s 也回無資料訊息而非 error。
             const pageReady = !!reportDoc?.querySelector('input[type="radio"][id*="LabRangeSlider1_rbn"]');
