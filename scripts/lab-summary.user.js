@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.0
+// @version      0.5.1
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -177,6 +177,8 @@
         'T-BIL': 'T-Bil', 'D-BIL': 'D-Bil',
         'AST': 'AST', 'ALT': 'ALT', 'ALP': 'ALP',
         'UN': 'BUN', 'BUN': 'BUN', 'CRE': 'CRE', 'UA': 'UA',
+        // LU 科室（新竹）用英文全名，非中文問題，需列舉
+        'Creatinine': 'CRE', 'Uric Acid': 'UA', 'RDW-CV': 'RDW', 'RDW': 'RDW',
         'Na': 'Na', 'K': 'K', 'Mg': 'Mg', 'Ca': 'Ca', 'P': 'P', 'Cl': 'Cl',
         'CRP': 'CRP', 'hsCRP': 'CRP',
         'Procalcitonin': 'PCT',
@@ -352,13 +354,43 @@
 
     // ====== 工具函式 ======
 
+    // 新竹分院 LU 科室的項目名是中英混寫，且**空格有無不一致**：
+    //   「BUN 血中尿素氮」「Creatinine肌酸酐」「Na 鈉」「MCV平均血球體積」
+    // 中文若原樣流下去會把表格欄寬撐爆。用通則砍掉中文，而不是逐條列舉——
+    // 分院會一直冒出新的混寫，列舉漏掉時是**靜默**的（沒有錯誤，只是排版壞掉）。
+    const CJK_RE = /[\u2E80-\u2FDF\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+/g;
+    function stripCJK(s) {
+        return String(s || '').replace(CJK_RE, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // 查表鍵：去括號 → 去中文 → 去標點空白 → 小寫。
+    // 讓「Aty. lymphocyte」對得到 NAME_MAP 裡的「Aty.Lymphocyte」這種
+    // 只差空格/大小寫的寫法，不必為每個變體各列一條。
+    function nameKey(s) {
+        return stripCJK(String(s || '').replace(/\(.*?\)/g, ' '))
+            .replace(/[\s.\-_]/g, '').toLowerCase();
+    }
+    const NAME_MAP_BY_KEY = (() => {
+        const idx = {};
+        for (const [k, v] of Object.entries(NAME_MAP)) {
+            const kk = nameKey(k);
+            if (kk && !(kk in idx)) idx[kk] = v;   // 先定義者優先，維持原表順序語意
+        }
+        return idx;
+    })();
+
     function normalizeName(raw) {
         // WB 科室寫成 eGFR(MDRD)（沒空格），舊版只比對有空格的字串，
         // 結果 MDRD 值先卡位、CKD-EPI 就被丟掉了
         if (/eGFR\s*\(MDRD\)/i.test(raw)) return '__SKIP__';
         if (/eGFR\s*\(CKD-EPI\)/i.test(raw)) return 'eGFR';
         const clean = raw.replace(/\(.*?\)/g, '').trim();
-        return NAME_MAP[raw] || NAME_MAP[clean] || clean;
+        if (NAME_MAP[raw]) return NAME_MAP[raw];
+        if (NAME_MAP[clean]) return NAME_MAP[clean];
+        const byKey = NAME_MAP_BY_KEY[nameKey(raw)];
+        if (byKey) return byKey;
+        // 表裡沒有對應時，至少要把中文拿掉再顯示，別讓中英混寫撐爆欄寬
+        return stripCJK(clean) || clean;
     }
 
     function parseGreenItemName(raw) {
