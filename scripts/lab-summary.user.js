@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.5
+// @version      0.5.6
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -507,10 +507,37 @@
         return '';
     }
 
-    function pushToStore(store, name, idx, val) {
+    // 每個值的單位與參考範圍。判讀模式要靠它算正常/偏高/偏低，但趨勢與表格
+    // 兩種呈現完全用不到——所以**不改 store 的值形狀**（仍是字串），而是掛一份
+    // 平行的 meta，既有格式化程式碼一行都不必動。
+    // 結構：STORE_META.get(store)[name][idx] = { unit, ref }
+    const STORE_META = new WeakMap();
+    function setStoreMeta(store, name, idx, meta) {
+        if (!meta || (!meta.unit && !meta.ref)) return;
+        let m = STORE_META.get(store);
+        if (!m) { m = {}; STORE_META.set(store, m); }
+        if (!m[name]) m[name] = [];
+        m[name][idx] = meta;
+    }
+    function getStoreMeta(store, name, idx) {
+        return STORE_META.get(store)?.[name]?.[idx] || null;
+    }
+
+    // 從一列的 td 取單位（cells[2]）與參考值（cells[3]）
+    function rowMeta(cells) {
+        return {
+            unit: cells[2] ? (cells[2].textContent || '').replace(/\s+/g, ' ').trim() : '',
+            ref: cells[3] ? (cells[3].textContent || '').replace(/\s+/g, ' ').trim() : '',
+        };
+    }
+
+    function pushToStore(store, name, idx, val, meta) {
         if (!store[name]) store[name] = [];
         while (store[name].length <= idx) store[name].push('');
-        if (!store[name][idx]) store[name][idx] = val;
+        if (!store[name][idx]) {
+            store[name][idx] = val;
+            setStoreMeta(store, name, idx, meta);   // 與值同進退：先到先贏的那一筆才記 meta
+        }
     }
 
     function padData(dataMap, len) {
@@ -662,7 +689,7 @@
                     const cleanName = parseGreenItemName(rawName);
                     if (AGAS_SKIP.includes(cleanName) || IGNORE.includes(cleanName)) return;
                     const gasName = lookupName(rawName, cleanName, GAS_NAME_MAP, GAS_MAP_BY_KEY);
-                    pushToStore(aGasData, gasName, gDateIdx, cleanGreenValue(rawVal));
+                    pushToStore(aGasData, gasName, gDateIdx, cleanGreenValue(rawVal), rowMeta(cells));
                 });
                 return;
             }
@@ -689,7 +716,7 @@
                     const csfName = lookupName(rawName, cleanName, CSF_NAME_MAP, CSF_MAP_BY_KEY);
                     if (!csfName) return;
                     if (!csfDates.includes(collectDate)) csfDates.push(collectDate);
-                    pushToStore(csfData, csfName, csfDates.indexOf(collectDate), cleanGreenValue(rawVal));
+                    pushToStore(csfData, csfName, csfDates.indexOf(collectDate), cleanGreenValue(rawVal), rowMeta(cells));
                     return;
                 }
 
@@ -759,7 +786,7 @@
                     if (AGAS_SKIP.includes(cleanName)) return;
                     const gasName = lookupName(rawName, cleanName, GAS_NAME_MAP, GAS_MAP_BY_KEY);
                     if (!vGasDates.includes(collectDate)) vGasDates.push(collectDate);
-                    pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val);
+                    pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val, rowMeta(cells));
                     return;
                 }
 
@@ -769,7 +796,7 @@
                     const uName = normalizeUrineName(rawName, cleanName);
                     if (!uName) return;
                     if (!urineDates.includes(collectDate)) urineDates.push(collectDate);
-                    pushToStore(urineData, uName, urineDates.indexOf(collectDate), abbrValue(val));
+                    pushToStore(urineData, uName, urineDates.indexOf(collectDate), abbrValue(val), rowMeta(cells));
                     return;
                 }
 
@@ -777,7 +804,7 @@
                     const sName = lookupName(rawName, cleanName, STOOL_NAME_MAP, STOOL_MAP_BY_KEY);
                     if (!sName) return;
                     if (!stoolDates.includes(collectDate)) stoolDates.push(collectDate);
-                    pushToStore(stoolData, sName, stoolDates.indexOf(collectDate), abbrValue(val));
+                    pushToStore(stoolData, sName, stoolDates.indexOf(collectDate), abbrValue(val), rowMeta(cells));
                     return;
                 }
 
@@ -793,7 +820,7 @@
                     if (!fluidGroups[gName]) fluidGroups[gName] = { dates: [], data: {} };
                     const g = fluidGroups[gName];
                     if (!g.dates.includes(collectDate)) g.dates.push(collectDate);
-                    pushToStore(g.data, fName, g.dates.indexOf(collectDate), abbrValue(val));
+                    pushToStore(g.data, fName, g.dates.indexOf(collectDate), abbrValue(val), rowMeta(cells));
                     return;
                 }
 
@@ -803,7 +830,7 @@
                 if (GAS_ITEM_NAMES.includes(rawName) || GAS_ITEM_NAMES.includes(cleanName)) {
                     const gasName = lookupName(rawName, cleanName, GAS_NAME_MAP, GAS_MAP_BY_KEY);
                     if (!vGasDates.includes(collectDate)) vGasDates.push(collectDate);
-                    pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val);
+                    pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val, rowMeta(cells));
                     return;
                 }
 
@@ -815,7 +842,7 @@
                 const isG2 = RARE_DIFF.includes(nm);
                 if (isG2 && (parseFloat(val) === 0 || !val)) return;
 
-                pushToStore(trendData, nm, dateIdx, abbrValue(val));
+                pushToStore(trendData, nm, dateIdx, abbrValue(val), rowMeta(cells));
             });
         });
 
@@ -841,7 +868,8 @@
                     if (gap <= 90 && gap < bestGap) { best = k; bestGap = gap; }
                 });
                 if (!best) { best = dt; vGasDates.push(best); }
-                pushToStore(vGasData, 'LA', vGasDates.indexOf(best), v);
+                // 值是從 trendData 搬過來的，meta 也要跟著搬，否則判讀模式會看不到 LA 的參考值
+                pushToStore(vGasData, 'LA', vGasDates.indexOf(best), v, getStoreMeta(trendData, 'LA', i));
             });
             delete trendData.LA;
         }
@@ -1457,6 +1485,8 @@
                     const nm = normalizeName(rawItemName);
                     if (nm === '__SKIP__') continue;
 
+                    // 綠單趨勢版的表格是「一列一項目、各欄為日期」，沒有單位/參考值欄，
+                    // 拿不到 meta → 這種頁面不支援判讀模式（UI 會退回趨勢/表格）
                     pushToStore(data, nm, dateIdx, val);
                 }
             }
