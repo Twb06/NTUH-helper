@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.52
+// @version      1.53
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
 // @grant        none

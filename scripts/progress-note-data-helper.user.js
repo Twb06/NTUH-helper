@@ -1,15 +1,21 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.9.9
+// @version      0.9.10
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @grant        GM_openInTab
@@ -45,16 +51,19 @@
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+    // 院區網域：總院 ihisaw / 新竹分院 hchihisaw。一律取當前頁面 origin，跨院區自動對應。
+    const HIS_ORIGIN = location.origin;
+
     // ─────────────────────────────────────────────
     // fetch 來源的「點標題跳轉」網址（tab 來源直接用 buildUrl 去 token；fetch 來源沒有頁，另給）
     // 皆為 function 宣告（hoist），供下方 SOURCES 物件字面量引用
     // ─────────────────────────────────────────────
     function vitalsNavUrl(p) {
-        return 'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/VitalSign_TPR.aspx'
+        return HIS_ORIGIN + '/WebApplication/InPatient/Nursing/VitalSign_TPR.aspx'
             + `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}`;
     }
     function pacsNavUrl(p) {
-        return 'https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
+        return HIS_ORIGIN + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
             + `?PersonID=${p.PersonID}&Seed=${p.Seed || ''}`;
     }
 
@@ -70,7 +79,7 @@
             label: '[Tubes]',
             match: (u) => /\/Nursing\/CatheterCare\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Nursing/CatheterCare.aspx' +
                 `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}&PatClass=${p.PatClass || 'I'}` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
             extract: extractCatheter,
@@ -79,7 +88,7 @@
             label: '[Consult]',
             match: (u) => /\/Ward\/NotifyOtherDoctor\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -89,7 +98,7 @@
             label: '[Diet]',
             match: (u) => /\/Ward\/DoctorDietMain\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/DoctorDietMain.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -99,7 +108,7 @@
             label: '[Handover]',
             match: (u) => /\/Ward\/OffDutyNurV2\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/OffDutyNurV2.aspx' +
                 `?SESSION=${p.SESSION}&InQuerySortMode=QByEmp&AccountIDSE=${p.AccountIDSE}&Type=Nur` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
             extract: extractHandover,
@@ -108,7 +117,7 @@
             label: '[Nursing]',
             match: (u) => /\/Nursing\/NursingProgressNote\.aspx/i.test(u),
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Nursing/NursingProgressNote.aspx' +
                 `?SESSION=${p.SESSION}&AccountIDSE=${p.AccountIDSE}` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
             prepare: prepareNursing,
@@ -136,7 +145,7 @@
             label: '[Abx]',
             match: () => false, // Chart.aspx 由 chart-medication 處理，data-helper 不 @match
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/MedicationHistory/Chart.aspx' +
+                HIS_ORIGIN + '/WebApplication/OtherIndependentProj/MedicationHistory/Chart.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -146,7 +155,7 @@
             label: '[Rx]',
             match: () => false, // MedicationV2.aspx 由 prescription-viewer 處理
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/MedicationV2.aspx' +
+                HIS_ORIGIN + '/WebApplication/InPatient/Ward/MedicationV2.aspx' +
                 `?SESSION=${p.SESSION}&PatClass=${p.PatClass || 'I'}&AccountIDSE=${p.AccountIDSE}` +
                 `&PersonID=${p.PersonID}&Hosp=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&EMRPop=Y` +
                 `&ntuh_token=${encodeURIComponent(token)}`,
@@ -157,7 +166,7 @@
             label: '[Lab]',
             match: () => false, // MedicalReportContent.aspx 由 lab-summary 處理
             buildUrl: (p, token) =>
-                'https://ihisaw.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx' +
+                HIS_ORIGIN + '/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx' +
                 `?PatClass=${p.PatClass || 'I'}&WardCode=${p.WardCode}&ChartNo=${p.ChartNo}` +
                 `&HospitalCode=${p.Hosp || 'T0'}&Seed=${p.Seed || ''}&IntervalDay=-1` +
                 `&ntuh_token=${encodeURIComponent(token)}`,

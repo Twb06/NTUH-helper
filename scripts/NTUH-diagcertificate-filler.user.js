@@ -1,12 +1,15 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      2.1.0
+// @version      2.1.1
 // @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 2.1.0：新增「自費」項目（多筆+可編輯常用項目快選）＋「常用字串」一鍵接入醫師囑言（可編輯）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
+// @match        https://hchhisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/ConfirmDiagnosisOrder*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/NTUH-diagcertificate-filler.user.js
 // @grant        GM_openInTab
@@ -17,6 +20,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getResourceText
 // @connect      ihisaw.ntuh.gov.tw
+// @connect      hchihisaw.ntuh.gov.tw
+// @connect      hchhisaw.ntuh.gov.tw
 // @connect      github.com
 // @connect      raw.githubusercontent.com
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/vendor/pdf.min.js
@@ -25,6 +30,12 @@
 
 (function () {
     'use strict';
+
+    // 院區判定：新竹分院網域一律以 hch 開頭（門診 hchhisaw / 住院 hchihisaw），
+    // 總院為 hisaw / ihisaw。本腳本跑在門診診斷書頁，卻要開住院頁抓同意書，
+    // 故不能直接用 location.origin，需依院區對應到住院系統網域。
+    const IS_HSINCHU = /^hch/i.test(location.hostname);
+    const INPATIENT_ORIGIN = IS_HSINCHU ? 'https://hchihisaw.ntuh.gov.tw' : 'https://ihisaw.ntuh.gov.tw';
 
     let detectedOpList = [];
 
@@ -545,7 +556,7 @@
                 const isProcedure = title.includes('術') || title.includes('檢查') ||
                                     /\b(surgery|surgical|operation|procedure|examination|exam)\b/i.test(title);
                 if (isConsent && isProcedure && !CONSENT_EXCLUDE.test(title)) {
-                    const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder.aspx` +
+                    const targetUrl = INPATIENT_ORIGIN + `/WebApplication/OtherIndependentProj/PatientBasicInfoEdit/SimpleInfoShowUsingPlaceHolder.aspx` +
                                       `?SESSION=${session}&Func=EMRRecordSeries&EMRIDSE=${emrIdse}&EMRRecord=${emrCode}&AllowPrint=Y`;
 
                     consentList.push({
@@ -653,7 +664,7 @@
             console.log("[DiagFiller] 偵測到診斷書頁面，啟動填入與連動模組...");
             // 同意書 PDF 回傳的接收端：postMessage（有 opener 時）＋ GM 值變更（跨分頁）
             window.addEventListener('message', function(event) {
-                if (event.origin !== 'https://ihisaw.ntuh.gov.tw') return;
+                if (event.origin !== INPATIENT_ORIGIN) return;
                 handleConsentMessage(event.data);
             });
             if (typeof GM_addValueChangeListener === 'function') {
@@ -683,7 +694,8 @@
                 const eqPos = cookie.indexOf('=');
                 const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
                 if (name.includes('ntuh_')) {
-                    const domains = ['.ntuh.gov.tw', 'hisaw.ntuh.gov.tw', 'ihisaw.ntuh.gov.tw', ''];
+                    const domains = ['.ntuh.gov.tw', 'hisaw.ntuh.gov.tw', 'ihisaw.ntuh.gov.tw',
+                                     'hchhisaw.ntuh.gov.tw', 'hchihisaw.ntuh.gov.tw', ''];
                     const paths = ['/', '/WebApplication'];
                     for (let d of domains) {
                         for (let p of paths) {
@@ -1707,7 +1719,7 @@
                 setDiagStatus('✗ 同意書背景讀取逾時。請確認背景分頁已登入。', 'err');
             }, timeoutMs);
 
-            const targetUrl = `https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx` +
+            const targetUrl = INPATIENT_ORIGIN + `/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx` +
                               `?SESSION=${session}&PatClass=I&AccountIDSE=${accountId}&PersonID=${personId}&Hosp=T0` +
                               `&ntuh_token=${token}` +
                               `&ntuh_op_date=${encodeURIComponent(opDateVal)}` +
@@ -1912,7 +1924,7 @@
             const hosp = params.get('Hosp') || 'T0';
             const seed = params.get('Seed') || '';
             if (!session) { alert('無法取得 SESSION'); return; }
-            const url = `http://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}&PatClass=${patClass}&AccountIDSE=${accountIdse}&PersonID=${personId}&Hosp=${hosp}&Seed=${seed}`;
+            const url = INPATIENT_ORIGIN + `/WebApplication/InPatient/Ward/PatientConsentOrderEntry.aspx?SESSION=${session}&PatClass=${patClass}&AccountIDSE=${accountIdse}&PersonID=${personId}&Hosp=${hosp}&Seed=${seed}`;
             window.open(url, '_blank');
         };
 

@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         NTUH 掛0%績效工具 v1.4.2
 // @namespace    ntuh-zero
-// @version      1.4.2
+// @version      1.4.3
 // @description  一鍵把指定員編以0%掛進當前病人的R角色:讀現有R→設人數(VS0/成本0/R現有+1)→照抄舊R+自己0%→刪舊R→新增。狀態機跨postback接力。不切換病人。
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
+// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js
 // @run-at       document-idle
