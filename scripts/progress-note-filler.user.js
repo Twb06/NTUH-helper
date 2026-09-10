@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.55
+// @version      1.56
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -756,6 +756,8 @@ After the admission, the patient was in stable condition, the physical examinati
             .ntuh-blk-seg button:first-child { border-left: none; }
             .ntuh-blk-seg button:hover { background: rgba(255,255,255,.18); }
             .ntuh-blk-seg button.on { background: #e3ecd9; color: #23503f; font-weight: 700; }
+            .ntuh-blk-seg button.off { color: rgba(230,240,232,.35); cursor: not-allowed; }
+            .ntuh-blk-seg button.off:hover { background: transparent; }
             /* 滑鼠點擊不要留下瀏覽器預設的藍框，只有鍵盤操作才顯示焦點 */
             .ntuh-blk-seg button:focus { outline: none; }
             .ntuh-blk-seg button:focus-visible { outline: 2px solid #cfe0d6; outline-offset: -2px; }
@@ -1335,8 +1337,14 @@ After the admission, the patient was in stable condition, the physical examinati
                             b.type = 'button';
                             b.textContent = lbl;
                             b.dataset.val = val;
+                            const usable = labViewAvailable(r, val);
                             if (getCur() === val) b.classList.add('on');
+                            if (!usable) {
+                                b.classList.add('off');
+                                b.title = '這份報告頁算不出「' + lbl + '」（綠單／橫式版面沒有參考值欄）';
+                            }
                             b.onclick = () => {
+                                if (!usable) return;
                                 setLabPref(prefKey, val);
                                 renderLabVariant();
                             };
@@ -1387,11 +1395,12 @@ After the admission, the patient was in stable condition, the physical examinati
     // key 與 lab-summary 完全相同：兩支腳本跑在同一個 origin，共用同一份偏好，
     // 在這裡切換，下次直接開檢驗報告頁也會是同一個排版。
     const LAB_VIEW_KEY = 'ntuh_lab_view_mode';
-    const LAB_VIEWS = [['trend', '趨勢'], ['table', '表格']];
+    const LAB_VIEWS = [['trend', '趨勢'], ['table', '表格'], ['interpret', '判讀']];
 
     function getLabView() {
         try {
-            return localStorage.getItem(LAB_VIEW_KEY) === 'trend' ? 'trend' : 'table';
+            const v = localStorage.getItem(LAB_VIEW_KEY);
+            return (v === 'trend' || v === 'interpret') ? v : 'table';
         } catch (e) { return 'table'; }
     }
     const setLabPref = (key, v) => { try { localStorage.setItem(key, v); } catch (e) { /* noop */ } };
@@ -1404,6 +1413,13 @@ After the admission, the patient was in stable condition, the physical examinati
         if (!v) return null;
         const view = getLabView();
         return v[view + '_compact'] || v[view + '_spacious'] || null;
+    }
+
+    // 判讀只有清單版報告頁算得出來（綠單/橫式沒有參考值欄）。
+    // 算不出來時把那顆鈕變灰並標明原因，而不是讓人按了沒反應。
+    function labViewAvailable(r, view) {
+        const v = (r && r.variants) || {};
+        return !!(v[view + '_compact'] || v[view + '_spacious']);
     }
 
     // 抓 primary note，回傳內容（無則回 null）。狀態統一由 setStatus（上方狀態框）呈現

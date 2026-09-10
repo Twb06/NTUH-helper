@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.6
+// @version      0.6.0
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -39,13 +39,15 @@
     const VIEW_KEY = 'ntuh_lab_view_mode';
     const VIEW_TABLE = 'table';
     const VIEW_TREND = 'trend';
+    const VIEW_INTERPRET = 'interpret';   // 判讀：最近兩次採檢的臨床解讀
     const OUTPUT_KEY = 'ntuh_lab_output_spacing';
     const OUTPUT_COMPACT = 'compact';
     const OUTPUT_SPACIOUS = 'spacious';
 
     function getViewPref() {
         try {
-            return localStorage.getItem(VIEW_KEY) === VIEW_TREND ? VIEW_TREND : VIEW_TABLE;
+            const v = localStorage.getItem(VIEW_KEY);
+            return (v === VIEW_TREND || v === VIEW_INTERPRET) ? v : VIEW_TABLE;
         } catch (e) {
             return VIEW_TABLE;
         }
@@ -937,6 +939,13 @@
             cultureItems.push('[' + dt + '] ' + cByDate[dt].join('\n[' + dt + '] '));
         }
 
+        if (view === VIEW_INTERPRET) {
+            const gasKind = Object.keys(aGasData).length ? 'agas' : 'vgas';
+            const gasData = Object.keys(aGasData).length ? aGasData : vGasData;
+            const gasDates = Object.keys(aGasData).length ? aGasDates : vGasDates;
+            return buildInterpretView(dates, trendData, urineData, urineDates, gasData, gasDates, gasKind);
+        }
+
         let result = formatTrend(dates, trendData, Object.keys(specialGroups).length ? specialGroups : null, view);
         if (cultureItems.length) {
             const sectionSep = getOutputPref() === OUTPUT_SPACIOUS ? '\n\n' : '\n';
@@ -1521,9 +1530,10 @@
     // view：VIEW_TABLE / VIEW_TREND，決定輸出格式；mode 是頁面本身的檢視樣式，兩者無關
     function computeReport(view, reportDoc) {
         const mode = detectViewMode(reportDoc);
-        if (mode === 'green') return readGreenSheetView(reportDoc, view);
+        // 判讀需要參考值欄，只有清單版的表格有；其餘版面回 null 讓 UI 退回趨勢/表格
+        if (mode === 'green') return view === VIEW_INTERPRET ? null : readGreenSheetView(reportDoc, view);
         if (mode === 'list') return readListView(reportDoc, view);
-        if (mode === 'horizontal') return readHorizontalView(reportDoc, view);
+        if (mode === 'horizontal') return view === VIEW_INTERPRET ? null : readHorizontalView(reportDoc, view);
         return '（直式模式不支援，請切換至清單、橫式或綠單）';
     }
 
@@ -1538,6 +1548,7 @@
         const texts = {};
         texts[VIEW_TABLE] = computeReport(VIEW_TABLE, reportDoc);
         texts[VIEW_TREND] = computeReport(VIEW_TREND, reportDoc);
+        texts[VIEW_INTERPRET] = computeReport(VIEW_INTERPRET, reportDoc);
         if (!texts[VIEW_TABLE] && !texts[VIEW_TREND]) {
             alert('未偵測到檢驗項目');
             return;
@@ -1564,7 +1575,7 @@
                 // 四種呈現組合一次算完隨結果帶走：filler 端切換排版就不必重開背景分頁。
                 // key 格式 `${view}_${spacing}`，與 filler 的 LAB_VARIANT_KEY 對應。
                 const variants = {};
-                for (const view of [VIEW_TREND, VIEW_TABLE]) {
+                for (const view of [VIEW_TREND, VIEW_TABLE, VIEW_INTERPRET]) {
                     for (const sp of [OUTPUT_COMPACT, OUTPUT_SPACIOUS]) {
                         try {
                             const t = withOutputPref(sp, () => computeReport(view, reportDoc));
@@ -1583,6 +1594,595 @@
                 done({ ok: true, text: '(無檢驗資料)' });
             }
         }, 400);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 判讀引擎（純函式：吃 [{name, val, unit, ref}]，吐字串，不碰 DOM）
+    // 一律以「資料附的參考值」判斷高低，寫死的閾值只在沒有 ref 時當後備——
+    // 各院區/科室的參考範圍不同（總院 vs 新竹 LU），寫死會判錯。
+    // ══════════════════════════════════════════════════════════
+
+    // 參考值字串 → { lo, hi }。認得 a~b / a-b / ≦x / ≧x / Normal(<30) 等寫法；
+    // 「本項結果屬計算值」這種說明文字回 null（＝無法判定高低）。
+    function parseRef(ref) {
+        if (!ref) return null;
+        const s = String(ref).replace(/\s+/g, '');
+        let m = s.match(/(-?\d+(?:\.\d+)?)[~～](-?\d+(?:\.\d+)?)/);
+        if (m) return { lo: +m[1], hi: +m[2] };
+        m = s.match(/^(-?\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)/);
+        if (m) return { lo: +m[1], hi: +m[2] };
+        m = s.match(/[≦≤<]=?(-?\d+(?:\.\d+)?)/);
+        if (m) return { lo: -Infinity, hi: +m[1] };
+        m = s.match(/[≧≥>]=?(-?\d+(?:\.\d+)?)/);
+        if (m) return { lo: +m[1], hi: Infinity };
+        return null;
+    }
+
+    // 值字串 → 數字。「100 (2+)」→100、「≧300 (2+)」→300、「>150」→150；
+    // 「3-5」這種區間與「Auto DC」這種文字回 null（不能拿去比大小）。
+    function numVal(val) {
+        if (val === null || val === undefined) return null;
+        const s = String(val).replace(/,/g, '').trim();
+        if (/^\d+(?:\.\d+)?\s*-\s*\d/.test(s)) return null;   // 區間
+        const m = s.match(/-?\d+(?:\.\d+)?/);
+        return m ? +m[0] : null;
+    }
+
+    // 邊界值算正常（BUN 23.9 而參考值 7~25 → normal）
+    function levelOf(item) {
+        if (!item) return null;
+        const n = numVal(item.val);
+        const r = parseRef(item.ref);
+        if (n === null || !r) return null;
+        if (n < r.lo) return 'low';
+        if (n > r.hi) return 'high';
+        return 'normal';
+    }
+
+    // 判讀輸出用的顯示名（store 內部名沿用縮寫表，這裡只做臨床習慣的微調）
+    const DISPLAY_NAME = { Plt: 'PLT', CRE: 'Cre' };
+    const dispName = (n) => DISPLAY_NAME[n] || n;
+
+    // eGFR 不顯示單位（protocol 9(2)）
+    function fmtItem(it) {
+        if (!it) return '';
+        if (it.name === 'eGFR') return dispName(it.name) + ': ' + it.val;
+        return dispName(it.name) + ': ' + it.val + (it.unit ? ' ' + it.unit : '');
+    }
+    const fmtVal = (it) => (it.name === 'eGFR' ? it.val : it.val + (it.unit ? ' ' + it.unit : ''));
+    // 一條「發現」。改成物件而非字串，兩個時間點才比對得起來：
+    //   id        比對用的鍵（同一個 id 才算同一條發現）
+    //   desc      描述（Hypokalemia / normal K / Normocytic anemia）
+    //   items     這條發現引用到的檢驗值
+    //   showNames 括號內要不要標項目名（protocol 9(1) 的兩種格式）
+    //   abnormal  是否為異常發現（決定排序與 improved/worsen）
+    const F = (id, desc, items, showNames, abnormal) =>
+        ({ id, desc, items: items.filter(Boolean), showNames, abnormal });
+    const withItems = (desc, items, id) => F(id || desc, desc, items, true, true);
+    const withVal = (desc, it, id) => F(id || (it && it.name) || desc, desc, [it], false, true);
+    const normalOf = (desc, items, showNames, id) =>
+        F(id || (items[0] && items[0].name) || desc, desc, items, showNames, false);
+
+    // 一段的組裝：異常在前、正常在後（protocol 9(4)）
+    // 異常在前、正常在後（protocol 9(4)）
+    function joinFindings(abnormal, normal) {
+        return abnormal.concat(normal).filter(Boolean);
+    }
+
+    function pickItems(items) {
+        const by = {};
+        items.forEach((it) => { if (it && it.val && !by[it.name]) by[it.name] = it; });
+        return by;
+    }
+
+    // ── #. Hemogram ────────────────────────────────────────────
+    function interpretHemogram(by) {
+        const hb = by.Hb, mcv = by.MCV, wbc = by.WBC, plt = by.Plt;
+        if (!hb && !wbc && !plt) return [];
+        const lHb = levelOf(hb), lWbc = levelOf(wbc), lPlt = levelOf(plt);
+        const ab = [], nl = [];
+
+        if (lHb === 'low' && lWbc === 'low' && lPlt === 'low') {
+            return [withItems('Pancytopenia', [hb, wbc, plt], 'CBC')];
+        }
+        if (lHb === 'normal' && lWbc === 'normal' && lPlt === 'normal') {
+            return [normalOf('Normal hemogram', [hb, wbc, plt], true, 'CBC')];
+        }
+
+        if (lHb === 'low') {
+            const lMcv = levelOf(mcv);
+            const kind = lMcv === 'low' ? 'Microcytic'
+                : lMcv === 'high' ? 'Macrocytic'
+                    : lMcv === 'normal' ? 'Normocytic' : '';
+            ab.push(withItems((kind ? kind + ' anemia' : 'Anemia'), kind ? [hb, mcv] : [hb], 'Hb'));
+        } else if (lHb === 'high') {
+            ab.push(withVal('elevated Hb', hb));
+        } else if (lHb === 'normal') { nl.push(normalOf('normal Hb', [hb], false)); }
+
+        if (lWbc === 'high') ab.push(withItems('Leukocytosis', [wbc], 'WBC'));
+        else if (lWbc === 'low') ab.push(withItems('Leukopenia', [wbc], 'WBC'));
+        else if (lWbc === 'normal') nl.push(normalOf('normal WBC', [wbc], false));
+
+        if (lPlt === 'high') ab.push(withItems('Thrombocytosis', [plt], 'Plt'));
+        else if (lPlt === 'low') ab.push(withItems('Thrombocytopenia', [plt], 'Plt'));
+        else if (lPlt === 'normal') nl.push(normalOf('normal PLT', [plt], false));
+
+        return joinFindings(ab, nl);
+    }
+
+    // ── #. BCS（肝腎）──────────────────────────────────────────
+    const LIVER_KEYS = ['Alb', 'AST', 'ALT', 'ALP', 'GGT', 'T-Bil', 'D-Bil'];
+    const KIDNEY_KEYS = ['CRE', 'BUN', 'eGFR'];
+
+    function ckdStage(egfr) {
+        if (egfr === null) return '';
+        if (egfr >= 90) return 'Stage 1';
+        if (egfr >= 60) return 'Stage 2';
+        if (egfr >= 45) return 'Stage 3a';
+        if (egfr >= 30) return 'Stage 3b';
+        if (egfr >= 15) return 'Stage 4';
+        return 'Stage 5';
+    }
+
+    function interpretBCS(by) {
+        const liver = LIVER_KEYS.map((k) => by[k]).filter(Boolean);
+        const kidney = KIDNEY_KEYS.map((k) => by[k]).filter(Boolean);
+        if (!liver.length && !kidney.length) return [];
+        const ab = [], nl = [];
+
+        // R value：肝細胞型與膽汁鬱積型酵素同時上升時才算。
+        // 用標準式 (ALT/ULN) ÷ (ALP/ULN)，ULN 取自資料的參考值上限，
+        // 跨院區 ULN 不同也不會失準（原 prompt 的 2.5*ALT/ALP 是固定 ULN 的簡化式）。
+        const alt = by.ALT, alp = by.ALP;
+        const hepUp = ['ALT', 'AST'].some((k) => levelOf(by[k]) === 'high');
+        const choUp = ['ALP', 'GGT'].some((k) => levelOf(by[k]) === 'high');
+        if (hepUp && choUp && alt && alp) {
+            const rAlt = parseRef(alt.ref), rAlp = parseRef(alp.ref);
+            const nAlt = numVal(alt.val), nAlp = numVal(alp.val);
+            if (rAlt && rAlp && isFinite(rAlt.hi) && isFinite(rAlp.hi) && nAlp && rAlp.hi) {
+                const R = (nAlt / rAlt.hi) / (nAlp / rAlp.hi);
+                const pattern = R > 5 ? 'Hepatocellular pattern'
+                    : R < 2 ? 'Cholestatic pattern' : 'Mixed pattern';
+                ab.push(F('LiverPattern', pattern + ' (R = ' + R.toFixed(1) + ')', [alt, alp], true, true));
+            }
+        }
+
+        // 膽紅素：T-Bil 上升才分直接/間接
+        const tb = by['T-Bil'], db = by['D-Bil'];
+        if (levelOf(tb) === 'high') {
+            const nT = numVal(tb.val), nD = db ? numVal(db.val) : null;
+            if (nT && nD !== null) {
+                const ratio = nD / nT;
+                ab.push(withItems((ratio > 0.15 ? 'Direct' : 'Indirect') + ' hyperbilirubinemia', [tb, db], 'T-Bil'));
+            } else {
+                ab.push(withItems('Hyperbilirubinemia', [tb], 'T-Bil'));
+            }
+        }
+
+        // 其餘肝指標的個別異常（已經被 R value / 膽紅素講過的就不重複）
+        const covered = new Set();
+        if (hepUp && choUp) { covered.add('ALT'); covered.add('ALP'); }
+        if (levelOf(tb) === 'high') { covered.add('T-Bil'); covered.add('D-Bil'); }
+        LIVER_KEYS.forEach((k) => {
+            if (covered.has(k) || !by[k]) return;
+            const l = levelOf(by[k]);
+            if (l === 'high') ab.push(withVal('elevated ' + k, by[k]));
+            else if (l === 'low') ab.push(withVal('decreased ' + k, by[k]));
+        });
+
+        // 腎功能
+        const lCre = levelOf(by.CRE), lBun = levelOf(by.BUN);
+        if (lCre === 'high') ab.push(withVal('elevated Cre', by.CRE));
+        else if (lCre === 'low') ab.push(withVal('decreased Cre', by.CRE));
+        if (lBun === 'high') ab.push(withVal('elevated BUN', by.BUN));
+        else if (lBun === 'low') ab.push(withVal('decreased BUN', by.BUN));
+        // Cre 正常就不必標 CKD 分期（protocol 4(4)）。
+        // 只在 Cre **偏高**時標——Cre 偏低（如 0.37）配上高 eGFR 標「CKD Stage 1」
+        // 是誤導的訊號，那不是慢性腎病，只是肌肉量少/稀釋。
+        if (lCre === 'high' && by.eGFR) {
+            const st = ckdStage(numVal(by.eGFR.val));
+            if (st) ab.push(F('CKD', 'CKD ' + st, [by.eGFR], true, true));
+        }
+
+        // 全正常的收斂說法
+        const liverAllNormal = liver.length && liver.every((it) => levelOf(it) === 'normal');
+        const kidneyCore = ['CRE', 'BUN'].map((k) => by[k]).filter(Boolean);
+        const kidneyAllNormal = kidneyCore.length && kidneyCore.every((it) => levelOf(it) === 'normal');
+        if (liverAllNormal && kidneyAllNormal) {
+            return [normalOf('Normal liver and kidney function', liver.concat(kidney), true, 'LiverKidney')];
+        }
+        if (liverAllNormal) nl.push(normalOf('normal liver function', liver, true, 'Liver'));
+        if (kidneyAllNormal) nl.push(normalOf('normal kidney function', kidney, true, 'Kidney'));
+        if (!liver.length) nl.push(F('Liver', 'no liver profile', [], false, false));
+        if (!kidney.length) nl.push(F('Kidney', 'no kidney profile', [], false, false));
+        return joinFindings(ab, nl);
+    }
+
+    // ── #. Electrolytes ────────────────────────────────────────
+    const LYTE_KEYS = ['Na', 'K', 'Ca', 'Mg', 'Cl', 'P'];
+    const LYTE_NAMED = { Na: ['Hypernatremia', 'Hyponatremia'], K: ['Hyperkalemia', 'Hypokalemia'] };
+
+    function interpretLytes(by) {
+        const present = LYTE_KEYS.map((k) => by[k]).filter(Boolean);
+        if (!present.length) return [];
+        const ab = [], nl = [];
+        LYTE_KEYS.forEach((k) => {
+            const it = by[k];
+            if (!it) return;
+            const l = levelOf(it);
+            if (l === 'high') {
+                ab.push(LYTE_NAMED[k] ? withItems(LYTE_NAMED[k][0], [it], k) : withVal('elevated ' + k, it, k));
+            } else if (l === 'low') {
+                ab.push(LYTE_NAMED[k] ? withItems(LYTE_NAMED[k][1], [it], k) : withVal('decreased ' + k, it, k));
+            } else if (l === 'normal') {
+                nl.push(normalOf('normal ' + k, [it], false));
+            }
+        });
+        return joinFindings(ab, nl);
+    }
+
+    // ── #. Coagulation ─────────────────────────────────────────
+    const COAG_KEYS = ['PT', 'INR', 'aPTT', 'PTT'];
+    function interpretCoag(by) {
+        const present = COAG_KEYS.map((k) => by[k]).filter(Boolean);
+        if (!present.length) return [];
+        const ab = [];
+        let allNormal = true;
+        COAG_KEYS.forEach((k) => {
+            const it = by[k];
+            if (!it) return;
+            const l = levelOf(it);
+            if (l === 'high') { ab.push(withVal('prolonged ' + k, it)); allNormal = false; }
+            else if (l === 'low') { ab.push(withVal('shortened ' + k, it)); allNormal = false; }
+            else if (l !== 'normal') { allNormal = false; }
+        });
+        if (allNormal) return [normalOf('Normal coagulation function', present, true, 'Coag')];
+        return joinFindings(ab, present.filter((it) => levelOf(it) === 'normal').map((it) => normalOf('normal ' + it.name, [it], false)));
+    }
+
+    // ── #. Others ──────────────────────────────────────────────
+    const OTHER_KEYS = ['CRP', 'PCT'];
+    function interpretOthers(by) {
+        const present = OTHER_KEYS.map((k) => by[k]).filter(Boolean);
+        if (!present.length) return [];
+        const ab = [], nl = [];
+        present.forEach((it) => {
+            const l = levelOf(it);
+            if (l === 'high') ab.push(withVal('elevated ' + it.name, it));
+            else if (l === 'low') ab.push(withVal('decreased ' + it.name, it));
+            else if (l === 'normal') nl.push(normalOf('normal ' + it.name, [it], false));
+            else ab.push(withVal(it.name, it));
+        });
+        return joinFindings(ab, nl);
+    }
+
+    // ── #. Urine ───────────────────────────────────────────────
+    // 只留 protocol 6(1) 指定的七項，其餘尿液項目不顯示
+    const URINE_DIPSTICK = [
+        ['Protein', 'Proteinuria'], ['ACR', 'Albuminuria'], ['Glucose', 'Glycosuria'],
+    ];
+    const URINE_SEDIMENT = [
+        ['RBC', 'Hematuria', 'no hematuria'],
+        ['WBC', 'Pyuria', 'no pyuria'],
+        ['Epi', 'Poor specimen quality', 'good specimen quality'],
+    ];
+
+    // 「2+」「3+」「4+」算陽性；1+ 與 +/- 不算（protocol 6(2)）
+    function plusGrade(val) {
+        const m = String(val || '').match(/(\d)\s*\+/);
+        return m ? +m[1] : 0;
+    }
+    // 「10-19」「20-29」「>100」→ 取下界 ≥10 算陽性；「0-2」「3-5」「6-9」不算
+    function sedimentHigh(val) {
+        const s = String(val || '').replace(/\s+/g, '');
+        const m = s.match(/(\d+)/);
+        if (!m) return false;
+        if (/^[>≧≥]/.test(s)) return +m[1] >= 10;
+        return +m[1] >= 10;
+    }
+
+    function interpretUrine(by) {
+        const keys = URINE_DIPSTICK.map((x) => x[0])
+            .concat(URINE_SEDIMENT.map((x) => x[0]), ['Bac']);
+        if (!keys.some((k) => by[k])) return [];
+        const ab = [], nl = [];
+
+        URINE_DIPSTICK.forEach(([k, pos]) => {
+            const it = by[k];
+            if (!it) return;
+            // 只顯示 + 級數（protocol 6(2) 的範例是 Proteinuria (3+)），
+            // 不要把「100 (2+)」整串塞進括號變成括號套括號
+            const g = plusGrade(it.val);
+            const shown = g ? g + '+' : String(it.val).trim();
+            const uIt = { name: k, val: shown, unit: '' };
+            if (g >= 2) ab.push(F(k, pos, [uIt], false, true));
+            else nl.push(F(k, 'no ' + pos.toLowerCase(), [uIt], false, false));
+        });
+        URINE_SEDIMENT.forEach(([k, pos, neg]) => {
+            const it = by[k];
+            if (!it) return;
+            const sIt = { name: k, val: it.val, unit: '' };
+            if (sedimentHigh(it.val)) ab.push(F(k, pos, [sIt], false, true));
+            else nl.push(F(k, neg, [sIt], false, false));
+        });
+        const bac = by.Bac;
+        if (bac) {
+            const isNeg = /^[-–—]$/.test(String(bac.val).trim()) || /^(neg|none|nil)$/i.test(bac.val);
+            const bIt = { name: 'Bac', val: bac.val, unit: '' };
+            if (isNeg) nl.push(F('Bac', 'no bacteriuria', [bIt], false, false));
+            else ab.push(F('Bac', 'Bacteriuria', [bIt], false, true));
+        }
+        return joinFindings(ab, nl);
+    }
+
+    // ── #. Blood gas ───────────────────────────────────────────
+    // 參考範圍依檢體別：動脈與靜脈不同，原 protocol 只給了靜脈。
+    const GAS_REF = {
+        agas: { pH: [7.35, 7.45], PCO2: [35, 45], PO2: [80, 100], HCO3: [22, 26] },
+        vgas: { pH: [7.31, 7.41], PCO2: [40, 50], PO2: [30, 50], HCO3: [24, 30] },
+    };
+
+    function interpretGas(by, kind) {
+        const R = GAS_REF[kind] || GAS_REF.vgas;
+        const g = (k) => (by[k] ? numVal(by[k].val) : null);
+        const pH = g('pH'), pco2 = g('PCO2'), hco3 = g('HCO3'), po2 = g('PO2'), be = g('BE');
+        if (pH === null && pco2 === null && hco3 === null) return '';
+        const label = kind === 'agas' ? 'ABG' : 'VBG';
+        const bits = [];
+
+        let primary = '';
+        if (pH !== null) {
+            if (pH < R.pH[0]) primary = 'acidemia';
+            else if (pH > R.pH[1]) primary = 'alkalemia';
+        }
+        const respHigh = pco2 !== null && pco2 > R.PCO2[1];
+        const respLow = pco2 !== null && pco2 < R.PCO2[0];
+        const metaLow = hco3 !== null && hco3 < R.HCO3[0];
+        const metaHigh = hco3 !== null && hco3 > R.HCO3[1];
+
+        // 先定出**原發**疾患，代償公式再依它分支。
+        // 不能看「哪個值超出範圍」就套公式——呼吸性鹼中毒的低 HCO3 正是代償，
+        // 誤判成原發代謝性酸中毒會去套 Winter，結論整個反掉。
+        let dx = '';
+        let primaryType = 'none';
+        if (primary === 'acidemia') {
+            if (metaLow && respHigh) { dx = 'mixed metabolic and respiratory acidosis'; primaryType = 'mixed'; }
+            else if (metaLow) { dx = 'metabolic acidosis'; primaryType = 'met-acid'; }
+            else if (respHigh) { dx = 'respiratory acidosis'; primaryType = 'resp-acid'; }
+            else dx = 'acidemia';
+        } else if (primary === 'alkalemia') {
+            if (metaHigh && respLow) { dx = 'mixed metabolic and respiratory alkalosis'; primaryType = 'mixed'; }
+            else if (metaHigh) { dx = 'metabolic alkalosis'; primaryType = 'met-alk'; }
+            else if (respLow) { dx = 'respiratory alkalosis'; primaryType = 'resp-alk'; }
+            else dx = 'alkalemia';
+        } else if (respHigh || respLow || metaLow || metaHigh) {
+            // pH 已回到範圍內＝代償後。原發看方向一致的那一組：
+            // HCO3 低 + pCO2 低 → 原發代謝性酸中毒；HCO3 高 + pCO2 高 → 原發代謝性鹼中毒
+            if (metaLow) { dx = 'compensated metabolic acidosis'; primaryType = 'met-acid'; }
+            else if (metaHigh) { dx = 'compensated metabolic alkalosis'; primaryType = 'met-alk'; }
+            else if (respHigh) { dx = 'compensated respiratory acidosis'; primaryType = 'resp-acid'; }
+            else { dx = 'compensated respiratory alkalosis'; primaryType = 'resp-alk'; }
+        } else {
+            dx = 'no acid-base disturbance';
+        }
+        bits.push(label + ': ' + dx);
+
+        // Anion gap（需要 Na 與 Cl，血氣單沒有就從血液生化補）
+        const na = g('Na'), cl = g('Cl');
+        if (na !== null && cl !== null && hco3 !== null) {
+            const ag = na - (cl + hco3);
+            bits.push('AG ' + ag.toFixed(1) + (ag > 12 ? ' (elevated)' : ag < 8 ? ' (low)' : ' (normal)'));
+        }
+
+        const near = (x) => Math.abs(hco3 - x) <= 2;
+        const acuteChronic = (acute, chronic) => 'expected HCO3 ' + acute.toFixed(1) + ' (acute) / '
+            + chronic.toFixed(1) + ' (chronic) vs actual ' + hco3
+            + (near(acute) ? ' \u2192 acute pattern'
+                : near(chronic) ? ' \u2192 chronic pattern'
+                    : Math.min(acute, chronic) < hco3 && hco3 < Math.max(acute, chronic)
+                        ? ' \u2192 between acute and chronic compensation'
+                        : ' \u2192 outside expected compensation (concomitant metabolic disorder)');
+
+        if (primaryType === 'met-acid' && pco2 !== null) {
+            // Winter's formula 是以**動脈**值推導的；靜脈 pCO2 約高 5-8 mmHg，
+            // 用 VBG 直接比會系統性偏向「代償不足」，故對靜脈血加註提醒。
+            const exp = 1.5 * hco3 + 8;
+            const d = pco2 - exp;
+            bits.push('Winter expected pCO2 ' + exp.toFixed(0) + ' vs actual ' + pco2
+                + (Math.abs(d) <= 2 ? ' \u2192 appropriate respiratory compensation'
+                    : d > 2 ? ' \u2192 inadequate respiratory compensation'
+                        : ' \u2192 excess respiratory compensation')
+                + (kind === 'vgas' ? ' (venous; Winter derived from arterial)' : ''));
+        } else if (primaryType === 'met-alk' && pco2 !== null) {
+            const exp = 0.7 * (hco3 - 24) + 40;
+            const d = pco2 - exp;
+            bits.push('expected pCO2 ' + exp.toFixed(0) + ' vs actual ' + pco2
+                + (Math.abs(d) <= 5 ? ' \u2192 appropriate respiratory compensation'
+                    : d > 5 ? ' \u2192 more hypoventilation than expected'
+                        : ' \u2192 less hypoventilation than expected'));
+        } else if (primaryType === 'resp-acid' && hco3 !== null) {
+            bits.push(acuteChronic(24 + 0.1 * (pco2 - 40), 24 + 0.35 * (pco2 - 40)));
+        } else if (primaryType === 'resp-alk' && hco3 !== null) {
+            // 原 prompt 寫 24 - 0.2*(pCO2-40)，pCO2<40 時反而預測 bicarb 上升（正負號寫反）
+            bits.push(acuteChronic(24 - 0.2 * (40 - pco2), 24 - 0.4 * (40 - pco2)));
+        }
+
+        if (be !== null) bits.push('BE ' + be);
+        if (po2 !== null) {
+            bits.push('pO2 ' + po2 + (po2 < R.PO2[0] ? ' (low)' : po2 > R.PO2[1] ? ' (high)' : ' (normal)'));
+        }
+        return bits.join('; ');
+    }
+
+    // ══ 渲染：單一時間點 ══
+    function renderFinding(f) {
+        if (!f.items.length) return f.desc;
+        if (f.showNames) return f.desc + ' (' + f.items.map(fmtItem).join(', ') + ')';
+        return f.desc + ' (' + f.items.map(fmtVal).join(', ') + ')';
+    }
+
+    // ══ 渲染：兩時間點比較（值寫成 old → new）══
+    // 「顯著變化」的定義（原 protocol 只說 significant，沒給標準）：
+    //   1. 跨越正常/異常界線 → 一定標（異常→正常 improved、正常→異常 worsen）
+    //   2. 兩次都異常 → 相對變化 ≥ CHANGE_PCT 才標，靠近參考範圍為 improved、遠離為 worsen
+    // 這樣 MCV 92.4→90.2（-2.4%）與 PLT 204→214（+4.9%）不會被亂標，
+    // 而 Hb 9.8→7.2（-26%）與 CRP 11.69→2.72（-77%）會標出來。
+    const CHANGE_PCT = 0.2;
+
+    function changeTag(oldIt, newIt) {
+        if (!oldIt || !newIt) return '';
+        const lo = levelOf(oldIt), ln = levelOf(newIt);
+        const no = numVal(oldIt.val), nn = numVal(newIt.val);
+        if (!lo || !ln) return '';
+        if (lo !== 'normal' && ln === 'normal') return 'improved';
+        if (lo === 'normal' && ln !== 'normal') return 'worsen';
+        if (lo === 'normal' && ln === 'normal') return '';
+        if (no === null || nn === null || !no) return '';
+        if (Math.abs(nn - no) / Math.abs(no) < CHANGE_PCT) return '';
+        // 兩次都異常：往正常方向走＝改善
+        if (ln === 'low') return nn > no ? 'improved' : 'worsen';
+        return nn < no ? 'improved' : 'worsen';
+    }
+
+    function renderPair(fOld, fNew) {
+        const parts = fNew.items.map((it) => {
+            const prev = fOld && fOld.items.find((o) => o.name === it.name);
+            const vals = prev && prev.val !== it.val ? prev.val + ' \u2192 ' + it.val : it.val;
+            const unit = it.name === 'eGFR' ? '' : (it.unit ? ' ' + it.unit : '');
+            return (fNew.showNames ? dispName(it.name) + ': ' : '') + vals + unit;
+        });
+        const primaryNew = fNew.items[0];
+        const primaryOld = fOld && fOld.items[0];
+        const tag = changeTag(primaryOld, primaryNew);
+
+        // 描述的選用：
+        //  - 異常 → 正常：留**舊的**描述（改善的是那個 leukocytosis / hyponatremia，
+        //    寫成 'improved normal WBC' 語意不通）
+        //  - 兩次都異常：'improved elevated CRP' 冗贅，去掉 elevated/decreased 前綴，
+        //    方向已由箭頭表達
+        let desc = fNew.desc;
+        if (tag === 'improved' && fOld && fOld.abnormal && !fNew.abnormal) {
+            desc = fOld.desc;
+        } else if (tag && /^(elevated|decreased) /.test(desc)) {
+            desc = desc.replace(/^(elevated|decreased) /, '');
+        }
+        const body = desc + (parts.length ? ' (' + parts.join(', ') + ')' : '');
+        return tag ? tag + ' ' + body : body;
+    }
+
+    // ── 組裝 ───────────────────────────────────────────────
+    // 段落順序：Hemogram → BCS → Lyte → Coag → Gas → Urine → Others
+    function sectionsFor(sets) {
+        const by = pickItems(sets.blood || []);
+        const uBy = pickItems(sets.urine || []);
+        const gBy = pickItems((sets.gas || []).concat(
+            ['Na', 'Cl'].map((k) => by[k]).filter(Boolean)   // 血氣單沒 Na/Cl 就借血液生化算 AG
+        ));
+        return [
+            { title: 'Hemogram', findings: interpretHemogram(by) },
+            { title: 'BCS', findings: interpretBCS(by) },
+            { title: 'Electrolytes', findings: interpretLytes(by) },
+            { title: 'Coagulation', findings: interpretCoag(by) },
+            { title: 'Blood gas', text: interpretGas(gBy, sets.gasKind || 'vgas') },
+            { title: 'Urine', findings: interpretUrine(uBy) },
+            { title: 'Others', findings: interpretOthers(by) },
+        ];
+    }
+
+    // 單一時間點
+    function buildInterpretation(sets) {
+        const out = [];
+        sectionsFor(sets).forEach((sec) => {
+            const body = typeof sec.text === 'string' ? sec.text
+                : (sec.findings || []).map(renderFinding).join(', ');
+            if (body) out.push('#. ' + body);
+        });
+        return out.join('\n');
+    }
+
+    // 兩時間點比較。規則（第二份 protocol）：
+    //   1. 描述用新資料
+    //   2. 舊有新無 → 刪掉（病人沒再驗就別留著舊值誤導）
+    //   3. 新有舊無 → 另起一段標題列出（'#. New:'）
+    //   4. 值寫成 old → new
+    //   5. 顯著變化標 improved / worsen
+    function buildComparison(oldSets, newSets, oldLabel, newLabel) {
+        const oldSecs = sectionsFor(oldSets);
+        const newSecs = sectionsFor(newSets);
+        const out = [];
+        if (oldLabel && newLabel) out.push('[Lab] ' + oldLabel + ' -> ' + newLabel);
+
+        const brandNew = [];
+        newSecs.forEach((sec, i) => {
+            if (typeof sec.text === 'string') {
+                if (sec.text) out.push('#. ' + sec.text);
+                return;
+            }
+            const oldFs = (oldSecs[i].findings || []);
+            const lines = [];
+            (sec.findings || []).forEach((f) => {
+                const prev = oldFs.find((o) => o.id === f.id);
+                if (!prev) { brandNew.push(renderFinding(f)); return; }   // 規則 3
+                lines.push(renderPair(prev, f));
+            });
+            // 規則 2：舊有新無者自然不會出現在 newSecs，不必特別處理
+            if (lines.length) out.push('#. ' + lines.join(', '));
+        });
+        if (brandNew.length) out.push('#. ' + brandNew.join(', '));
+        return out.join('\n');
+    }
+
+    // ── 從 store + meta 組出判讀引擎要的 items ──────────────────
+    function itemsAt(store, idx) {
+        const out = [];
+        Object.keys(store).forEach((nm) => {
+            const v = store[nm] && store[nm][idx];
+            if (!v) return;
+            const m = getStoreMeta(store, nm, idx) || {};
+            out.push({ name: nm, val: v, unit: m.unit || '', ref: m.ref || '' });
+        });
+        return out;
+    }
+
+    // 日期鍵是 "MM/DD HH:MM"（沒有年份）。跨年時 12 月要排在 1 月前面，
+    // 所以偵測到同時出現 12 月與 1 月就把 1 月當第 13 月。
+    function orderNewestFirst(dates) {
+        const months = new Set(dates.map((d) => +(d.match(/^(\d{2})/) || [])[1]));
+        const wrap = months.has(12) && months.has(1);
+        const key = (d) => {
+            const m = d.match(/^(\d{2})\/(\d{2})(?:\s+(\d{2}):(\d{2}))?/);
+            if (!m) return -1;
+            let mo = +m[1];
+            if (wrap && mo <= 6) mo += 12;
+            return ((mo * 100 + +m[2]) * 100 + (+m[3] || 0)) * 100 + (+m[4] || 0);
+        };
+        return dates.map((d, i) => ({ d, i, k: key(d) }))
+            .sort((a, b) => b.k - a.k);
+    }
+    const dayLabel = (d) => String(d).split(/\s+/)[0];
+
+    // 判讀呈現：取最近兩次採檢做比較；只有一次就出單一時間點的判讀。
+    // 拿不到參考值（綠單/橫式頁面沒有該欄）就回 null，讓 UI 退回趨勢/表格。
+    function buildInterpretView(dates, trendData, urineData, urineDates, gasData, gasDates, gasKind) {
+        const ord = orderNewestFirst(dates || []);
+        if (!ord.length) return null;
+        const uOrd = orderNewestFirst(urineDates || []);
+        const gOrd = orderNewestFirst(gasDates || []);
+        const setAt = (o) => ({
+            blood: o ? itemsAt(trendData, o.i) : [],
+            // 尿液與血氣採檢時間常與抽血不同步，各自取自己最新的一次，不做比較
+            urine: uOrd.length ? itemsAt(urineData || {}, uOrd[0].i) : [],
+            gas: gOrd.length ? itemsAt(gasData || {}, gOrd[0].i) : [],
+            gasKind: gasKind,
+        });
+        const newSets = setAt(ord[0]);
+        const hasRef = newSets.blood.concat(newSets.urine, newSets.gas).some((it) => it.ref);
+        if (!hasRef) return null;
+        if (ord.length < 2) return buildInterpretation(newSets);
+        const oldSets = setAt(ord[1]);
+        oldSets.urine = [];   // 尿液/血氣不比較，只在新的那組出現一次
+        oldSets.gas = [];
+        return buildComparison(oldSets, newSets, dayLabel(ord[1].d), dayLabel(ord[0].d));
     }
 
     // ====== UI ======
@@ -1617,7 +2217,7 @@
         const seg = document.createElement('span');
         seg.style.cssText = 'display:flex;background:#15537f;border-radius:4px;padding:2px;';
         const segBtns = {};
-        [[VIEW_TREND, '趨勢'], [VIEW_TABLE, '表格']].forEach(([v, label]) => {
+        [[VIEW_TREND, '趨勢'], [VIEW_TABLE, '表格'], [VIEW_INTERPRET, '判讀']].forEach(([v, label]) => {
             const b = document.createElement('button');
             b.textContent = label;
             b.style.cssText = toggleButtonStyle;
