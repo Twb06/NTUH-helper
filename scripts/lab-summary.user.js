@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.2
+// @version      0.5.3
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -214,7 +214,8 @@
         'Ketone(Dipstick)': 'Ketone', 'Ketones(C)': 'Ketone',
         'O.B.(Dipstick)': 'OB', 'O.B.(C)': 'OB',
         'Urobil.(Dipstick)': 'Urobilinogen', 'Urobil.(C)': 'Urobilinogen',
-        'Bil.(Dipstick)': 'Bilirubin', 'Bil.(C)': 'Bilirubin',
+        'Bil.(Dipstick)': 'Bil', 'Bil.(C)': 'Bil',   // 與 URINE_PLAIN_MAP 的 'Bilirubin':'Bil' 統一，
+        // 否則同一個項目在總院顯示 Bilirubin、新竹顯示 Bil，兩院資料並存時會變成兩列
         'Nitrite(Dipstick)': 'Nitrite', 'Nitrite(C)': 'Nitrite',
         'WBC esterase (Dipstick)': 'Esterase', 'Leukocyte esterase': 'Esterase',
         'RBC (Sediment)': 'RBC', 'RBC(S)': 'RBC',
@@ -228,6 +229,8 @@
         'Alb.(Dipstick)': 'Albumin', 'Albumin(Dipstick)': 'Albumin',
         'Creatinine(Dipstick)': 'Creatinine',
         'Alb./Cre.(Dipstick)': 'ACR', 'Albumin/Creatinine(Dipstick)': 'ACR',
+        // LO 科室（新竹）用英文全名，非中文問題，需列舉
+        'Epithelial cell': 'Epi', 'Albumin/CREA Ratio(Dipstick)': 'ACR',
     };
 
     const URINE_SKIP = ['Creatinine(Dipstick)', 'Albumin/Creatinine(Dipstick)', 'Albumin(Dipstick)', 'Alb.(Dipstick)', 'Alb./Cre.(Dipstick)'];
@@ -245,12 +248,36 @@
         'Nitrite': 'Nitrite', 'Sp. Gr.': 'Sp.Gr.',
     };
 
+    // 尿液項目名同樣有分院的中英混寫（「Protein 蛋白質(Dipstick)」「R.B.C 紅血球」
+    // 「Creatinine肌酸酐(Dipstick)」）。尿液走的是自己的對照表、不經過 normalizeName，
+    // 所以這裡要各自建一份正規化索引，否則中文會原樣進表頭把欄寬撐爆。
+    // 查表順序沿用原本的 URINE_NAME_MAP → CHEM → PLAIN。
+    function buildKeyIndex(...maps) {
+        const idx = {};
+        for (const m of maps) {
+            for (const [k, v] of Object.entries(m)) {
+                const kk = nameKey(k);
+                if (kk && !(kk in idx)) idx[kk] = v;
+            }
+        }
+        return idx;
+    }
+
     // 尿液生化（算 FeNa / FeUrea 用），跟血中同名，一樣只在尿液檢體套用
     const URINE_CHEM_MAP = {
         'CRE(U)': 'U-Cre', 'UN(U)': 'U-UN', 'Na(U)': 'U-Na',
         'K(U)': 'U-K', 'Cl(U)': 'U-Cl', 'Osm(U)': 'U-Osm',
         'TP(U)': 'U-TP', 'Alb(U)': 'U-Alb',
     };
+
+    const URINE_MAP_BY_KEY = buildKeyIndex(URINE_NAME_MAP, URINE_CHEM_MAP, URINE_PLAIN_MAP);
+    function normalizeUrineName(rawName, cleanName) {
+        return URINE_NAME_MAP[rawName] || URINE_CHEM_MAP[rawName]
+            || URINE_PLAIN_MAP[rawName] || URINE_PLAIN_MAP[cleanName]
+            || URINE_MAP_BY_KEY[nameKey(rawName)]
+            // 沒登錄過的項目就用原名，不要丟掉（不然會不知道漏了什麼），但中文要先砍掉
+            || stripCJK(cleanName) || cleanName;
+    }
 
     const STOOL_NAME_MAP = {
         'Stool WBC': 'WBC', 'Stool RBC': 'RBC', 'Occult Blood': 'OB',
@@ -717,8 +744,7 @@
                 if (sClass === 'urine') {
                     if (URINE_SKIP.includes(rawName)) return;
                     // 沒登錄過的項目就用原名，不要丟掉（不然會不知道漏了什麼）
-                    const uName = URINE_NAME_MAP[rawName] || URINE_CHEM_MAP[rawName]
-                        || URINE_PLAIN_MAP[rawName] || URINE_PLAIN_MAP[cleanName] || cleanName;
+                    const uName = normalizeUrineName(rawName, cleanName);
                     if (!uName) return;
                     if (!urineDates.includes(collectDate)) urineDates.push(collectDate);
                     pushToStore(urineData, uName, urineDates.indexOf(collectDate), abbrValue(val));
@@ -1035,7 +1061,8 @@
                     if (IGNORE.includes(cleanName)) continue;
 
                     if (isSpecial && specialName === 'Urine') {
-                        const uName = URINE_NAME_MAP[rawName] || URINE_NAME_MAP[cleanName] || null;
+                        const uName = URINE_NAME_MAP[rawName] || URINE_NAME_MAP[cleanName]
+                            || URINE_MAP_BY_KEY[nameKey(rawName)] || null;
                         if (!uName) continue;
                         const vals = [];
                         for (let j = 1; j < cells.length && j <= targetDates.length; j++) {
