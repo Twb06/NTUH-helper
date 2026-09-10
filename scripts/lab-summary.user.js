@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.3
+// @version      0.5.4
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -13,6 +13,23 @@
 
 (function () {
     'use strict';
+
+    // 新竹分院 LU 科室的項目名是中英混寫，且**空格有無不一致**：
+    //   「BUN 血中尿素氮」「Creatinine肌酸酐」「Na 鈉」「MCV平均血球體積」
+    // 中文若原樣流下去會把表格欄寬撐爆。用通則砍掉中文，而不是逐條列舉——
+    // 分院會一直冒出新的混寫，列舉漏掉時是**靜默**的（沒有錯誤，只是排版壞掉）。
+    const CJK_RE = /[\u2E80-\u2FDF\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+/g;
+    function stripCJK(s) {
+        return String(s || '').replace(CJK_RE, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // 查表鍵：去括號 → 去中文 → 去標點空白 → 小寫。
+    // 讓「Aty. lymphocyte」對得到 NAME_MAP 裡的「Aty.Lymphocyte」這種
+    // 只差空格/大小寫的寫法，不必為每個變體各列一條。
+    function nameKey(s) {
+        return stripCJK(String(s || '').replace(/\(.*?\)/g, ' '))
+            .replace(/[\s.\-_]/g, '').toLowerCase();
+    }
 
     // ====== 分類定義 ======
 
@@ -233,7 +250,10 @@
         'Epithelial cell': 'Epi', 'Albumin/CREA Ratio(Dipstick)': 'ACR',
     };
 
-    const URINE_SKIP = ['Creatinine(Dipstick)', 'Albumin/Creatinine(Dipstick)', 'Albumin(Dipstick)', 'Alb.(Dipstick)', 'Alb./Cre.(Dipstick)'];
+    // 尿液 dipstick 的白蛋白/肌酸酐/ACR：原本整組濾掉，2026-09-10 起保留——
+    // 蛋白尿定量在腎功能追蹤是實用資訊。（新竹本來就因為名稱不同而濾不到，
+    // 與其讓兩院輸出不一致，不如兩邊都顯示。）
+    const URINE_SKIP = [];
 
     // 舊式尿液鏡檢（M6 科室）：項目名沒有 (Dipstick)/(Sediment) 後綴，
     // 且 Protein / Glucose / Blood / Bacteria 這些名字和血液項目撞名，
@@ -270,7 +290,6 @@
         'TP(U)': 'U-TP', 'Alb(U)': 'U-Alb',
     };
 
-    const URINE_MAP_BY_KEY = buildKeyIndex(URINE_NAME_MAP, URINE_CHEM_MAP, URINE_PLAIN_MAP);
     function normalizeUrineName(rawName, cleanName) {
         return URINE_NAME_MAP[rawName] || URINE_CHEM_MAP[rawName]
             || URINE_PLAIN_MAP[rawName] || URINE_PLAIN_MAP[cleanName]
@@ -294,6 +313,23 @@
         'LDH': 'LDH', 'AMY': 'AMY', 'Amylase': 'AMY',
         'Specimen Adequacy': 'Adequacy',
     };
+
+    // ── 名稱正規化索引：所有對照表集中在這裡建，確保在任何 map 定義之後 ──
+    // 每一種檢體都有自己的對照表，但**中英混寫是全院區共通的問題**，
+    // 所以每張表都要有正規化索引 + 去中文 fallback，不能只修其中一條路徑。
+    const NAME_MAP_BY_KEY  = buildKeyIndex(NAME_MAP);
+    const URINE_MAP_BY_KEY = buildKeyIndex(URINE_NAME_MAP, URINE_CHEM_MAP, URINE_PLAIN_MAP);
+    const GAS_MAP_BY_KEY   = buildKeyIndex(GAS_NAME_MAP);
+    const CSF_MAP_BY_KEY   = buildKeyIndex(CSF_NAME_MAP);
+    const STOOL_MAP_BY_KEY = buildKeyIndex(STOOL_NAME_MAP);
+    const FLUID_MAP_BY_KEY = buildKeyIndex(FLUID_NAME_MAP);
+
+    // 通用解析：直接比對 → 去括號比對 → 正規化鍵 → 去中文的原名（保底，不丟資料）
+    function lookupName(rawName, cleanName, direct, byKey) {
+        return direct[rawName] || direct[cleanName]
+            || byKey[nameKey(rawName)]
+            || stripCJK(cleanName) || cleanName;
+    }
 
     // 文字結果的縮寫（不只項目名，值也要縮）
     const VALUE_ABBR = [
@@ -393,31 +429,6 @@
     }
 
     // ====== 工具函式 ======
-
-    // 新竹分院 LU 科室的項目名是中英混寫，且**空格有無不一致**：
-    //   「BUN 血中尿素氮」「Creatinine肌酸酐」「Na 鈉」「MCV平均血球體積」
-    // 中文若原樣流下去會把表格欄寬撐爆。用通則砍掉中文，而不是逐條列舉——
-    // 分院會一直冒出新的混寫，列舉漏掉時是**靜默**的（沒有錯誤，只是排版壞掉）。
-    const CJK_RE = /[\u2E80-\u2FDF\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+/g;
-    function stripCJK(s) {
-        return String(s || '').replace(CJK_RE, ' ').replace(/\s+/g, ' ').trim();
-    }
-
-    // 查表鍵：去括號 → 去中文 → 去標點空白 → 小寫。
-    // 讓「Aty. lymphocyte」對得到 NAME_MAP 裡的「Aty.Lymphocyte」這種
-    // 只差空格/大小寫的寫法，不必為每個變體各列一條。
-    function nameKey(s) {
-        return stripCJK(String(s || '').replace(/\(.*?\)/g, ' '))
-            .replace(/[\s.\-_]/g, '').toLowerCase();
-    }
-    const NAME_MAP_BY_KEY = (() => {
-        const idx = {};
-        for (const [k, v] of Object.entries(NAME_MAP)) {
-            const kk = nameKey(k);
-            if (kk && !(kk in idx)) idx[kk] = v;   // 先定義者優先，維持原表順序語意
-        }
-        return idx;
-    })();
 
     function normalizeName(raw) {
         // WB 科室寫成 eGFR(MDRD)（沒空格），舊版只比對有空格的字串，
@@ -639,7 +650,7 @@
                     if (shouldSkipRow(rawName)) return;
                     const cleanName = parseGreenItemName(rawName);
                     if (AGAS_SKIP.includes(cleanName) || IGNORE.includes(cleanName)) return;
-                    const gasName = GAS_NAME_MAP[rawName] || GAS_NAME_MAP[cleanName] || cleanName;
+                    const gasName = lookupName(rawName, cleanName, GAS_NAME_MAP, GAS_MAP_BY_KEY);
                     pushToStore(aGasData, gasName, gDateIdx, cleanGreenValue(rawVal));
                 });
                 return;
@@ -664,7 +675,7 @@
 
                 // CSF 檢體：獨立分組，不套用 IGNORE / 血液項目對應
                 if (sClass === 'csf' && !cultureKeysMatch(rawName)) {
-                    const csfName = CSF_NAME_MAP[rawName] || cleanName;
+                    const csfName = lookupName(rawName, cleanName, CSF_NAME_MAP, CSF_MAP_BY_KEY);
                     if (!csfName) return;
                     if (!csfDates.includes(collectDate)) csfDates.push(collectDate);
                     pushToStore(csfData, csfName, csfDates.indexOf(collectDate), cleanGreenValue(rawVal));
@@ -735,7 +746,7 @@
                 // 靜脈血氣的 pH、CRE(U)/UN(U) 會蓋掉血中 CRE/BUN。
                 if (sClass === 'vgas') {
                     if (AGAS_SKIP.includes(cleanName)) return;
-                    const gasName = GAS_NAME_MAP[rawName] || GAS_NAME_MAP[cleanName] || cleanName;
+                    const gasName = lookupName(rawName, cleanName, GAS_NAME_MAP, GAS_MAP_BY_KEY);
                     if (!vGasDates.includes(collectDate)) vGasDates.push(collectDate);
                     pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val);
                     return;
@@ -752,7 +763,7 @@
                 }
 
                 if (sClass === 'stool') {
-                    const sName = STOOL_NAME_MAP[rawName] || STOOL_NAME_MAP[cleanName] || cleanName;
+                    const sName = lookupName(rawName, cleanName, STOOL_NAME_MAP, STOOL_MAP_BY_KEY);
                     if (!sName) return;
                     if (!stoolDates.includes(collectDate)) stoolDates.push(collectDate);
                     pushToStore(stoolData, sName, stoolDates.indexOf(collectDate), abbrValue(val));
@@ -761,7 +772,9 @@
 
                 if (sClass === 'fluid') {
                     const fName = FLUID_NAME_MAP[rawName] || FLUID_NAME_MAP[cleanName]
-                        || (/Cytology/i.test(rawName) ? 'Cytology' : cleanName);
+                        || FLUID_MAP_BY_KEY[nameKey(rawName)]
+                        || (/Cytology/i.test(rawName) ? 'Cytology'
+                            : (stripCJK(cleanName) || cleanName));
                     if (!fName || fName === '__SKIP__') return;
                     if (fName === 'Adequacy' && /satisfactory/i.test(val)) return;
                     if (/^N\/A$/i.test(val)) return;
@@ -777,7 +790,7 @@
                 // 就用項目名兜底當成靜脈血氣（尿液/糞便/體液前面已經分流掉，
                 // 不會再發生尿液 PH 蓋掉血氣 pH 的事）；動脈血的表頭才會寫 Arterial。
                 if (GAS_ITEM_NAMES.includes(rawName) || GAS_ITEM_NAMES.includes(cleanName)) {
-                    const gasName = GAS_NAME_MAP[rawName] || GAS_NAME_MAP[cleanName] || cleanName;
+                    const gasName = lookupName(rawName, cleanName, GAS_NAME_MAP, GAS_MAP_BY_KEY);
                     if (!vGasDates.includes(collectDate)) vGasDates.push(collectDate);
                     pushToStore(vGasData, gasName, vGasDates.indexOf(collectDate), val);
                     return;
