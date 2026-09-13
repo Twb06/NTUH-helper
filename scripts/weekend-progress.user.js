@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.3.6
-// @description  用於例假日值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出
+// @version      1.4.0
+// @description  用於例假日值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出（可統一覆核者、可統一 Plan）
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -21,7 +21,26 @@
     /* global __doPostBack, $SelectedNote, CopyNoteToNewRecord, Sys */
 
     const STORAGE_KEY = 'ntuh_weekend_progress';
+    const OPTIONS_KEY = 'ntuh_weekend_options';   // 記住上次選擇（含員編）
     const PATH = window.location.pathname;
+
+    const KEEP_PLAN_TEXT = 'Keep current management';
+
+    const DEFAULT_OPTIONS = {
+        reviewer: 'keep',   // 'keep' = 維持原本 VS；'unify' = 統一填入員編
+        reviewerId: '',
+        plan: 'copy',       // 'copy' = 複製上一則；'keep' = 填入 Keep current management
+    };
+
+    function loadOptions() {
+        try {
+            return Object.assign({}, DEFAULT_OPTIONS,
+                JSON.parse(localStorage.getItem(OPTIONS_KEY)) || {});
+        } catch { return Object.assign({}, DEFAULT_OPTIONS); }
+    }
+    function saveOptions(o) {
+        try { localStorage.setItem(OPTIONS_KEY, JSON.stringify(o)); } catch { /* */ }
+    }
 
     // ═══════════════════════════════════════════════════════════
     // 共用工具
@@ -217,11 +236,11 @@
         }).filter(Boolean);
     }
 
-    function startBatch() {
+    function startBatch(options) {
         const patients = getPatients();
         if (patients.length === 0) { alert('找不到病人清單'); return; }
 
-        const state = { running: true, patients, currentIndex: 0, results: [] };
+        const state = { running: true, patients, currentIndex: 0, results: [], options: options || DEFAULT_OPTIONS };
         setState(state);
         __doPostBack(patients[0].postbackArg, '');
     }
@@ -322,19 +341,117 @@
         });
         fab.onmouseenter = () => { fab.style.background = '#d35400'; };
         fab.onmouseleave = () => { fab.style.background = '#e67e22'; };
-        fab.onclick = () => {
-            const patients = getPatients();
-            if (confirm(
-                `即將對 ${patients.length} 位病人批次執行：\n` +
-                `　1. 複製最新 Progress Note\n` +
-                `　2. Subjective 填入 stable\n` +
-                `　3. 自動帶入導管紀錄（若有）\n` +
-                `　4. 確認送出\n\n確定要繼續嗎？`
-            )) {
-                startBatch();
-            }
-        };
+        fab.onclick = () => { showOptionsDialog(); };
         document.body.appendChild(fab);
+    }
+
+    function showOptionsDialog() {
+        const patients = getPatients();
+        if (patients.length === 0) { alert('找不到病人清單'); return; }
+
+        const saved = loadOptions();
+
+        const overlay = document.createElement('div');
+        Object.assign(overlay.style, {
+            position: 'fixed', inset: '0', zIndex: '999999',
+            background: 'rgba(0,0,0,0.5)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+        });
+
+        const box = document.createElement('div');
+        Object.assign(box.style, {
+            background: '#fff', borderRadius: '12px', padding: '24px',
+            maxWidth: '460px', width: '90%', display: 'flex',
+            flexDirection: 'column', gap: '16px', fontSize: '14px',
+            color: '#222', boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        });
+        box.addEventListener('click', e => e.stopPropagation());
+
+        box.innerHTML = `
+            <div style="font-size:17px;font-weight:bold;text-align:center">⚡ 週末病程（${patients.length} 位）</div>
+            <div style="background:#f7f7f7;border-radius:8px;padding:10px 12px;line-height:1.7">
+                1. 複製最新 Progress Note<br>
+                2. Subjective 填入 stable<br>
+                3. 自動帶入導管紀錄（若有）<br>
+                4. 確認送出
+            </div>
+
+            <div>
+                <div style="font-weight:bold;margin-bottom:6px">覆核者</div>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-rev" value="keep"> 維持原本 VS
+                </label>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-rev" value="unify"> 統一填入員編
+                    <input type="text" id="wp-rev-id" placeholder="員編" maxlength="12"
+                        style="width:110px;margin-left:6px;padding:3px 6px;border:1px solid #bbb;border-radius:4px">
+                </label>
+            </div>
+
+            <div>
+                <div style="font-weight:bold;margin-bottom:6px">Plan</div>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-plan" value="copy"> 複製上一則
+                </label>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-plan" value="keep"> 填入「${KEEP_PLAN_TEXT}」
+                </label>
+            </div>
+
+            <div id="wp-warn" style="display:none;color:#c0392b;font-weight:bold"></div>
+
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button id="wp-cancel" style="padding:8px 18px;background:#ccc;color:#333;border:none;border-radius:6px;cursor:pointer">取消</button>
+                <button id="wp-go" style="padding:8px 22px;background:#e67e22;color:#fff;border:none;border-radius:6px;font-weight:bold;cursor:pointer">開始執行</button>
+            </div>
+        `;
+
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        const revRadios  = [...box.querySelectorAll('input[name="wp-rev"]')];
+        const planRadios = [...box.querySelectorAll('input[name="wp-plan"]')];
+        const idInput    = box.querySelector('#wp-rev-id');
+        const warn       = box.querySelector('#wp-warn');
+
+        const revPick  = revRadios.find(r => r.value === saved.reviewer)  || revRadios[0];
+        const planPick = planRadios.find(r => r.value === saved.plan)     || planRadios[0];
+        revPick.checked = true;
+        planPick.checked = true;
+        idInput.value = saved.reviewerId || '';
+
+        const syncId = () => {
+            const unify = revRadios.find(r => r.checked)?.value === 'unify';
+            idInput.disabled = !unify;
+            idInput.style.opacity = unify ? '1' : '0.45';
+        };
+        revRadios.forEach(r => r.addEventListener('change', syncId));
+        idInput.addEventListener('focus', () => {
+            revRadios.find(r => r.value === 'unify').checked = true;
+            syncId();
+        });
+        syncId();
+
+        const close = () => overlay.remove();
+        box.querySelector('#wp-cancel').onclick = close;
+        overlay.onclick = close;
+
+        box.querySelector('#wp-go').onclick = () => {
+            const options = {
+                reviewer: revRadios.find(r => r.checked)?.value || 'keep',
+                reviewerId: idInput.value.trim(),
+                plan: planRadios.find(r => r.checked)?.value || 'copy',
+            };
+            if (options.reviewer === 'unify' && !options.reviewerId) {
+                warn.textContent = '請輸入要統一填入的員編';
+                warn.style.display = 'block';
+                idInput.focus();
+                return;
+            }
+            saveOptions(options);
+            close();
+            startBatch(options);
+        };
     }
 
     function showOrchestratorStatus(state) {
@@ -460,6 +577,59 @@
             );
             return state?.running === true;
         } catch { return false; }
+    }
+
+    function getBatchOptions() {
+        try {
+            const state = JSON.parse(
+                window.opener?.sessionStorage?.getItem(STORAGE_KEY)
+            );
+            return Object.assign({}, DEFAULT_OPTIONS, state?.options || {});
+        } catch { return Object.assign({}, DEFAULT_OPTIONS); }
+    }
+
+    // ── Plan：把所有有內容的 PAP Plan 欄位改成 Keep current management ──
+    function applyPlanOption(options) {
+        if (options.plan !== 'keep') return;
+        let filled = 0;
+        for (let i = 1; i <= 20; i++) {
+            const plan = document.getElementById(
+                `NTUHWeb1_ProgressNoteMainTab_ucPAP_txbPlan${i}`
+            );
+            if (!plan) continue;
+            if (plan.disabled || !plan.offsetParent) continue;  // 跳過隱藏的 PAP 模板
+            fillField(`NTUHWeb1_ProgressNoteMainTab_ucPAP_txbPlan${i}`, KEEP_PLAN_TEXT);
+            filled++;
+        }
+        return filled;
+    }
+
+    // ── 覆核者：統一填入員編 ──
+    // 欄位樣式：NTUHWeb1_<Tab>MainTab_ucDoctorInfo_vsid
+    const REVIEWER_FIELD_IDS = [
+        'NTUHWeb1_ProgressNoteMainTab_ucDoctorInfo_vsid',
+        'NTUHWeb1_BlankNoteMainTab_ucDoctorInfo_vsid',
+    ];
+
+    function findReviewerField() {
+        for (const id of REVIEWER_FIELD_IDS) {
+            const el = document.getElementById(id);
+            if (el && !el.disabled && el.offsetParent) return el;
+        }
+        // fallback：任何可見的 ucDoctorInfo_vsid（其他 Note 類型）
+        return [...document.querySelectorAll('input[id$="ucDoctorInfo_vsid"]')]
+            .find(el => !el.disabled && el.offsetParent) || null;
+    }
+
+    function applyReviewerOption(options) {
+        if (options.reviewer !== 'unify' || !options.reviewerId) return true;
+        const el = findReviewerField();
+        if (!el) return false;
+        el.value = options.reviewerId;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
     }
 
     function notifyOpener(result) {
@@ -659,8 +829,18 @@
         contentField.dispatchEvent(new Event('input', { bubbles: true }));
         contentField.dispatchEvent(new Event('change', { bubbles: true }));
 
-        // 等 300ms 再按確認
-        await new Promise(r => setTimeout(r, 300));
+        // 覆核者（Blank Note 無 PAP，不套用 Plan 選項）
+        const blankOptions = getBatchOptions();
+        if (!applyReviewerOption(blankOptions)) {
+            resultLabel += ' (覆核者未填)';
+        }
+
+        await new Promise(r => setTimeout(r, blankOptions.reviewer === 'unify' ? 1200 : 300));
+
+        if (!contentField.value.trim()) {
+            fillField('NTUHWeb1_BlankNoteMainTab_txbBlankContnt', 'stable');
+            await new Promise(r => setTimeout(r, 300));
+        }
 
         const confirmBtn = document.getElementById(
             'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
@@ -763,8 +943,23 @@
             fillField('NTUHWeb1_ProgressNoteMainTab_txbBSIBundle', bsiText || 'nil');
         }
 
-        // 等 300ms 再按確認
-        await new Promise(r => setTimeout(r, 300));
+        // Plan 與覆核者
+        const options = getBatchOptions();
+        applyPlanOption(options);
+        const reviewerOk = applyReviewerOption(options);
+        if (!reviewerOk) resultLabel += ' (覆核者未填)';
+
+        // 覆核者欄位可能觸發 autopostback 帶出姓名，多等一會兒
+        await new Promise(r => setTimeout(r, options.reviewer === 'unify' ? 1200 : 300));
+
+        // postback 後若欄位被重繪清空，補回來
+        const subjEl = document.getElementById('NTUHWeb1_ProgressNoteMainTab_txbSubject');
+        if (subjEl && !subjEl.value.trim()) {
+            fillField('NTUHWeb1_ProgressNoteMainTab_txbSubject', 'stable');
+            applyPlanOption(options);
+            if (reviewerOk) applyReviewerOption(options);
+            await new Promise(r => setTimeout(r, 300));
+        }
 
         const confirmBtn = document.getElementById(
             'NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote'
@@ -836,6 +1031,8 @@
                 contentField.value = body;
                 contentField.dispatchEvent(new Event('change', { bubbles: true }));
 
+                const reviewerOk = applyReviewerOption(getBatchOptions());
+
                 const confirmBtn = document.getElementById(
                     'NTUHWeb1_BlankNoteMainTab_btnConfirmBlankNoteByR'
                 );
@@ -847,7 +1044,7 @@
                 const done = () => {
                     if (confirmed) return;
                     confirmed = true;
-                    notifyOpener('✓ (從admission建立)');
+                    notifyOpener('✓ (從admission建立)' + (reviewerOk ? '' : ' (覆核者未填)'));
                 };
 
                 waitForPostback(done);
