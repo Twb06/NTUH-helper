@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.6.3
+// @version      0.6.4
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -533,12 +533,27 @@
         };
     }
 
+    // 逐列統計（診斷用）：欄位數分布、meta 寫入/補寫次數
+    let rowStats = { cellCounts: {}, metaSet: 0, metaBackfill: 0, metaEmpty: 0 };
+    function resetRowStats() { rowStats = { cellCounts: {}, metaSet: 0, metaBackfill: 0, metaEmpty: 0 }; }
+
     function pushToStore(store, name, idx, val, meta) {
         if (!store[name]) store[name] = [];
         while (store[name].length <= idx) store[name].push('');
-        if (!store[name][idx]) {
-            store[name][idx] = val;
-            setStoreMeta(store, name, idx, meta);   // 與值同進退：先到先贏的那一筆才記 meta
+        const isFirst = !store[name][idx];
+        if (isFirst) store[name][idx] = val;
+        // **meta 不綁「誰先寫到值」**。同一個項目在同一天可能出現在多張表，
+        // 其中有些是精簡欄位（沒有單位/參考值欄）。若精簡的那張先寫到值，
+        // 舊版會連帶跳過 meta，之後欄位完整的表因為值已存在而整筆不寫，
+        // 參考值就永遠補不上——判讀整個失效的真正原因。
+        // 改為：只要目前還沒有 meta，任何一次帶著 meta 的寫入都補上去。
+        if (meta && (meta.unit || meta.ref)) {
+            if (!getStoreMeta(store, name, idx)) {
+                setStoreMeta(store, name, idx, meta);
+                if (isFirst) rowStats.metaSet++; else rowStats.metaBackfill++;
+            }
+        } else if (isFirst) {
+            rowStats.metaEmpty++;
         }
     }
 
@@ -638,6 +653,7 @@
     function readListView(reportDoc, view) {
         const tables = reportDoc.querySelectorAll('table.DetailedSheet');
         if (!tables.length) return null;
+        resetRowStats();
 
         const dates = [];
         const trendData = {};
@@ -703,6 +719,7 @@
             rows.forEach(row => {
                 const cells = row.querySelectorAll('td');
                 if (cells.length < 2) return;
+                rowStats.cellCounts[cells.length] = (rowStats.cellCounts[cells.length] || 0) + 1;
 
                 const rawName = (cells[0].textContent || '').trim();
                 const rawVal = (cells[1].textContent || '').trim();
@@ -2206,6 +2223,7 @@
                 dates: dates,
                 latest: blood.latest, prev: blood.prev,
                 urine: urine, gas: gas,
+                rowStats: rowStats,
                 noRef: blood.latest.filter((it) => !it.ref).map((it) => it.name),
                 unparsedRef: blood.latest.filter((it) => it.ref && !parseRef(it.ref))
                     .map((it) => it.name + ' → "' + it.ref + '"'),
