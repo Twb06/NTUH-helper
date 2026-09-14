@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.6.2
+// @version      0.6.3
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -2197,6 +2197,20 @@
         const gOrd = orderNewestFirst(gasDates || []);
         const urine = uOrd.length ? itemsByRecency(urineData || {}, uOrd).latest : [];
         const gas = gOrd.length ? itemsByRecency(gasData || {}, gOrd).latest : [];
+
+        // 診斷探針：把引擎實際收到的 items（含單位/參考值）掛到 window，
+        // 在報告頁 console 打 __ntuhLabItems 就能看到擷取層到底交出了什麼。
+        // 判讀出問題時，這是唯一能分辨「沒抓到參考值」與「抓到但解析失敗」的方法。
+        try {
+            window.__ntuhLabItems = {
+                dates: dates,
+                latest: blood.latest, prev: blood.prev,
+                urine: urine, gas: gas,
+                noRef: blood.latest.filter((it) => !it.ref).map((it) => it.name),
+                unparsedRef: blood.latest.filter((it) => it.ref && !parseRef(it.ref))
+                    .map((it) => it.name + ' → "' + it.ref + '"'),
+            };
+        } catch (e) { /* noop */ }
 
         const hasRef = blood.latest.concat(urine, gas).some((it) => it.ref);
         if (!hasRef) return null;
