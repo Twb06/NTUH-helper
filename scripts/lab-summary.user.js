@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.7.1
+// @version      0.7.2
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -498,16 +498,6 @@
         return val.replace(/\s+/g, ' ').trim();
     }
 
-    function flagValue(val, ref) {
-        const xv = parseFloat(val);
-        if (isNaN(xv) || !ref) return '';
-        const m = ref.match(/([0-9.]+)[~\-+]([0-9.]+)/);
-        if (!m) return '';
-        if (xv < parseFloat(m[1])) return '↓';
-        if (xv > parseFloat(m[2])) return '↑';
-        return '';
-    }
-
     // 每個值的單位與參考範圍。判讀模式要靠它算正常/偏高/偏低，但趨勢與表格
     // 兩種呈現完全用不到——所以**不改 store 的值形狀**（仍是字串），而是掛一份
     // 平行的 meta，既有格式化程式碼一行都不必動。
@@ -956,86 +946,6 @@
             result = (result || '') + (result ? sectionSep : '') + '#. Culture:\n' + cultureItems.join('\n');
         }
         return result;
-    }
-
-    // ====== 單日格式化（summary 風格） ======
-
-    function formatSingleDay(data, gasData, urineItems, cultureItems) {
-        const fmt = (nm) => {
-            const x = data[nm];
-            if (!x) return null;
-            const parts = [nm, ' ', x.v];
-            if (x.u) parts.push(' ', x.u);
-            if (x.f) parts.push(' (', x.f, ')');
-            return parts.join('');
-        };
-
-        const buildGroup = (keys) => keys.map(fmt).filter(Boolean);
-
-        const output = [];
-
-        // Gas
-        const gasOrder = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
-        const gasParts = gasOrder
-            .filter(k => gasData[k])
-            .map(k => {
-                const g = gasData[k];
-                let s = k + ' ' + g.v;
-                if (g.u) s += ' ' + g.u;
-                if (g.f) s += ' (' + g.f + ')';
-                return s;
-            });
-        if (gasParts.length) output.push('Gas: ' + gasParts.join(', '));
-
-        // Hemogram
-        const hemo = buildGroup(HEMOGRAM_MAIN);
-        if (hemo.length) {
-            const extActual = [...HEMOGRAM_EXT, ...RARE_DIFF]
-                .filter(k => data[k] && data[k].f)
-                .map(fmt)
-                .filter(Boolean);
-            const line = 'Hemogram: ' + hemo.join(', ');
-            output.push(extActual.length ? line + '; ' + extActual.join(', ') : line);
-        }
-
-        // Liver / Renal
-        const lr = buildGroup(LIVER);
-        if (lr.length) output.push('Liver: ' + lr.join(', '));
-        const rn = buildGroup(RENAL);
-        if (rn.length) output.push('Renal: ' + rn.join(', '));
-
-        // Electrolytes
-        const el = buildGroup(ELECTROLYTES);
-        if (el.length) output.push('Electrolytes: ' + el.join(', '));
-
-        // Others + unknowns
-        const ot = buildGroup(OTHERS);
-        const unknowns = Object.keys(data)
-            .filter(k => !ALL_KNOWN.includes(k) && !IGNORE.includes(k))
-            .map(fmt)
-            .filter(Boolean);
-        const allOthers = [...ot, ...unknowns];
-        if (allOthers.length) output.push('Others: ' + allOthers.join(', '));
-
-        // Coagulation
-        const coag = buildGroup(COAG);
-        if (coag.length) output.push('Coagulation: ' + coag.join(', '));
-
-        // Urine
-        const abnUrine = urineItems
-            .filter(u => URINE_ALWAYS_SHOW.includes(u.name) || isUrineAbnormal(u.val))
-            .filter(u => {
-                if (URINE_ALWAYS_SHOW.includes(u.name)) return true;
-                if (u.val === '-' || u.val.startsWith('≦') || u.val.startsWith('≤') || u.val.toLowerCase().startsWith('normal')) return false;
-                return true;
-            })
-            .map(u => u.name + ' ' + displayUrineVal(u.val));
-        if (abnUrine.length) output.push('Urine: ' + abnUrine.join(', '));
-
-        // Culture
-        if (cultureItems.length) output.push('Culture:\n' + cultureItems.join('\n'));
-
-        return output.length ? output.join('\n') : null;
     }
 
     // ====== 綠單版 DOM 讀取 ======
