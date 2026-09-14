@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.6.0
+// @version      0.6.1
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -2112,36 +2112,45 @@
         const out = [];
         if (oldLabel && newLabel) out.push('[Lab] ' + oldLabel + ' -> ' + newLabel);
 
-        const brandNew = [];
         newSecs.forEach((sec, i) => {
             if (typeof sec.text === 'string') {
                 if (sec.text) out.push('#. ' + sec.text);
                 return;
             }
             const oldFs = (oldSecs[i].findings || []);
-            const lines = [];
-            (sec.findings || []).forEach((f) => {
+            const lines = (sec.findings || []).map((f) => {
+                // 找不到前一筆就原地顯示單值（renderPair 會省略箭頭與 improved/worsen）。
+                // 不另外歸到一段 "新項目"——只驗過一次的項目仍屬於它自己的段落。
                 const prev = oldFs.find((o) => o.id === f.id);
-                if (!prev) { brandNew.push(renderFinding(f)); return; }   // 規則 3
-                lines.push(renderPair(prev, f));
+                return renderPair(prev, f);
             });
-            // 規則 2：舊有新無者自然不會出現在 newSecs，不必特別處理
             if (lines.length) out.push('#. ' + lines.join(', '));
         });
-        if (brandNew.length) out.push('#. ' + brandNew.join(', '));
         return out.join('\n');
     }
 
     // ── 從 store + meta 組出判讀引擎要的 items ──────────────────
-    function itemsAt(store, idx) {
-        const out = [];
-        Object.keys(store).forEach((nm) => {
-            const v = store[nm] && store[nm][idx];
-            if (!v) return;
-            const m = getStoreMeta(store, nm, idx) || {};
-            out.push({ name: nm, val: v, unit: m.unit || '', ref: m.ref || '' });
+    function mkItem(store, nm, idx, date) {
+        const m = getStoreMeta(store, nm, idx) || {};
+        return { name: nm, val: store[nm][idx], unit: m.unit || '', ref: m.ref || '', date: date };
+    }
+
+    // **逐項目**取最近兩筆有值的紀錄，而不是逐「採檢時間」切快照。
+    // 各套組是分開抽的（今天只抽生化、CBC 是昨天的），照欄位切會讓昨天的 CBC
+    // 變成「舊有新無」而被整組刪掉——那是錯的，昨天的 CBC 仍是目前最新的 CBC。
+    function itemsByRecency(store, ord) {
+        const latest = [], prev = [];
+        Object.keys(store || {}).forEach((nm) => {
+            const hits = [];
+            for (const o of ord) {
+                if (store[nm] && store[nm][o.i]) hits.push(o);
+                if (hits.length === 2) break;
+            }
+            if (!hits.length) return;
+            latest.push(mkItem(store, nm, hits[0].i, hits[0].d));
+            if (hits.length > 1) prev.push(mkItem(store, nm, hits[1].i, hits[1].d));
         });
-        return out;
+        return { latest: latest, prev: prev };
     }
 
     // 日期鍵是 "MM/DD HH:MM"（沒有年份）。跨年時 12 月要排在 1 月前面，
@@ -2156,33 +2165,37 @@
             if (wrap && mo <= 6) mo += 12;
             return ((mo * 100 + +m[2]) * 100 + (+m[3] || 0)) * 100 + (+m[4] || 0);
         };
-        return dates.map((d, i) => ({ d, i, k: key(d) }))
-            .sort((a, b) => b.k - a.k);
+        return dates.map((d, i) => ({ d: d, i: i, k: key(d) })).sort((a, b) => b.k - a.k);
     }
     const dayLabel = (d) => String(d).split(/\s+/)[0];
 
-    // 判讀呈現：取最近兩次採檢做比較；只有一次就出單一時間點的判讀。
+    // 判讀呈現：每個項目各自跟自己的上一筆比。
     // 拿不到參考值（綠單/橫式頁面沒有該欄）就回 null，讓 UI 退回趨勢/表格。
     function buildInterpretView(dates, trendData, urineData, urineDates, gasData, gasDates, gasKind) {
         const ord = orderNewestFirst(dates || []);
         if (!ord.length) return null;
+        const blood = itemsByRecency(trendData, ord);
+        // 尿液與血氣採檢時間常與抽血不同步，各自取自己最新的一次，不做比較
         const uOrd = orderNewestFirst(urineDates || []);
         const gOrd = orderNewestFirst(gasDates || []);
-        const setAt = (o) => ({
-            blood: o ? itemsAt(trendData, o.i) : [],
-            // 尿液與血氣採檢時間常與抽血不同步，各自取自己最新的一次，不做比較
-            urine: uOrd.length ? itemsAt(urineData || {}, uOrd[0].i) : [],
-            gas: gOrd.length ? itemsAt(gasData || {}, gOrd[0].i) : [],
-            gasKind: gasKind,
-        });
-        const newSets = setAt(ord[0]);
-        const hasRef = newSets.blood.concat(newSets.urine, newSets.gas).some((it) => it.ref);
+        const urine = uOrd.length ? itemsByRecency(urineData || {}, uOrd).latest : [];
+        const gas = gOrd.length ? itemsByRecency(gasData || {}, gOrd).latest : [];
+
+        const hasRef = blood.latest.concat(urine, gas).some((it) => it.ref);
         if (!hasRef) return null;
-        if (ord.length < 2) return buildInterpretation(newSets);
-        const oldSets = setAt(ord[1]);
-        oldSets.urine = [];   // 尿液/血氣不比較，只在新的那組出現一次
-        oldSets.gas = [];
-        return buildComparison(oldSets, newSets, dayLabel(ord[1].d), dayLabel(ord[0].d));
+
+        const newSets = { blood: blood.latest, urine: urine, gas: gas, gasKind: gasKind };
+        if (!blood.prev.length) return buildInterpretation(newSets);
+
+        // 標題的日期範圍取「實際被引用到的」最舊與最新，而不是報告頁的前兩欄——
+        // 各項目的前一筆可能落在不同天。
+        const used = blood.latest.concat(blood.prev).map((it) => it.date).filter(Boolean);
+        const usedOrd = orderNewestFirst(used);
+        const newest = usedOrd.length ? dayLabel(usedOrd[0].d) : '';
+        const oldest = usedOrd.length ? dayLabel(usedOrd[usedOrd.length - 1].d) : '';
+        const oldSets = { blood: blood.prev, urine: [], gas: [], gasKind: gasKind };
+        return buildComparison(oldSets, newSets,
+            oldest && oldest !== newest ? oldest : '', newest);
     }
 
     // ====== UI ======
