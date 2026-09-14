@@ -30,7 +30,7 @@
 | `uro-performance` | 泌尿科績效填入工具：上傳刀表病人 CSV，自動填入主治醫師與 R （每月更新工作表） | 泌尿科 | 開啟績效頁面，點擊右下角「績」浮動按鈕，上傳 CSV 後點擊「開始全自動」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/uro-performance.user.js) |
 | `zero-performance` | 掛 0% 績效工具：一鍵把指定員編以 0% 掛進當前病人的 R 角色 | 通用 | 開啟績效頁面，點擊右下角「0%」浮動按鈕，輸入員編後點擊「掛 0% 到當前病人」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/zero-performance.user.js) |
 | `weekend-progress` | 病房列表一鍵對全病人撰寫週末病程：複製最新 progress、填 stable 並確認 | 通用 | 病房列表頁點右下角「⚡ 週末病程」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/weekend-progress.user.js) |
-| `login-ocr` | 登入頁面自動輸入驗證碼：透過連接物件標記與模板匹配演算法實作的零依賴驗證碼識別，輸入帳號密碼後按下 Enter 完成登入 | 通用 | Portal 登入頁面（Login.aspx）自動辨識並填入 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-ocr.user.js) |
+| `login-helper` | 整合驗證碼辨識、帳號記憶及快速登入，簡化 Portal 登入流程 | 通用 | Portal 登入頁面（Login.aspx）；點已記住的帳號即直接登入，可用帳號旁的 × 移除記錄 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-helper.user.js) |
 | `notify-record-tab` | 照會紀錄查詢開窗修正：QueryNotifyRecordByDr 的「查」連結改以新分頁開啟查詢結果；NotifyOtherDoctor 的 popup 按鈕改以新分頁開啟正確目標頁面，避免一直開啟目前頁面 | 通用 | 安裝後自動生效，無需額外操作；於 `QueryNotifyRecordByDr.aspx` 點「查」即在新分頁開啟，於 `NotifyOtherDoctor.aspx` 點各 popup 按鈕即在新分頁開啟對應頁面 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/notify-record-tab.user.js) |
 
 ### Note 撰寫相關
