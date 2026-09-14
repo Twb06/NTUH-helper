@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.7.0
+// @version      0.7.1
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -263,10 +263,9 @@
         'Epithelial cell': 'Epi', 'Albumin/CREA Ratio(Dipstick)': 'ACR',
     };
 
-    // 尿液 dipstick 的白蛋白/肌酸酐/ACR：原本整組濾掉，2026-09-10 起保留——
+    // 註：尿液 dipstick 的白蛋白/肌酸酐/ACR 原本整組濾掉，2026-09-10 起保留——
     // 蛋白尿定量在腎功能追蹤是實用資訊。（新竹本來就因為名稱不同而濾不到，
-    // 與其讓兩院輸出不一致，不如兩邊都顯示。）
-    const URINE_SKIP = [];
+    // 與其讓兩院輸出不一致，不如兩邊都顯示。）故此處不再有排除清單。
 
     // 舊式尿液鏡檢（M6 科室）：項目名沒有 (Dipstick)/(Sediment) 後綴，
     // 且 Protein / Glucose / Blood / Bacteria 這些名字和血液項目撞名，
@@ -533,10 +532,6 @@
         };
     }
 
-    // 逐列統計（診斷用）：欄位數分布、meta 寫入/補寫次數
-    let rowStats = { cellCounts: {}, metaSet: 0, metaBackfill: 0, metaEmpty: 0 };
-    function resetRowStats() { rowStats = { cellCounts: {}, metaSet: 0, metaBackfill: 0, metaEmpty: 0 }; }
-
     function pushToStore(store, name, idx, val, meta) {
         if (!store[name]) store[name] = [];
         while (store[name].length <= idx) store[name].push('');
@@ -548,12 +543,7 @@
         // 參考值就永遠補不上——判讀整個失效的真正原因。
         // 改為：只要目前還沒有 meta，任何一次帶著 meta 的寫入都補上去。
         if (meta && (meta.unit || meta.ref)) {
-            if (!getStoreMeta(store, name, idx)) {
-                setStoreMeta(store, name, idx, meta);
-                if (isFirst) rowStats.metaSet++; else rowStats.metaBackfill++;
-            }
-        } else if (isFirst) {
-            rowStats.metaEmpty++;
+            if (!getStoreMeta(store, name, idx)) setStoreMeta(store, name, idx, meta);
         }
     }
 
@@ -653,7 +643,6 @@
     function readListView(reportDoc, view) {
         const tables = reportDoc.querySelectorAll('table.DetailedSheet');
         if (!tables.length) return null;
-        resetRowStats();
 
         const dates = [];
         const trendData = {};
@@ -719,7 +708,6 @@
             rows.forEach(row => {
                 const cells = row.querySelectorAll('td');
                 if (cells.length < 2) return;
-                rowStats.cellCounts[cells.length] = (rowStats.cellCounts[cells.length] || 0) + 1;
 
                 const rawName = (cells[0].textContent || '').trim();
                 const rawVal = (cells[1].textContent || '').trim();
@@ -810,7 +798,6 @@
                 }
 
                 if (sClass === 'urine') {
-                    if (URINE_SKIP.includes(rawName)) return;
                     // 沒登錄過的項目就用原名，不要丟掉（不然會不知道漏了什麼）
                     const uName = normalizeUrineName(rawName, cleanName);
                     if (!uName) return;
@@ -1726,8 +1713,8 @@
     //   items     這條發現引用到的檢驗值
     //   showNames 括號內要不要標項目名（protocol 9(1) 的兩種格式）
     //   abnormal  是否為異常發現（決定排序與 improved/worsen）
-    const F = (id, desc, items, showNames, abnormal, unknown) =>
-        ({ id, desc, items: items.filter(Boolean), showNames, abnormal, unknown: !!unknown });
+    const F = (id, desc, items, showNames, abnormal) =>
+        ({ id, desc, items: items.filter(Boolean), showNames, abnormal });
     const withItems = (desc, items, id) => F(id || desc, desc, items, true, true);
     const withVal = (desc, it, id) => F(id || (it && it.name) || desc, desc, [it], false, true);
     const normalOf = (desc, items, showNames, id) =>
@@ -1742,7 +1729,7 @@
     // 沒有可解析的參考值時，仍要把值列出來（標 ?），不要讓項目憑空消失。
     // 判讀模式曾經因為抓不到參考值而整段不見，只剩唯一有後路的 Others——
     // 資料消失比判讀不出來嚴重得多。
-    const unknownOf = (it) => F(it.name, dispName(it.name), [it], false, false, true);
+    const unknownOf = (it) => F(it.name, dispName(it.name), [it], false, false);
 
     function pickItems(items) {
         const by = {};
@@ -2281,7 +2268,6 @@
                 dates: dates,
                 latest: blood.latest, prev: blood.prev,
                 urine: urine, gas: gas,
-                rowStats: rowStats,
                 patientSex: patientSex || '(未偵測到)',
                 usedBuiltinRef: blood.latest.filter((it) => !parseRef(it.ref) && refFor(it))
                     .map((it) => it.name),
@@ -2292,9 +2278,7 @@
             };
         } catch (e) { /* noop */ }
 
-        // 只要有任何一個項目判得出高低就值得出判讀（頁面參考值或內建皆可）
-        const judgeable = blood.latest.concat(urine, gas).some((it) => levelOf(it));
-        if (!judgeable && !blood.latest.length) return null;
+        if (!blood.latest.length && !urine.length && !gas.length) return null;
 
         const newSets = { blood: blood.latest, urine: urine, gas: gas, gasKind: gasKind };
         if (!blood.prev.length) return buildInterpretation(newSets);
