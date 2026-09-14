@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.7.2
+// @version      0.7.3
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -96,7 +96,6 @@
     const SEROLOGY = ['HBsAg', 'Anti-HBs', 'Anti-HCV', 'HIV', 'VDRL'];
     const THYROID = ['TSH', 'Free T4', 'T4', 'T3'];
     const OTHERS = ['Glucose', 'HbA1c', 'LDH', 'AMY', 'Lip', 'VIT. B12', 'Folic Acid', 'LA'];
-    const GAS = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE'];
     // VBG 的 PO2 沒有臨床意義，只有 ABG 才看；LA 併進氣體分析一起呈現
     const VGAS_ORDER = ['pH', 'PCO2', 'HCO3', 'BE', 'LA'];
     const AGAS_ORDER = ['pH', 'PCO2', 'PO2', 'HCO3', 'BE', 'SO2', 'FiO2', 'LA'];
@@ -152,13 +151,6 @@
         ['Tumor marker', TUMOR_MARKER, []],
         ['Thyroid', THYROID, []],
         ['Serology', SEROLOGY, []],
-    ];
-
-    const ALL_KNOWN = [
-        ...HEMOGRAM_MAIN, ...HEMOGRAM_EXT, ...RARE_DIFF,
-        ...LIVER, ...RENAL, ...ELECTROLYTES, ...CARDIAC,
-        ...LIPID, ...TUMOR_MARKER, ...SEROLOGY, ...THYROID, ...OTHERS,
-        ...GAS, ...COAG, 'MCV', 'Seg', 'eGFR',
     ];
 
     const ATTACH = { WBC: 'Seg', Hb: 'MCV', CRE: 'eGFR' };
