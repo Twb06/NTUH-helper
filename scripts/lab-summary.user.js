@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.6.1
+// @version      0.6.2
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -1656,8 +1656,8 @@
     //   items     這條發現引用到的檢驗值
     //   showNames 括號內要不要標項目名（protocol 9(1) 的兩種格式）
     //   abnormal  是否為異常發現（決定排序與 improved/worsen）
-    const F = (id, desc, items, showNames, abnormal) =>
-        ({ id, desc, items: items.filter(Boolean), showNames, abnormal });
+    const F = (id, desc, items, showNames, abnormal, unknown) =>
+        ({ id, desc, items: items.filter(Boolean), showNames, abnormal, unknown: !!unknown });
     const withItems = (desc, items, id) => F(id || desc, desc, items, true, true);
     const withVal = (desc, it, id) => F(id || (it && it.name) || desc, desc, [it], false, true);
     const normalOf = (desc, items, showNames, id) =>
@@ -1665,9 +1665,14 @@
 
     // 一段的組裝：異常在前、正常在後（protocol 9(4)）
     // 異常在前、正常在後（protocol 9(4)）
-    function joinFindings(abnormal, normal) {
-        return abnormal.concat(normal).filter(Boolean);
+    function joinFindings(abnormal, normal, unknown) {
+        return abnormal.concat(normal, unknown || []).filter(Boolean);
     }
+
+    // 沒有可解析的參考值時，仍要把值列出來（標 ?），不要讓項目憑空消失。
+    // 判讀模式曾經因為抓不到參考值而整段不見，只剩唯一有後路的 Others——
+    // 資料消失比判讀不出來嚴重得多。
+    const unknownOf = (it) => F(it.name, dispName(it.name), [it], false, false, true);
 
     function pickItems(items) {
         const by = {};
@@ -1680,7 +1685,7 @@
         const hb = by.Hb, mcv = by.MCV, wbc = by.WBC, plt = by.Plt;
         if (!hb && !wbc && !plt) return [];
         const lHb = levelOf(hb), lWbc = levelOf(wbc), lPlt = levelOf(plt);
-        const ab = [], nl = [];
+        const ab = [], nl = [], unk = [];
 
         if (lHb === 'low' && lWbc === 'low' && lPlt === 'low') {
             return [withItems('Pancytopenia', [hb, wbc, plt], 'CBC')];
@@ -1698,16 +1703,19 @@
         } else if (lHb === 'high') {
             ab.push(withVal('elevated Hb', hb));
         } else if (lHb === 'normal') { nl.push(normalOf('normal Hb', [hb], false)); }
+        else if (hb) { unk.push(unknownOf(hb)); }
 
         if (lWbc === 'high') ab.push(withItems('Leukocytosis', [wbc], 'WBC'));
         else if (lWbc === 'low') ab.push(withItems('Leukopenia', [wbc], 'WBC'));
         else if (lWbc === 'normal') nl.push(normalOf('normal WBC', [wbc], false));
+        else if (wbc) unk.push(unknownOf(wbc));
 
         if (lPlt === 'high') ab.push(withItems('Thrombocytosis', [plt], 'Plt'));
         else if (lPlt === 'low') ab.push(withItems('Thrombocytopenia', [plt], 'Plt'));
         else if (lPlt === 'normal') nl.push(normalOf('normal PLT', [plt], false));
+        else if (plt) unk.push(unknownOf(plt));
 
-        return joinFindings(ab, nl);
+        return joinFindings(ab, nl, unk);
     }
 
     // ── #. BCS（肝腎）──────────────────────────────────────────
@@ -1760,6 +1768,7 @@
         }
 
         // 其餘肝指標的個別異常（已經被 R value / 膽紅素講過的就不重複）
+        const unk = [];
         const covered = new Set();
         if (hepUp && choUp) { covered.add('ALT'); covered.add('ALP'); }
         if (levelOf(tb) === 'high') { covered.add('T-Bil'); covered.add('D-Bil'); }
@@ -1768,14 +1777,20 @@
             const l = levelOf(by[k]);
             if (l === 'high') ab.push(withVal('elevated ' + k, by[k]));
             else if (l === 'low') ab.push(withVal('decreased ' + k, by[k]));
+            else if (!l) unk.push(unknownOf(by[k]));
         });
 
         // 腎功能
         const lCre = levelOf(by.CRE), lBun = levelOf(by.BUN);
         if (lCre === 'high') ab.push(withVal('elevated Cre', by.CRE));
         else if (lCre === 'low') ab.push(withVal('decreased Cre', by.CRE));
+        else if (by.CRE && !lCre) unk.push(unknownOf(by.CRE));
         if (lBun === 'high') ab.push(withVal('elevated BUN', by.BUN));
         else if (lBun === 'low') ab.push(withVal('decreased BUN', by.BUN));
+        else if (by.BUN && !lBun) unk.push(unknownOf(by.BUN));
+        // eGFR 沒有數值型參考值（欄位是說明文字），Cre 正常時本來就不顯示；
+        // 但 Cre 也判不出來時，至少把 eGFR 的值列出來
+        if (by.eGFR && !lCre) unk.push(unknownOf(by.eGFR));
         // Cre 正常就不必標 CKD 分期（protocol 4(4)）。
         // 只在 Cre **偏高**時標——Cre 偏低（如 0.37）配上高 eGFR 標「CKD Stage 1」
         // 是誤導的訊號，那不是慢性腎病，只是肌肉量少/稀釋。
@@ -1795,7 +1810,7 @@
         if (kidneyAllNormal) nl.push(normalOf('normal kidney function', kidney, true, 'Kidney'));
         if (!liver.length) nl.push(F('Liver', 'no liver profile', [], false, false));
         if (!kidney.length) nl.push(F('Kidney', 'no kidney profile', [], false, false));
-        return joinFindings(ab, nl);
+        return joinFindings(ab, nl, unk);
     }
 
     // ── #. Electrolytes ────────────────────────────────────────
@@ -1805,7 +1820,7 @@
     function interpretLytes(by) {
         const present = LYTE_KEYS.map((k) => by[k]).filter(Boolean);
         if (!present.length) return [];
-        const ab = [], nl = [];
+        const ab = [], nl = [], unk = [];
         LYTE_KEYS.forEach((k) => {
             const it = by[k];
             if (!it) return;
@@ -1816,9 +1831,11 @@
                 ab.push(LYTE_NAMED[k] ? withItems(LYTE_NAMED[k][1], [it], k) : withVal('decreased ' + k, it, k));
             } else if (l === 'normal') {
                 nl.push(normalOf('normal ' + k, [it], false));
+            } else {
+                unk.push(unknownOf(it));
             }
         });
-        return joinFindings(ab, nl);
+        return joinFindings(ab, nl, unk);
     }
 
     // ── #. Coagulation ─────────────────────────────────────────
@@ -1826,7 +1843,7 @@
     function interpretCoag(by) {
         const present = COAG_KEYS.map((k) => by[k]).filter(Boolean);
         if (!present.length) return [];
-        const ab = [];
+        const ab = [], unk = [];
         let allNormal = true;
         COAG_KEYS.forEach((k) => {
             const it = by[k];
@@ -1834,10 +1851,10 @@
             const l = levelOf(it);
             if (l === 'high') { ab.push(withVal('prolonged ' + k, it)); allNormal = false; }
             else if (l === 'low') { ab.push(withVal('shortened ' + k, it)); allNormal = false; }
-            else if (l !== 'normal') { allNormal = false; }
+            else if (l !== 'normal') { allNormal = false; unk.push(unknownOf(it)); }
         });
         if (allNormal) return [normalOf('Normal coagulation function', present, true, 'Coag')];
-        return joinFindings(ab, present.filter((it) => levelOf(it) === 'normal').map((it) => normalOf('normal ' + it.name, [it], false)));
+        return joinFindings(ab, present.filter((it) => levelOf(it) === 'normal').map((it) => normalOf('normal ' + it.name, [it], false)), unk);
     }
 
     // ── #. Others ──────────────────────────────────────────────
@@ -1851,7 +1868,7 @@
             if (l === 'high') ab.push(withVal('elevated ' + it.name, it));
             else if (l === 'low') ab.push(withVal('decreased ' + it.name, it));
             else if (l === 'normal') nl.push(normalOf('normal ' + it.name, [it], false));
-            else ab.push(withVal(it.name, it));
+            else nl.push(unknownOf(it));
         });
         return joinFindings(ab, nl);
     }
