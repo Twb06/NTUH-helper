@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 檢驗整理
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.6.4
+// @version      0.7.0
 // @description  在檢驗報告頁 (MedicalReportContent.aspx) 自動讀取 DOM，整理成「趨勢」段落或「對齊表格」兩種呈現，可於結果框標題列切換並記住選擇（支援清單版與綠單趨勢版）。依檢體種類分流，血液/尿液/糞便/腹水/血氣各自成組，項目名一律用縮寫
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx*
 // @match        *://*.ntuh.gov.tw/WebApplication/ElectronicMedicalReportViewer/MobileReportPage.aspx*
@@ -1619,6 +1619,50 @@
     // 各院區/科室的參考範圍不同（總院 vs 新竹 LU），寫死會判錯。
     // ══════════════════════════════════════════════════════════
 
+    // ── 內建參考範圍（頁面抓不到時的後備）────────────────────
+    // 只收錄**實際在 NTUH 報告頁出現過**的範圍，不自行編造——錯的參考值
+    // 會產出錯的臨床判讀，比沒有判讀更糟。沒收錄的項目維持「只顯示值、
+    // 不下判斷」。頁面若有給參考值一律優先用頁面的（那是依性別給的，較準）。
+    // 來源：新竹 LU/LH 科室報告頁實測 dump（2026-09）。
+    const BUILTIN_REF = {
+        WBC: [3.25, 9.16], MCV: [80.9, 99.3], MCH: [25.5, 33.2], MCHC: [31.0, 34.9],
+        Plt: [150, 378], RDW: [11.6, 15.0],
+        Seg: [41.6, 74.4], 'Lym.': [18.0, 48.8], 'Mono.': [3.3, 8.9],
+        'Eos.': [0.3, 7.9], 'Baso.': [0.2, 1.6], Band: [0, 5],
+        BUN: [7, 25], Na: [136, 145], K: [3.5, 5.1], Mg: [0.78, 1.11],
+        'T-Bil': [0.3, 1], AST: [8, 31], aPTT: [25.6, 32.6],
+        CRP: [0, 1.0],            // hs-CRP，頁面寫 <1.0(評估感染或發炎性疾病)
+        Glucose: [0, 100],        // Sugar(One touch)，頁面寫 <100
+        // 依性別不同的項目：頁面有給就用頁面的，這裡只是後備
+        Hb: { M: [13.5, 17.5], F: [11.0, 15.2] },
+        HCT: { M: [41.0, 53.0], F: [34.8, 46.3] },
+        RBC: { M: [4.4, 5.9], F: [3.78, 5.25] },
+        CRE: { M: [0.7, 1.3], F: [0.6, 1.3] },
+    };
+
+    // 病人性別：報告/病歷頁的病人橫幅常見「王素真(F,1955/12/07,70y9m)」。
+    // 抓不到時不猜——性別相異的項目就退回「只顯示值」，不用可能錯的範圍下判斷。
+    let patientSex = '';
+    function detectPatientSex(doc) {
+        try {
+            const t = (doc || document).documentElement.innerText || '';
+            const m = t.match(/\(\s*([MF])\s*,\s*\d{4}\//);
+            patientSex = m ? m[1] : '';
+        } catch (e) { patientSex = ''; }
+        return patientSex;
+    }
+
+    // 參考範圍解析：頁面的優先，其次內建
+    function refFor(item) {
+        const fromPage = parseRef(item && item.ref);
+        if (fromPage) return fromPage;
+        const b = BUILTIN_REF[item && item.name];
+        if (!b) return null;
+        if (Array.isArray(b)) return { lo: b[0], hi: b[1], builtin: true };
+        if (!patientSex || !b[patientSex]) return null;   // 性別未知就不猜
+        return { lo: b[patientSex][0], hi: b[patientSex][1], builtin: true };
+    }
+
     // 參考值字串 → { lo, hi }。認得 a~b / a-b / ≦x / ≧x / Normal(<30) 等寫法；
     // 「本項結果屬計算值」這種說明文字回 null（＝無法判定高低）。
     function parseRef(ref) {
@@ -1646,14 +1690,23 @@
     }
 
     // 邊界值算正常（BUN 23.9 而參考值 7~25 → normal）
+    const cmp = (n, r) => (n < r.lo ? 'low' : n > r.hi ? 'high' : 'normal');
+
     function levelOf(item) {
         if (!item) return null;
         const n = numVal(item.val);
-        const r = parseRef(item.ref);
-        if (n === null || !r) return null;
-        if (n < r.lo) return 'low';
-        if (n > r.hi) return 'high';
-        return 'normal';
+        if (n === null) return null;
+        const fromPage = parseRef(item.ref);
+        if (fromPage) return cmp(n, fromPage);
+        const b = BUILTIN_REF[item.name];
+        if (!b) return null;
+        if (Array.isArray(b)) return cmp(n, { lo: b[0], hi: b[1] });
+        if (patientSex && b[patientSex]) return cmp(n, { lo: b[patientSex][0], hi: b[patientSex][1] });
+        // 性別未知：男女範圍各算一次，**結論一致就採用**（如 Cre 0.37 不論男女都偏低），
+        // 結論不同才放棄（如 Hb 11.4 對女性正常、對男性偏低）。
+        const lm = b.M && cmp(n, { lo: b.M[0], hi: b.M[1] });
+        const lf = b.F && cmp(n, { lo: b.F[0], hi: b.F[1] });
+        return lm && lf && lm === lf ? lm : null;
     }
 
     // 判讀輸出用的顯示名（store 內部名沿用縮寫表，這裡只做臨床習慣的微調）
@@ -1762,7 +1815,7 @@
         const hepUp = ['ALT', 'AST'].some((k) => levelOf(by[k]) === 'high');
         const choUp = ['ALP', 'GGT'].some((k) => levelOf(by[k]) === 'high');
         if (hepUp && choUp && alt && alp) {
-            const rAlt = parseRef(alt.ref), rAlp = parseRef(alp.ref);
+            const rAlt = refFor(alt), rAlp = refFor(alp);
             const nAlt = numVal(alt.val), nAlp = numVal(alp.val);
             if (rAlt && rAlp && isFinite(rAlt.hi) && isFinite(rAlp.hi) && nAlp && rAlp.hi) {
                 const R = (nAlt / rAlt.hi) / (nAlp / rAlp.hi);
@@ -1823,8 +1876,12 @@
         if (liverAllNormal && kidneyAllNormal) {
             return [normalOf('Normal liver and kidney function', liver.concat(kidney), true, 'LiverKidney')];
         }
+        // 整組「normal liver/kidney function」不成立時（有異常、或有項目判不出來），
+        // 個別判定為正常的項目仍要列出來，否則會憑空消失。
         if (liverAllNormal) nl.push(normalOf('normal liver function', liver, true, 'Liver'));
+        else liver.forEach((it) => { if (levelOf(it) === 'normal') nl.push(normalOf('normal ' + it.name, [it], false)); });
         if (kidneyAllNormal) nl.push(normalOf('normal kidney function', kidney, true, 'Kidney'));
+        else kidneyCore.forEach((it) => { if (levelOf(it) === 'normal') nl.push(normalOf('normal ' + dispName(it.name), [it], false)); });
         if (!liver.length) nl.push(F('Liver', 'no liver profile', [], false, false));
         if (!kidney.length) nl.push(F('Kidney', 'no kidney profile', [], false, false));
         return joinFindings(ab, nl, unk);
@@ -2208,6 +2265,7 @@
     function buildInterpretView(dates, trendData, urineData, urineDates, gasData, gasDates, gasKind) {
         const ord = orderNewestFirst(dates || []);
         if (!ord.length) return null;
+        detectPatientSex(document);
         const blood = itemsByRecency(trendData, ord);
         // 尿液與血氣採檢時間常與抽血不同步，各自取自己最新的一次，不做比較
         const uOrd = orderNewestFirst(urineDates || []);
@@ -2224,14 +2282,19 @@
                 latest: blood.latest, prev: blood.prev,
                 urine: urine, gas: gas,
                 rowStats: rowStats,
+                patientSex: patientSex || '(未偵測到)',
+                usedBuiltinRef: blood.latest.filter((it) => !parseRef(it.ref) && refFor(it))
+                    .map((it) => it.name),
+                stillUnknown: blood.latest.filter((it) => !refFor(it)).map((it) => it.name),
                 noRef: blood.latest.filter((it) => !it.ref).map((it) => it.name),
                 unparsedRef: blood.latest.filter((it) => it.ref && !parseRef(it.ref))
                     .map((it) => it.name + ' → "' + it.ref + '"'),
             };
         } catch (e) { /* noop */ }
 
-        const hasRef = blood.latest.concat(urine, gas).some((it) => it.ref);
-        if (!hasRef) return null;
+        // 只要有任何一個項目判得出高低就值得出判讀（頁面參考值或內建皆可）
+        const judgeable = blood.latest.concat(urine, gas).some((it) => levelOf(it));
+        if (!judgeable && !blood.latest.length) return null;
 
         const newSets = { blood: blood.latest, urine: urine, gas: gas, gasKind: gasKind };
         if (!blood.prev.length) return buildInterpretation(newSets);
