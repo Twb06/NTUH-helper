@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 藥歷圖工具
 // @namespace    https://github.com/your-username/chart-antibiotic-extractor
-// @version      1.4.5
+// @version      1.4.6
 // @description  讀取藥歷圖 (Chart.aspx) 的 TradeNameGroupsOfEachDrug，整理任意藥物成「商品名 起日-迄日」，迄日為今天或未來則留破折號
 // @match        *://*/*Chart.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js
@@ -345,14 +345,29 @@
             if (!sessionStorage.getItem(TRIGGERED)) {
                 const btn = document.getElementById('btnMonth');
                 const cbs = document.querySelectorAll('input[id^="cblDrugFormulaType_"]');
+                // 病人類別（門診/住院/急診/非本院體系健保藥歷）院方已改成預設不勾，
+                // 全不勾時按 1M 會查不到任何藥。這裡補成全勾。
+                // 注意：這些 checkbox 的 onclick 各自帶 __doPostBack，逐個 .click() 會連打
+                // 多次 postback 互相打架；直接設 .checked，讓後面 btnMonth 那次 postback
+                // 一併把四個值送出即可（與下方 cblDrugFormulaType 同套路）。
+                const pts = document.querySelectorAll('input[id^="cblPatientType_"]');
                 if (btn && cbs.length) {
                     sessionStorage.setItem(TRIGGERED, '1');
                     sessionStorage.setItem(PENDING, token);
+                    if (pts.length) {
+                        const before = [...pts].filter((cb) => cb.checked).length;
+                        pts.forEach((cb) => { if (!cb.disabled) cb.checked = true; });
+                        const all = document.getElementById('ckbPatientTypeAll');
+                        if (all && !all.disabled) all.checked = true; // 只為 UI 一致，值以清單為準
+                        console.log(L, '病人類別補勾', before, '→', [...pts].filter((cb) => cb.checked).length, '/', pts.length);
+                    } else {
+                        console.log(L, '找不到 cblPatientType_*，略過補勾（頁面版型可能已變）');
+                    }
                     cbs.forEach((cb) => {
                         const lbl = cb.closest('td,label,div')?.innerText || '';
                         cb.checked = /抗生素/.test(lbl);
                     });
-                    console.log(L, '設定抗生素 only + click btnMonth（部分 postback，繼續輪詢）');
+                    console.log(L, '設定抗生素 only + 全部病人類別 + click btnMonth（部分 postback，繼續輪詢）');
                     try { window.TradeNameGroupsOfEachDrug = undefined; } catch (e) { /* noop */ } // 清舊值，只認局部更新後的新資料
                     postT0 = performance.now();
                     btn.click(); // 局部更新，不 reload；輪詢繼續，下一 tick 起等資料
