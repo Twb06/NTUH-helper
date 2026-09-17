@@ -5,6 +5,7 @@
 // @icon         https://www.ntuh.gov.tw/images/logo.ico
 // @description  Recognize the NTUH Portal captcha and provide opt-in quick login for saved accounts.
 // @author       WeiJyun9008
+// @match        http://portal.ntuh.gov.tw/General/Login.aspx*
 // @match        https://portal.ntuh.gov.tw/General/Login.aspx*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-helper.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/login-helper.user.js
