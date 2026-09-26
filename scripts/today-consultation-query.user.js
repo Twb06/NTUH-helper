@@ -6,8 +6,8 @@
 // @author       Twb06
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/QueryNotifyRecordByDr.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/QueryNotifyRecordByDr.aspx*
-// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/consult-today-query.user.js
-// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/consult-today-query.user.js
+// @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/today-consultation-query.user.js
+// @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/today-consultation-query.user.js
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
