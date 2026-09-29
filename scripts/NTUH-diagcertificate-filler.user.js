@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      2.1.1
+// @version      2.1.2
 // @description  自動填入診斷書＋手術同意書 PDF 解析（住院期間有手術時自動帶入建議手術名稱與診斷病名）。pdf.js 由 GitHub 提供。※ 2.1.0：新增「自費」項目（多筆+可編輯常用項目快選）＋「常用字串」一鍵接入醫師囑言（可編輯）
 // @author       YT / Twb06
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -36,6 +36,10 @@
     // 故不能直接用 location.origin，需依院區對應到住院系統網域。
     const IS_HSINCHU = /^hch/i.test(location.hostname);
     const INPATIENT_ORIGIN = IS_HSINCHU ? 'https://hchihisaw.ntuh.gov.tw' : 'https://ihisaw.ntuh.gov.tw';
+    // 背景頁把結果 postMessage 回門診診斷書頁時的 targetOrigin。寫死總院的話，
+    // 新竹的 opener 是 hchhisaw，瀏覽器會**靜默丟棄**該訊息（不報錯），
+    // 只剩 GM 值變更那條備援在撐。
+    const OUTPATIENT_ORIGIN = IS_HSINCHU ? 'https://hchhisaw.ntuh.gov.tw' : 'https://hisaw.ntuh.gov.tw';
 
     let detectedOpList = [];
 
@@ -590,7 +594,7 @@
             };
             GM_setValue(CONSENT_RESULT_KEY, result);
             if (window.opener) {
-                window.opener.postMessage(result, 'https://hisaw.ntuh.gov.tw');
+                window.opener.postMessage(result, OUTPATIENT_ORIGIN);
                 console.log('[ConsentHelper] 資料已透過 postMessage 回傳，共', consentList.length, '筆');
             }
 
@@ -643,10 +647,7 @@
             const result = { ntuh: true, token, error: e.message || '背景頁面讀取失敗', sentAt: Date.now() };
             GM_setValue(CONSENT_RESULT_KEY, result);
             if (window.opener) {
-                window.opener.postMessage(
-                    result,
-                    'https://hisaw.ntuh.gov.tw'
-                );
+                window.opener.postMessage(result, OUTPATIENT_ORIGIN);
             }
             await sleep(100);
             window.close();
