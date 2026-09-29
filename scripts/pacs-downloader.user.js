@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         NTUH 照會系統 PACS 全序列自動打包下載器 (含檢查名稱與日期版)
 // @namespace    http://tampermonkey.net/
-// @version      0.2.0
+// @version      0.3.0
 // @description  使用 PACS 原生影像下載 API 一次下載全檢查影像 ZIP
 // @match        https://newpacsweb1.ntuh.gov.tw/*
 // @match        https://newpacsweb2.ntuh.gov.tw/*
+// @match        https://hchpacsweb.hch.gov.tw/*
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/pacs-downloader.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/pacs-downloader.user.js
 // @grant        GM_xmlhttpRequest
@@ -12,7 +13,9 @@
 // @connect      *
 // ==/UserScript==
 
-// PACS API 主機會輪替；使用者程式內的 getPacsApiBase() 仍限制為 NTUH 的 HTTPS MWEB/SWEB 主機。
+// PACS API 主機會輪替；getPacsApiBase() 只信任與目前頁面**同一個機構網域**的 HTTPS 主機。
+// 注意：新竹分院 PACS 在 hch.gov.tw（hchpacsweb.hch.gov.tw），不是 ntuh.gov.tw——
+// HIS 那套「hch 前綴 + ntuh.gov.tw」的慣例在 PACS 不適用。
 
 (function() {
     'use strict';
@@ -208,19 +211,36 @@
             findTokenInStorage(localStorage);
     }
 
+    // 院區判定。總院 PACS：newpacsweb{n}.ntuh.gov.tw；新竹：hchpacsweb.hch.gov.tw。
+    // 新竹用的是 hch.gov.tw 這個**不同的機構網域**，不是 ntuh 的子網域。
+    const PACS_HOST_NTUH = /^newpacsweb\d+\.ntuh\.gov\.tw$/i;
+    const PACS_HOST_HCH = /^hchpacsweb\.hch\.gov\.tw$/i;
+    const isPacsHost = (h) => PACS_HOST_NTUH.test(h) || PACS_HOST_HCH.test(h);
+    const siteDomain = () => (/\.hch\.gov\.tw$/i.test(location.hostname) ? 'hch.gov.tw' : 'ntuh.gov.tw');
+
     function getPacsApiBase() {
         // Tampermonkey 有隔離沙箱；PACS 的 config 存在於頁面本身的 window。
         const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
         const configuredApi = pageWindow.config && pageWindow.config.api;
+        const domain = siteDomain();
         try {
             const url = new URL(configuredApi);
-            if (url.protocol === 'https:' && /^(?:sweb\d+-\d+|mweb\d+-\d+)\.ntuh\.gov\.tw$/i.test(url.hostname)) {
+            // 總院維持原本刻意設的白名單（MWEB/SWEB 樣式），不放寬。
+            // 新竹的 API 主機命名未知，只能退一步要求「與頁面同機構網域」——
+            // 原本那串 ntuh 專用樣式會把新竹的 config 擋下，然後靜默退回總院端點。
+            const ok = domain === 'ntuh.gov.tw'
+                ? /^(?:sweb\d+-\d+|mweb\d+-\d+)\.ntuh\.gov\.tw$/i.test(url.hostname)
+                : /(^|\.)hch\.gov\.tw$/i.test(url.hostname);
+            if (url.protocol === 'https:' && ok) {
                 return url.href.replace(/\/$/, '');
             }
         } catch (_) {
-            // 舊版 PACS 未提供或提供無效 config 時使用既有相容端點。
+            // 舊版 PACS 未提供或提供無效 config。
         }
-        return 'https://mweb05-20015.ntuh.gov.tw/html5server';
+        // 相容端點只有總院有已知的一個。新竹拿不到 config 就明確失敗，
+        // **不要靜默打到總院去**——那會接到別院的資料或直接失敗，而且看起來像「有在動」。
+        if (domain === 'ntuh.gov.tw') return 'https://mweb05-20015.ntuh.gov.tw/html5server';
+        throw new Error('PACS 未提供有效的 config.api，且本院區沒有已知的相容端點');
     }
 
     async function extractFirstZipFile(blob) {
@@ -556,7 +576,7 @@
     /* =========================================================================
        模組：PACS 影像檢視器
        ========================================================================= */
-    if (/^newpacsweb\d+\.ntuh\.gov\.tw$/.test(location.hostname)) {
+    if (isPacsHost(location.hostname)) {
 
         function createUI() {
             if (document.getElementById('ntuh-pacs-fab')) return;
