@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.7.0
+// @version      0.8.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -168,68 +168,19 @@
     ];
     const ABX_RE = new RegExp(ABX_NAMES.map((n) => n.replace(/[-]/g, '\\-')).join('|'), 'i');
 
-    // ─── 耗時統計（不含任何識別碼；只記「來源名稱＋等待／執行毫秒」）──────────
-    // wait＝在閘門前排隊的時間；run＝實際執行時間。vitals／影像走 lib 內部的排隊，只能量到含排隊的總時間（wait=null）。
-    let statsBook = null;
-    function recordStat(name, waitMs, runMs) {
-        if (!statsBook) return;
-        const e = statsBook[name] || (statsBook[name] = { wait: [], run: [], hasWait: waitMs !== null });
-        if (waitMs !== null) e.wait.push(waitMs);
-        e.run.push(runMs);
-    }
-    const timed = async (name, fn) => {
-        const t0 = nowMs();
-        try { return await fn(); } finally { recordStat(name, null, nowMs() - t0); }
-    };
-
     // 簡單併發閘門：同時最多 max 個任務（晨間簡報每人要開處方頁與管路頁，避免一次灌爆院內主機）
-    function makeGate(max, name) {
+    function makeGate(max) {
         let active = 0;
         const queue = [];
         return async (task) => {
-            const t0 = nowMs();
             if (active >= max) await new Promise((release) => queue.push(release));
-            const t1 = nowMs();
             active += 1;
-            try { return await task(); } finally {
-                active -= 1;
-                const next = queue.shift();
-                if (next) next();
-                recordStat(name, t1 - t0, nowMs() - t1);
-            }
+            try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
         };
     }
-    const RX_CONCURRENCY = 3;   // 處方頁同時數（原 2；處方頁約 200KB，是最重的請求）
-    const rxGate = makeGate(RX_CONCURRENCY, 'rx');
+    const rxGate = makeGate(3);   // 處方頁（約 200KB，最重的請求）
     // 管路一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰）
-    const tubeGate = makeGate(1, 'tubes');
-
-    // 統計表：忙碌率＝該來源執行時間總和 ÷（總時間 × 同時上限），接近 100% 代表它是瓶頸
-    function statsSummary(wallMs) {
-        const S = statsBook || {};
-        const sum = (a) => a.reduce((x, y) => x + y, 0);
-        const sec = (ms) => (ms / 1000).toFixed(1) + 's';
-        const defs = [
-            ['rx', '處方頁（抗生素）', RX_CONCURRENCY], ['tubes', '管路', 1],
-            ['vitals', 'vitals（含排隊）', 0], ['pacs', '影像（含排隊）', 0],
-            ['phase1', '階段一總計（vitals＋影像）', 0], ['phase2', '階段二總計（抗生素＋管路）', 0],
-            ['patient', '卡片完成時間（從按下起算）', 0],
-        ];
-        const rows = defs.filter(([k]) => S[k] && S[k].run.length).map(([k, label, conc]) => {
-            const e = S[k];
-            return {
-                來源: label, 次數: e.run.length,
-                平均等待: e.hasWait ? sec(sum(e.wait) / e.wait.length) : '—',
-                平均執行: sec(sum(e.run) / e.run.length), 最長執行: sec(Math.max(...e.run)),
-                忙碌率: conc ? Math.round((sum(e.run) / (wallMs * conc)) * 100) + '%' : '—',
-            };
-        });
-        const cols = ['來源', '次數', '平均等待', '平均執行', '最長執行', '忙碌率'];
-        const html = `<details class="stats"><summary>耗時統計（總計 ${sec(wallMs)}）</summary><table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${
-            rows.map((r) => `<tr>${cols.map((c) => `<td>${esc(r[c])}</td>`).join('')}</tr>`).join('')
-        }</tbody></table><div class="muted">忙碌率＝該來源實際執行時間總和 ÷（總計時間 × 同時上限）；最接近 100% 的就是瓶頸。平均等待＝在閘門前排隊的時間。</div></details>`;
-        return { rows, html };
-    }
+    const tubeGate = makeGate(1);
 
     const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
     const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
@@ -352,7 +303,7 @@
         const job = jobRunner(res, onUpdate);
         await Promise.all([
             job('vitals', 'vitals ', async () => {
-                const html = await timed('vitals', () => NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }));
+                const html = await NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS });
                 const texts = vitalTexts(html);
                 const obs = NTUHNews2.parseVitalRows(texts);
                 res.vitals = NTUHNews2.summarizeWindow(obs, win.fromMs, win.toMs);
@@ -362,7 +313,7 @@
                 res.o2 = NTUHNews2.o2Change(res.vitals.series);
             }),
             job('pacs', '影像', async () => {
-                res.pacs = parsePacs(await timed('pacs', () => NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS })), win.fromMs);
+                res.pacs = parsePacs(await NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }), win.fromMs);
             }),
         ]);
     }
@@ -497,9 +448,9 @@
     function chartsHtml(r, win) {
         const series = r.chartSeries;
         if (!series || !series.length) return '';
-        return `<details class="charts" open><summary>生命徵象</summary>
-${hospVitals(series, { fromMs: win.refFromMs, toMs: win.toMs })}
-${dataTable(series)}</details>`;
+        // 圖固定顯示（不收合）；標題「生命徵象 ↗」在卡片骨架（cardShell）裡，數據表仍可展開
+        return `<div class="charts">${hospVitals(series, { fromMs: win.refFromMs, toMs: win.toMs })}
+${dataTable(series)}</div>`;
     }
 
     // 頁面內互動（序列化後放進新分頁執行，不可引用外部變數）。
@@ -569,18 +520,42 @@ ${dataTable(series)}</details>`;
             return x.report ? `<details class="pc"><summary>${tag}</summary><div class="rep">${esc(x.report)}</div></details>` : `<div>${tag}</div>`;
         }).join('');
     }
+    // 每張卡的快速連結（新分頁）。只用「SESSION＋AccountIDSE（或 ChartNo）」就能開的頁面（依 progress-note-data-helper
+    // 現有網址）；SESSION 只放在 href，不顯示、不存。不放藥歷圖／PACS（需要 PersonID）與管路頁
+    // （CatheterCare 的「目前病人」是伺服器端狀態，同時開兩位病人的頁面再操作，可能看到別人的資料）。
+    function pageUrls(p) {
+        const ses = encodeURIComponent(pageSession());
+        const acct = encodeURIComponent(p.caseno);
+        const base = location.origin + '/WebApplication/InPatient/';
+        return {
+            lab: labPageUrl(p),
+            vitals: `${base}Nursing/VitalSign_TPR.aspx?session=${ses}&AccountIDSE=${acct}`,
+            nursing: `${base}Nursing/NursingProgressNote.aspx?SESSION=${ses}&AccountIDSE=${acct}`,
+            handover: `${base}Ward/OffDutyNurV2.aspx?SESSION=${ses}&InQuerySortMode=QByEmp&AccountIDSE=${acct}&Type=Nur`,
+            rx: `${base}Ward/MedicationV2.aspx?SESSION=${ses}&PatClass=I&AccountIDSE=${acct}&Hosp=T0&Seed=&EMRPop=Y`,
+        };
+    }
+    // 標題列只放護理紀錄、交班；檢驗、生命徵象圖、處方的連結分別放在各自區塊的標題裡（見 cardShell）
+    function renderLinks(r) {
+        const u = pageUrls(r.p);
+        return [['護理紀錄', u.nursing], ['交班', u.handover]]
+            .map(([t, url]) => `<a class="tag" href="${esc(url)}" target="_blank" rel="noopener">${t} ↗</a>`).join('');
+    }
+    const titleLink = (text, url) => `<a href="${esc(url)}" target="_blank" rel="noopener" title="開啟${esc(text)}頁（新分頁）">${esc(text)} ↗</a>`;
     const renderCharts = (r, win) => (r.pending.has('vitals') ? '<div class="muted nov">生命徵象圖：抓取中…</div>' : chartsHtml(r, win));
 
     function cardShell(i, r, win) {
         const p = r.p;
+        const u = pageUrls(p);
         return `<section class="card">
-<div class="hd"><b>${esc(p.bed)}</b> ${esc(p.name)} <small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small></div>
+<div class="hd"><b>${esc(p.bed)}</b> ${esc(p.name)} <small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small> <span class="lk">${renderLinks(r)}</span></div>
 <div id="c${i}-vit">${renderVit(r, win)}</div>
 <div id="c${i}-err">${renderErr(r)}</div>
-<div class="kv"><span class="k">抗生素</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
+<div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k">管路</span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
-<div class="kv"><span class="k">檢驗</span><div id="c${i}-lab">${renderLab(r)}</div></div>
+<div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div id="c${i}-lab">${renderLab(r)}</div></div>
 <div class="kv"><span class="k">影像</span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
+<div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
 <div id="c${i}-charts">${renderCharts(r, win)}</div></section>`;
     }
 
@@ -614,11 +589,11 @@ th{font-size:12px;color:var(--mut)}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
 @media (max-width:1000px){.grid{grid-template-columns:1fr}}
 .card{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
-.hd{font-size:15px;margin-bottom:2px}
-.kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:3.6em;font-size:12px;color:var(--mut)}
+.hd{font-size:15px;margin-bottom:2px}.hd .lk{margin-left:6px}.hd .lk .tag{margin:0 3px 0 0}
+.kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:4.8em;font-size:12px;color:var(--mut)}
+.k a,.mt a{color:inherit;text-decoration:none}.k a:hover,.mt a:hover{text-decoration:underline}
 .pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
-.stats{margin-top:14px;font-size:12px}.stats>summary{cursor:pointer;color:var(--mut)}.stats table{width:auto;margin:4px 0}.stats th,.stats td{padding:2px 14px 2px 0}
-.charts{margin-top:6px}.charts>summary{cursor:pointer;font-size:12px;color:var(--mut)}
+.charts{margin-top:2px}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
 svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
 svg.hsvg .ax{cursor:pointer}svg.hsvg .ax text{stroke-width:.35;font-size:13px}svg.hsvg .ax line,svg.hsvg .ser line{stroke-width:1}
@@ -630,7 +605,6 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 <h1>晨間簡報</h1>
 <div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 圖表參考資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(scope)} · 共 ${states.length} 人（依病房列表順序） · <span id="prog">載入中 0/${states.length}</span></div>
 <div class="grid">${states.map((r, i) => cardShell(i, r, win)).join('')}</div>
-<div id="stats"></div>
 <script>(${pageScript.toString()})();<\/script></body></html>`;
     }
 
@@ -672,7 +646,6 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
             for (const src of ['vitals', 'pacs', 'abx', 'tubes']) applyUpdate(w, i, src, r, win);
         };
         const wall0 = nowMs();
-        statsBook = {};
         try {
             // 階段一（輕）：所有病人的 vitals＋影像一起發，實際同時數由 lib 限制；畫面上生命徵象圖與影像先出現
             let d1 = 0;
@@ -681,10 +654,8 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
                 try { await assessLight(r, win, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
                 setProg('生命徵象與影像', ++d1);
             }));
-            recordStat('phase1', null, nowMs() - wall0);
 
             // 階段二（重）：抗生素＋管路，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
-            const t2 = nowMs();
             let d2 = 0, next = 0;
             setProg('抗生素與管路', 0);
             const worker = async () => {
@@ -692,12 +663,10 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
                     const i = next++;
                     const r = states[i];
                     try { await assessHeavy(r, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
-                    recordStat('patient', null, nowMs() - wall0);
                     setProg('抗生素與管路', ++d2);
                 }
             };
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));
-            recordStat('phase2', null, nowMs() - t2);
         } finally {
             btn.disabled = false;
             btn.style.background = idleBg;
@@ -705,11 +674,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
             btn.textContent = label;
         }
 
-        const wallMs = nowMs() - wall0;
-        const stats = statsSummary(wallMs);
-        console.log('[晨間簡報] 耗時統計'); console.table(stats.rows);
-        setText(w, 'prog', `完成（${(wallMs / 1000).toFixed(1)} 秒）`);
-        if (!w.closed) { const el = w.document.getElementById('stats'); if (el) el.innerHTML = stats.html; }
+        setText(w, 'prog', `完成（${((nowMs() - wall0) / 1000).toFixed(1)} 秒）`);
     }
 
     function mount() {
