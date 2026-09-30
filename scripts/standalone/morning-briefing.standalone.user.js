@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.1-standalone
+// @version      0.5.2-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -428,19 +428,66 @@ function isOnOxygen(inside) {
     ];
     const ABX_RE = new RegExp(ABX_NAMES.map((n) => n.replace(/[-]/g, '\\-')).join('|'), 'i');
 
+    // ─── 耗時統計（不含任何識別碼；只記「來源名稱＋等待／執行毫秒」）──────────
+    // wait＝在閘門前排隊的時間；run＝實際執行時間。vitals／影像走 lib 內部的排隊，只能量到含排隊的總時間（wait=null）。
+    let statsBook = null;
+    function recordStat(name, waitMs, runMs) {
+        if (!statsBook) return;
+        const e = statsBook[name] || (statsBook[name] = { wait: [], run: [], hasWait: waitMs !== null });
+        if (waitMs !== null) e.wait.push(waitMs);
+        e.run.push(runMs);
+    }
+    const timed = async (name, fn) => {
+        const t0 = nowMs();
+        try { return await fn(); } finally { recordStat(name, null, nowMs() - t0); }
+    };
+
     // 簡單併發閘門：同時最多 max 個任務（晨間簡報每人要開處方頁與管路頁，避免一次灌爆院內主機）
-    function makeGate(max) {
+    function makeGate(max, name) {
         let active = 0;
         const queue = [];
         return async (task) => {
+            const t0 = nowMs();
             if (active >= max) await new Promise((release) => queue.push(release));
+            const t1 = nowMs();
             active += 1;
-            try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
+            try { return await task(); } finally {
+                active -= 1;
+                const next = queue.shift();
+                if (next) next();
+                recordStat(name, t1 - t0, nowMs() - t1);
+            }
         };
     }
-    const rxGate = makeGate(2);
+    const RX_CONCURRENCY = 3;   // 處方頁同時數（原 2；處方頁約 200KB，是最重的請求）
+    const rxGate = makeGate(RX_CONCURRENCY, 'rx');
     // 管路一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰）
-    const tubeGate = makeGate(1);
+    const tubeGate = makeGate(1, 'tubes');
+
+    // 統計表：忙碌率＝該來源執行時間總和 ÷（總時間 × 同時上限），接近 100% 代表它是瓶頸
+    function statsSummary(wallMs) {
+        const S = statsBook || {};
+        const sum = (a) => a.reduce((x, y) => x + y, 0);
+        const sec = (ms) => (ms / 1000).toFixed(1) + 's';
+        const defs = [
+            ['rx', '處方頁（抗生素）', RX_CONCURRENCY], ['tubes', '管路', 1],
+            ['vitals', 'vitals（含排隊）', 0], ['pacs', '影像（含排隊）', 0], ['patient', '每位病人合計', 0],
+        ];
+        const rows = defs.filter(([k]) => S[k] && S[k].run.length).map(([k, label, conc]) => {
+            const e = S[k];
+            return {
+                來源: label, 次數: e.run.length,
+                平均等待: e.hasWait ? sec(sum(e.wait) / e.wait.length) : '—',
+                平均執行: sec(sum(e.run) / e.run.length), 最長執行: sec(Math.max(...e.run)),
+                忙碌率: conc ? Math.round((sum(e.run) / (wallMs * conc)) * 100) + '%' : '—',
+            };
+        });
+        const cols = ['來源', '次數', '平均等待', '平均執行', '最長執行', '忙碌率'];
+        const html = `<details class="stats"><summary>耗時統計（總計 ${sec(wallMs)}）</summary><table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${
+            rows.map((r) => `<tr>${cols.map((c) => `<td>${esc(r[c])}</td>`).join('')}</tr>`).join('')
+        }</tbody></table><div class="muted">忙碌率＝該來源實際執行時間總和 ÷（總計時間 × 同時上限）；最接近 100% 的就是瓶頸。平均等待＝在閘門前排隊的時間。</div></details>`;
+        return { rows, html };
+    }
 
     const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
     const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
@@ -546,8 +593,8 @@ function isOnOxygen(inside) {
         if (labMs !== null && labMs >= win.fromMs) res.lab = { ms: labMs };
 
         const [v, x, rx, tb] = await Promise.allSettled([
-            NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }),
-            NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }),
+            timed('vitals', () => NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS })),
+            timed('pacs', () => NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS })),
             fetchAbx(p, now),
             fetchTubes(p, now),
         ]);
@@ -769,6 +816,7 @@ th{font-size:12px;color:var(--mut)}
 .hd{font-size:15px;margin-bottom:2px}
 .kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:3.6em;font-size:12px;color:var(--mut)}
 .pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
+.stats{margin-top:14px;font-size:12px}.stats>summary{cursor:pointer;color:var(--mut)}.stats table{width:auto;margin:4px 0}.stats th,.stats td{padding:2px 14px 2px 0}
 .charts{margin-top:6px}.charts>summary{cursor:pointer;font-size:12px;color:var(--mut)}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
 svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
@@ -781,6 +829,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 <h1>晨間簡報</h1>
 <div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 圖表參考資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(meta.scope)} · 共 ${results.length} 人（依病房列表順序）</div>
 <div class="grid">${results.map((r) => cardHtml(r, win)).join('')}</div>
+${meta.statsHtml || ''}
 <script>(${pageScript.toString()})();<\/script></body></html>`;
     }
 
@@ -804,15 +853,19 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         btn.style.cursor = 'wait';
         btn.textContent = `⏳ 抓取中 0/${mine.length}`;
         let results;
+        const wall0 = nowMs();
+        statsBook = {};
         try {
             results = new Array(mine.length);
             let next = 0;
             const worker = async () => {
                 while (next < mine.length) {
                     const i = next++;
+                    const tp = nowMs();
                     results[i] = await assess(mine[i], win, now).catch((e) => ({
                         p: mine[i], errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
                     }));
+                    recordStat('patient', null, nowMs() - tp);
                     btn.textContent = `⏳ 抓取中 ${++done}/${mine.length}`;
                 }
             };
@@ -824,7 +877,9 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
             btn.textContent = label;
         }
 
-        const html = buildHtml(results, win, { scope: '目前病房列表' });
+        const stats = statsSummary(nowMs() - wall0);
+        console.log('[晨間簡報] 耗時統計'); console.table(stats.rows);
+        const html = buildHtml(results, win, { scope: '目前病房列表', statsHtml: stats.html });
         const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
         const w = window.open(url, '_blank');
         if (!w) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
