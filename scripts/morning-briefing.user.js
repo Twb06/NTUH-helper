@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.2.1
+// @version      0.3.1
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -142,22 +142,172 @@
             if (!dm) continue;
             if (new Date(+dm[1], +dm[2] - 1, +dm[3]).getTime() < fromDay.getTime()) continue; // 影像只有日期，以日為單位
             const title = head.replace(/^\d{4}\/\d{2}\/\d{2}\s*/, '').replace(/\s*\(V\d+\)\s*$/, '').trim();
-            const report = (segs[2] || segs[1] || '').slice(0, 160);
+            const report = (segs[2] || segs[1] || '').slice(0, 1500);
             out.push({ date: `${+dm[2]}/${+dm[3]}`, title, report });
         }
         return out;
     }
 
+    // ─── 抗生素（現行處方頁 MedicationV2.aspx）─────────────────
+    // 藥歷圖（Chart.aspx）需要 PersonID，病房列表取不到（不帶會 500）；處方頁只需 SESSION＋AccountIDSE。
+    // 處方表沒有藥品類別欄，只能用學名比對。天數 = 這張醫令的開始日起算（D1＝開始當天）；
+    // 中途改劑量或重開醫令會重新起算，天數可能低估。
+    // 清單來自院內「抗感染藥」全表，已排除慢性／非急性用藥（結核、HIV、B/C 肝、抗瘧、寄生蟲、外用）。
+    // 要增減藥：直接改下面的字串（不分大小寫、子字串比對）。
+    const ABX_NAMES = [
+        // 抗細菌
+        'penicillin', 'amoxicillin', 'ampicillin', 'dicloxacillin', 'oxacillin', 'piperacillin', 'sulbactam', 'tazobactam',
+        'avibactam', 'relebactam', 'cef', 'cephalexin', 'flomoxef', 'ertapenem', 'imipenem', 'meropenem', 'aztreonam',
+        'amikacin', 'gentamicin', 'tobramycin', 'ciprofloxacin', 'levofloxacin', 'moxifloxacin', 'nemonoxacin',
+        'pipemidic', 'azithromycin', 'clarithromycin', 'erythromycin', 'doxycycline', 'minocycline', 'tetracycline',
+        'tigecycline', 'vancomycin', 'teicoplanin', 'daptomycin', 'linezolid', 'colistin', 'polymyxin', 'fosfomycin',
+        'fusidate', 'clindamycin', 'metronidazole', 'co-trimoxazole', 'trimethoprim', 'sulfamethoxazole', 'fidaxomicin',
+        // 抗黴菌（全身性）
+        'fluconazole', 'itraconazole', 'voriconazole', 'posaconazole', 'isavuconazole', 'caspofungin', 'micafungin',
+        'anidulafungin', 'amphotericin', 'flucytosine',
+        // 急性抗病毒
+        'acyclovir', 'ganciclovir', 'oseltamivir', 'peramivir', 'remdesivir', 'foscarnet', 'baloxavir', 'molnupiravir', 'nirmatrelvir',
+    ];
+    const ABX_RE = new RegExp(ABX_NAMES.map((n) => n.replace(/[-]/g, '\\-')).join('|'), 'i');
+
+    // 簡單併發閘門：同時最多 max 個任務（晨間簡報每人要開處方頁與管路頁，避免一次灌爆院內主機）
+    function makeGate(max) {
+        let active = 0;
+        const queue = [];
+        return async (task) => {
+            if (active >= max) await new Promise((release) => queue.push(release));
+            active += 1;
+            try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
+        };
+    }
+    const rxGate = makeGate(2);
+    const tubeGate = makeGate(2);
+
+    const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
+
+    // 處方表：表頭對欄位（兩張表位置不同）。沿用 prescription-viewer 的判定，處理 DOMParser 文件（無 innerText）
+    function readRxGrid(t, ownOnly) {
+        if (!t || t.rows.length < 2) return [];
+        const col = { start: -1, name: -1, route: -1 };
+        [...t.rows[0].cells].forEach((td, i) => {
+            const h = td.textContent.replace(/\s+/g, '');
+            if (col.start < 0 && h.includes('開始日')) col.start = i;
+            if (col.name < 0 && h.includes('藥名')) col.name = i;
+            if (col.route < 0 && h.includes('途徑')) col.route = i;
+        });
+        if (col.start < 0 || col.name < 0) return [];
+        const cell = (tr, i) => (i >= 0 && tr.cells[i] ? tr.cells[i].textContent.replace(/\s+/g, ' ').trim() : '');
+        const out = [];
+        for (const tr of [...t.rows].slice(1)) {
+            const startRaw = cell(tr, col.start);
+            const rawName = cell(tr, col.name);
+            if (!/^\d{8}$/.test(startRaw) || !rawName) continue;
+            if (ownOnly && !/^\s*\[自備藥\]/.test(rawName)) continue;
+            out.push({ rawName, route: cell(tr, col.route), startMs: new Date(+startRaw.slice(0, 4), +startRaw.slice(4, 6) - 1, +startRaw.slice(6, 8)).getTime() });
+        }
+        return out;
+    }
+
+    async function fetchAbx(p, now) {
+        return rxGate(async () => {
+            const url = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + 'MedicationV2.aspx'
+                + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}&Hosp=T0&Seed=&EMRPop=Y`;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            try {
+                const res = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const doc = NTUHAsmx.parseHtml(await res.text());
+                // id 前綴會變（探測時是用尾綴找到的），一律用尾綴選取器
+                const general = doc.querySelector('[id$="OrderBox_dgrPhrOrder"]');
+                const own = doc.querySelector('[id$="OrderDisplayBox_dgrPhrOrder"]');
+                if (!general && !own) throw new Error('處方表讀不到');
+                const rows = readRxGrid(general, false).concat(readRxGrid(own, true));
+                return rows.filter((r) => ABX_RE.test(r.rawName)).map((r) => {
+                    const name = r.rawName.replace(/^\s*\[自備藥\]\s*/, '').split('(')[0].trim() || r.rawName.slice(0, 30);
+                    return { name: name.slice(0, 40), route: r.route, startMs: r.startMs, day: dayNo(r.startMs, now) };
+                }).sort((a, b) => a.startMs - b.startMs);
+            } catch (e) {
+                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+            } finally { clearTimeout(timer); }
+        });
+    }
+
+    // ─── 管路（CatheterCare.aspx，隱藏 iframe）───────────────────
+    // 頁面由 SIMILE Timeline 在瀏覽器端畫出，資料在全域 catheterTimeLine，所以一定要載入頁面。
+    // 簡報跑在同源的病房列表，可直接讀 iframe.contentWindow（不必開背景分頁，也不會被節流）。
+    // 事件包含每日「正常」等觀察紀錄與尚未到的空白項，過濾規則與 progress-note-data-helper 相同。
+    const CATH_OBS_RE = /^(正常|異常|外移|移位|脫落|滑脫|阻塞|滲液|滲血|紅腫|鬆脫|自拔|更換|[\s,，]|\+)+$/;
+    const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;
+
+    function readTimeline(w) {
+        const tl = w && w.catheterTimeLine;
+        if (!tl || typeof tl.getBand !== 'function') return null;
+        let src;
+        try { src = tl.getBand(0).getEventSource(); } catch { return null; }
+        if (!src || typeof src.getAllEventIterator !== 'function') return null;
+        const out = [];
+        const it = src.getAllEventIterator();
+        while (it.hasNext()) {
+            const e = it.next();
+            const t = (e.getText() || '').replace(/\s+/g, ' ').trim();
+            if (!t || CATH_OBS_RE.test(t) || CATH_PERIPHERAL_RE.test(t)) continue;
+            const removed = String(e._RemovedCatheter) === 'true' || (e.getProperty && e.getProperty('RemovedCatheter') === true);
+            if (removed) continue;
+            const st = e.getStart && e.getStart();
+            if (!st || !st.getTime) continue;
+            out.push({ name: t.replace(/\(.*?\)/g, '').trim() || t, startMs: st.getTime() });
+        }
+        return out;
+    }
+
+    async function fetchTubes(p, now) {
+        return tubeGate(async () => {
+            const url = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/CatheterCare.aspx'
+                + `?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}&PatClass=I`;
+            const f = document.createElement('iframe');
+            // 放在畫面外但保持有尺寸（display:none 會讓 Timeline 量到 0）
+            f.style.cssText = 'position:fixed;left:-10000px;top:0;width:1100px;height:700px;border:0;';
+            let loaded = false;
+            f.addEventListener('load', () => { loaded = true; });
+            f.src = url;
+            document.body.appendChild(f);
+            try {
+                // timeline 物件一出現不代表事件都載完（實測每次結果不一致）：
+                // 要求 load 事件已觸發，且事件清單連續 STABLE_MS 都沒變才採用；逾時則用最後一次讀到的。
+                const STABLE_MS = 1500;
+                const t0 = nowMs();
+                let last = null, lastSig = '', stableSince = 0;
+                while (nowMs() - t0 < 25000) {
+                    let ev = null;
+                    try { ev = readTimeline(f.contentWindow); } catch { /* 尚未載入或被擋，繼續輪詢 */ }
+                    if (ev) {
+                        const sig = JSON.stringify(ev);
+                        if (sig !== lastSig) { lastSig = sig; stableSince = nowMs(); }
+                        last = ev;
+                        if (loaded && nowMs() - stableSince >= STABLE_MS) break;
+                    }
+                    await new Promise((r) => setTimeout(r, 300));
+                }
+                if (!last) throw new Error('逾時');
+                return last.map((x) => ({ ...x, day: dayNo(x.startMs, now) })).sort((a, b) => a.startMs - b.startMs);
+            } finally { f.remove(); }
+        });
+    }
+
     async function assess(p, win, now) {
-        const res = { p, errors: [], vitals: null, pacs: [], lab: null };
+        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null };
         const ctx = ctxOf(p);
 
         const labMs = labTimeMs(p.labTitle, now);
         if (labMs !== null && labMs >= win.fromMs) res.lab = { ms: labMs };
 
-        const [v, x] = await Promise.allSettled([
+        const [v, x, rx, tb] = await Promise.allSettled([
             NTUHAsmx.outerData('vitalsign', { context: ctx }),
             NTUHAsmx.outerData('pacs', { context: ctx }),
+            fetchAbx(p, now),
+            fetchTubes(p, now),
         ]);
         if (v.status === 'fulfilled') {
             const texts = vitalTexts(v.value);
@@ -170,6 +320,10 @@
         } else res.errors.push('vitals 抓取失敗：' + (v.reason && v.reason.message || v.reason));
         if (x.status === 'fulfilled') res.pacs = parsePacs(x.value, win.fromMs);
         else res.errors.push('影像抓取失敗：' + (x.reason && x.reason.message || x.reason));
+        if (rx.status === 'fulfilled') res.abx = rx.value;
+        else res.errors.push('抗生素抓取失敗：' + (rx.reason && rx.reason.message || rx.reason));
+        if (tb.status === 'fulfilled') res.tubes = tb.value;
+        else res.errors.push('管路抓取失敗：' + (tb.reason && tb.reason.message || tb.reason));
 
         return res;
     }
@@ -333,16 +487,21 @@ ${dataTable(series)}</details>`;
     function cardHtml(r, win) {
         const p = r.p;
         const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
-        const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
+        const pacs = r.pacs.length ? r.pacs.map((x) => (x.report ? `<details class="pc"><summary><span class="tag new">${esc(x.date)} ${esc(x.title)}</span></summary><div class="rep">${esc(x.report)}</div></details>` : `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span></div>`)).join('') : '<span class="muted">—</span>';
         const o2Cls = r.o2 && (r.o2.kind === 'new' || r.o2.kind === 'up') ? ' warn' : '';
         const o2 = r.o2 ? `<div><span class="tag${o2Cls}">${esc(r.o2.text)}${r.o2.ms ? '（' + esc(fmt(r.o2.ms)) + '）' : ''}</span></div>` : '';
         const uo = r.uo ? `<div class="muted nov">尿量 ${r.uo.val} mL${r.uo.ms ? '（' + esc(fmt(r.uo.ms)) + '）' : '（院內未標日期）'}</div>` : '';
         const noVitals = r.vitals && r.vitals.noData
             ? `<div class="muted nov">${r.chartSeries && r.chartSeries.length ? '昨夜（' + esc(fmt(win.fromMs)) + ' 起）沒有 vitals 量測，圖上為前一日的參考資料' : '時間窗內沒有 vitals 量測（沒量不等於正常）'}</div>` : '';
+        const dayTag = (x, cls) => `<span class="tag${cls}">${esc(x.name)}${x.route ? ' ' + esc(x.route) : ''} D${x.day}<small class="muted"> ${new Date(x.startMs).getMonth() + 1}/${new Date(x.startMs).getDate()} 起</small></span>`;
+        const abx = r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>';
+        const tubes = r.tubes ? (r.tubes.length ? r.tubes.map((x) => dayTag(x, '')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         return `<section class="card">
 <div class="hd"><b>${esc(p.bed)}</b> ${esc(p.name)} <small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small></div>
 ${o2}${uo}${noVitals}${err}
+<div class="kv"><span class="k">抗生素</span><div>${abx}</div></div>
+<div class="kv"><span class="k">管路</span><div>${tubes}</div></div>
 <div class="kv"><span class="k">檢驗</span><div>${lab}</div></div>
 <div class="kv"><span class="k">影像</span><div>${pacs}</div></div>
 ${chartsHtml(r, win)}</section>`;
@@ -366,7 +525,8 @@ th{font-size:12px;color:var(--mut)}
 @media (max-width:1000px){.grid{grid-template-columns:1fr}}
 .card{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
 .hd{font-size:15px;margin-bottom:2px}
-.kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:2em;font-size:12px;color:var(--mut)}
+.kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:3.6em;font-size:12px;color:var(--mut)}
+.pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
 .charts{margin-top:6px}.charts>summary{cursor:pointer;font-size:12px;color:var(--mut)}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
 svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
@@ -398,7 +558,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         let done = 0;
         btn.disabled = true;
         const results = await Promise.all(mine.map((p) => assess(p, win, now).catch((e) => ({
-            p, errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null,
+            p, errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
         })).then((r) => { btn.textContent = `抓取中 ${++done}/${mine.length}`; return r; })));
         btn.disabled = false;
         btn.textContent = label;
