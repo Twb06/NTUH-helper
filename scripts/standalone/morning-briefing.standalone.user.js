@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.3.1-standalone
+// @version      0.4.0-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -281,16 +281,7 @@ function isOnOxygen(inside) {
 
     /* global NTUHAsmx, NTUHNews2 */
 
-    const OPT_KEY = 'ntuh_morning_briefing';
-    const DEFAULTS = {
-        startHour: 17,    // 昨夜時間窗起點（前一日幾點）
-    };
-
-    function loadOpts() {
-        try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(OPT_KEY)) || {}); }
-        catch { return Object.assign({}, DEFAULTS); }
-    }
-    function saveOpts(o) { try { localStorage.setItem(OPT_KEY, JSON.stringify(o)); } catch { /* noop */ } }
+    const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
 
     // HIS 的 date.js 會覆寫 Date.now，取毫秒一律走這個
     const nowMs = () => new Date().getTime();
@@ -810,21 +801,31 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
     // ═══════════════════════════════════════════════════════════
 
     async function run(btn) {
-        const opts = loadOpts();
         // 病房列表本來就只帶出登入者的病人，不再另外篩選
         const mine = readPatients();
         if (!mine.length) { alert('找不到病人清單'); return; }
 
-        const win = briefingWindow(opts.startHour);
+        const win = briefingWindow(START_HOUR);
         const now = nowMs();
         const label = btn.textContent;
+        const idleBg = btn.style.background;
         let done = 0;
+        // 執行中：換色＋等待游標＋顯示進度，避免使用者以為當掉
         btn.disabled = true;
-        const results = await Promise.all(mine.map((p) => assess(p, win, now).catch((e) => ({
-            p, errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
-        })).then((r) => { btn.textContent = `抓取中 ${++done}/${mine.length}`; return r; })));
-        btn.disabled = false;
-        btn.textContent = label;
+        btn.style.background = '#d97706';
+        btn.style.cursor = 'wait';
+        btn.textContent = `⏳ 抓取中 0/${mine.length}`;
+        let results;
+        try {
+            results = await Promise.all(mine.map((p) => assess(p, win, now).catch((e) => ({
+                p, errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
+            })).then((r) => { btn.textContent = `⏳ 抓取中 ${++done}/${mine.length}`; return r; })));
+        } finally {
+            btn.disabled = false;
+            btn.style.background = idleBg;
+            btn.style.cursor = 'pointer';
+            btn.textContent = label;
+        }
 
         const html = buildHtml(results, win, { scope: '目前病房列表' });
         const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
@@ -841,17 +842,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         btn.textContent = '☀ 晨間簡報';
         btn.style.cssText = 'padding:8px 14px;border:0;border-radius:18px;background:#0f766e;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)';
         btn.onclick = () => run(btn);
-        const cfg = document.createElement('button');
-        cfg.textContent = '⚙';
-        cfg.title = '設定昨夜時間窗起點';
-        cfg.style.cssText = 'padding:8px 10px;border:0;border-radius:18px;background:#374151;color:#fff;cursor:pointer';
-        cfg.onclick = () => {
-            const o = loadOpts();
-            const h = prompt('昨夜時間窗起點（前一日幾點，0–23）：', String(o.startHour));
-            if (h !== null && /^\d{1,2}$/.test(h.trim()) && +h <= 23) o.startHour = +h;
-            saveOpts(o);
-        };
-        wrap.append(btn, cfg);
+        wrap.append(btn);
         document.body.appendChild(wrap);
     }
 
