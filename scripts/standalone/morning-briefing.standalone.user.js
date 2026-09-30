@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.0-standalone
+// @version      0.5.1-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -236,7 +236,7 @@ function isOnOxygen(inside) {
 }(typeof window !== 'undefined' ? window : globalThis));
 
 
-// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個請求、12 秒逾時）──
+// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個請求、預設 12 秒逾時，可由 options.timeoutMs 覆寫）──
 (function () {
     'use strict';
     if (window.NTUHAsmx) return;
@@ -253,7 +253,7 @@ function isOnOxygen(inside) {
             + 'ProgressNoteControl/Service/OuterData.asmx/GetOuterDataTable';
         return withSlot(async () => {
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 12000);
+            const timer = setTimeout(() => ctrl.abort(), (options && options.timeoutMs) || 12000);
             try {
                 const res = await fetch(url, {
                     method: 'POST',
@@ -282,6 +282,10 @@ function isOnOxygen(inside) {
     /* global NTUHAsmx, NTUHNews2 */
 
     const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
+    // 同時處理的病人數。全部病人一起開跑時，後面病人的 OuterData 請求會排在大量處方頁／管路頁之後，
+    // 等超過逾時被我們自己中止（「signal is aborted without reason」）。所以限制同時處理的病人數，並放寬 OuterData 逾時。
+    const PATIENT_POOL = 3;
+    const OUTER_TIMEOUT_MS = 30000;
 
     // HIS 的 date.js 會覆寫 Date.now，取毫秒一律走這個
     const nowMs = () => new Date().getTime();
@@ -542,8 +546,8 @@ function isOnOxygen(inside) {
         if (labMs !== null && labMs >= win.fromMs) res.lab = { ms: labMs };
 
         const [v, x, rx, tb] = await Promise.allSettled([
-            NTUHAsmx.outerData('vitalsign', { context: ctx }),
-            NTUHAsmx.outerData('pacs', { context: ctx }),
+            NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }),
+            NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }),
             fetchAbx(p, now),
             fetchTubes(p, now),
         ]);
@@ -801,9 +805,18 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         btn.textContent = `⏳ 抓取中 0/${mine.length}`;
         let results;
         try {
-            results = await Promise.all(mine.map((p) => assess(p, win, now).catch((e) => ({
-                p, errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
-            })).then((r) => { btn.textContent = `⏳ 抓取中 ${++done}/${mine.length}`; return r; })));
+            results = new Array(mine.length);
+            let next = 0;
+            const worker = async () => {
+                while (next < mine.length) {
+                    const i = next++;
+                    results[i] = await assess(mine[i], win, now).catch((e) => ({
+                        p: mine[i], errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
+                    }));
+                    btn.textContent = `⏳ 抓取中 ${++done}/${mine.length}`;
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(PATIENT_POOL, mine.length) }, worker));
         } finally {
             btn.disabled = false;
             btn.style.background = idleBg;

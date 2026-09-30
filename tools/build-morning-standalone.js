@@ -14,7 +14,7 @@ const head = main.slice(0, end).split('\n')
     .filter((l) => !/^\/\/ @(require|updateURL|downloadURL)\s/.test(l))
     .join('\n').replace(/(\/\/ @version\s+\S+)/, '$1-standalone');
 
-const shim = `// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個請求、12 秒逾時）──
+const shim = `// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個請求、預設 12 秒逾時，可由 options.timeoutMs 覆寫）──
 (function () {
     'use strict';
     if (window.NTUHAsmx) return;
@@ -31,7 +31,7 @@ const shim = `// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個
             + 'ProgressNoteControl/Service/OuterData.asmx/GetOuterDataTable';
         return withSlot(async () => {
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 12000);
+            const timer = setTimeout(() => ctrl.abort(), (options && options.timeoutMs) || 12000);
             try {
                 const res = await fetch(url, {
                     method: 'POST',
