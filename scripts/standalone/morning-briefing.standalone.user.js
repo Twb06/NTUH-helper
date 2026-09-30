@@ -9,8 +9,6 @@
 // @grant        none
 // ==/UserScript==
 
-console.log('[晨間簡報] 腳本開始執行');
-
 // ── 內嵌：NEWS2 核心 ──
 // ==============================================================
 // NEWS2 — National Early Warning Score 2（純函式，不碰 DOM／網路）
@@ -320,7 +318,6 @@ function isOnOxygen(inside) {
 
     const OPT_KEY = 'ntuh_morning_briefing';
     const DEFAULTS = {
-        myNames: '',      // 逗號分隔；比對「主治」「住院」兩欄，空 = 尚未設定
         startHour: 17,    // 昨夜時間窗起點（前一日幾點）
     };
 
@@ -366,11 +363,6 @@ function isOnOxygen(inside) {
             });
         }
         return out;
-    }
-
-    function isMine(p, names) {
-        const list = names.split(/[,，\s]+/).filter(Boolean);
-        return list.some((n) => p.attending.includes(n) || p.resident.includes(n));
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -529,16 +521,9 @@ ${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c"
 
     async function run(btn) {
         const opts = loadOpts();
-        if (!opts.myNames.trim()) {
-            const v = prompt('請輸入你的姓名（可用逗號分隔多個；會比對「主治」與「住院」兩欄）：', '');
-            if (v === null) return;
-            opts.myNames = v.trim();
-            saveOpts(opts);
-        }
-        const all = readPatients();
-        if (!all.length) { alert('找不到病人清單'); return; }
-        const mine = opts.myNames.trim() ? all.filter((p) => isMine(p, opts.myNames)) : all;
-        if (!mine.length) { alert(`列表中沒有比對到「${opts.myNames}」的病人。可點 ⚙ 修改姓名。`); return; }
+        // 病房列表本來就只帶出登入者的病人，不再另外篩選
+        const mine = readPatients();
+        if (!mine.length) { alert('找不到病人清單'); return; }
 
         const win = briefingWindow(opts.startHour);
         const now = nowMs();
@@ -552,7 +537,7 @@ ${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c"
         btn.disabled = false;
         btn.textContent = label;
 
-        const html = buildHtml(results, win, { scope: `我的病人（${opts.myNames}）` });
+        const html = buildHtml(results, win, { scope: '目前病房列表' });
         const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
         const w = window.open(url, '_blank');
         if (!w) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
@@ -569,12 +554,10 @@ ${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c"
         btn.onclick = () => run(btn);
         const cfg = document.createElement('button');
         cfg.textContent = '⚙';
-        cfg.title = '設定姓名與時間窗起點';
+        cfg.title = '設定昨夜時間窗起點';
         cfg.style.cssText = 'padding:8px 10px;border:0;border-radius:18px;background:#374151;color:#fff;cursor:pointer';
         cfg.onclick = () => {
             const o = loadOpts();
-            const n = prompt('你的姓名（逗號分隔）：', o.myNames);
-            if (n !== null) o.myNames = n.trim();
             const h = prompt('昨夜時間窗起點（前一日幾點，0–23）：', String(o.startHour));
             if (h !== null && /^\d{1,2}$/.test(h.trim()) && +h <= 23) o.startHour = +h;
             saveOpts(o);
@@ -583,10 +566,5 @@ ${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c"
         document.body.appendChild(wrap);
     }
 
-    try {
-        mount();
-        console.log('[晨間簡報] 按鈕已建立', !!document.getElementById('ntuh-mb-btn'));
-    } catch (e) {
-        console.error('[晨間簡報] 建立按鈕失敗', e);
-    }
+    mount();
 }());
