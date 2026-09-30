@@ -355,6 +355,7 @@ function isOnOxygen(inside) {
             out.push({
                 caseno,                                            // = AccountIdse（已實測）
                 chartNo: news.getAttribute('chartno') || txt(tr.querySelector('[id$="PatChartNo"]')),
+                ward: news.getAttribute('wardcode') || txt(tr.querySelector('[id$="WardLabel"]')),
                 name: txt(tr.querySelector('[id$="LinkPatientName"]')),
                 bed: [txt(tr.querySelector('[id$="RoomLabel"]')), txt(tr.querySelector('[id$="BedLabel"]'))].filter(Boolean).join('-'),
                 age: txt(tr.querySelector('[id$="PatientAge"]')),
@@ -394,6 +395,14 @@ function isOnOxygen(inside) {
     // ═══════════════════════════════════════════════════════════
     // 單一病人：抓資料 + 判讀
     // ═══════════════════════════════════════════════════════════
+
+    // 檢驗報告頁（與 progress-note-data-helper 的 [Lab] 同一頁）：靠 ChartNo 定位病人，
+    // SESSION/AccountIDSE/PersonID 都不需要；IntervalDay 為負數＝往前推幾天（-13 ≈ 兩週）。
+    function labPageUrl(p) {
+        return location.origin + '/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx'
+            + `?PatClass=I&WardCode=${encodeURIComponent(p.ward || '')}&ChartNo=${encodeURIComponent(p.chartNo)}`
+            + '&HospitalCode=T0&Seed=&IntervalDay=-13';
+    }
 
     function ctxOf(p) {
         // 實測只需 AccountIdse（其餘可留空）；ChartNo 一併帶上
@@ -720,7 +729,7 @@ ${dataTable(series)}</div>`;
     function rowHtml(r, win) {
         const p = r.p;
         const lvl = r.news ? r.news.level : 'none';
-        const lab = r.lab ? `<span class="tag new">新報告 ${esc(fmt(r.lab.ms))}</span>` : '<span class="muted">—</span>';
+        const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const charts = chartsHtml(r, win);
@@ -754,7 +763,7 @@ h1{font-size:18px;margin:0 0 4px}.sub{color:var(--mut);margin-bottom:12px}
 table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
 th{position:sticky;top:0;background:var(--bg);font-size:12px;color:var(--mut)}
 .lv-high td{background:var(--hi)}.lv-medium td{background:var(--md)}.lv-low-medium td{background:var(--lm)}
-.tag{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin:0 4px 2px 0;font-size:12px}.tag.new{background:var(--new)}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin:0 4px 2px 0;font-size:12px}.tag.new{background:var(--new)}a.tag{color:inherit;text-decoration:none}a.tag:hover{text-decoration:underline}
 .muted{color:var(--mut)}small{font-size:12px}.err{color:#b91c1c;margin-top:4px;font-size:12px}.rep{font-size:12px;color:var(--mut);max-width:320px}
 .box{margin-top:16px;padding:10px 12px;border:1px solid var(--line);border-radius:6px}.box h2{font-size:14px;margin:0 0 4px}
 .note{margin-top:16px;font-size:12px;color:var(--mut)}
