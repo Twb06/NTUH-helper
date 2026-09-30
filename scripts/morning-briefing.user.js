@@ -271,6 +271,132 @@
         }</tbody></table><div class="muted">* 有缺項，分數可能低估</div></details>`;
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // 院內樣式圖表（照院內生命徵象圖／NEWS 圖的座標與配色重現）
+    // ═══════════════════════════════════════════════════════════
+    // 來源：院內 SVGDrawer 產生的生命徵象圖。幾何與規則照抄：
+    //   繪圖區 x 140–975、y 25–235（五等分，每格 42）；四條軸由左至右 BP/R/P/T，各自同色；
+    //   正常帶 = 中間 2/5（T 36–38、P 60–100、R 10–22、BP 50–150），其餘為異常區；
+    //   NA（未量測）不連線；預設顯示 T/P/R，BP 預設隱藏，點軸可切換。
+    // 配色取自院內圖：異常 #ffd4d3、正常 #d3e7d0、NEWS 折線 #f26080。
+
+    const HV = { X0: 140, X1: 975, Y0: 25, Y1: 235, W: 990, H: 262 };
+    const HV_AXES = [
+        { k: 'BP', x: 32, color: 'green', lo: 0, hi: 250, step: 50, off: true },
+        { k: 'R', x: 68, color: 'black', lo: 4, hi: 34, step: 6, naY: 205 },
+        { k: 'P', x: 104, color: 'red', lo: 40, hi: 140, step: 20, naY: 185 },
+        { k: 'T', x: 140, color: 'blue', lo: 35, hi: 40, step: 1, naY: 225 },
+    ];
+    const hm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
+
+    function hospVitals(series, win) {
+        const span = win.toMs - win.fromMs;
+        const X = (ms) => +(HV.X0 + ((ms - win.fromMs) / span) * (HV.X1 - HV.X0)).toFixed(2);
+        const Y = (a, v) => {
+            const c = Math.min(a.hi, Math.max(a.lo, v));
+            return +(HV.Y1 - ((c - a.lo) / (a.hi - a.lo)) * (HV.Y1 - HV.Y0)).toFixed(2);
+        };
+        const st = (a) => `fill:${a.color};stroke:${a.color}`;
+        let s = `<svg class="hsvg" viewBox="0 0 ${HV.W} ${HV.H}" width="${HV.W}" height="${HV.H}" role="img" aria-label="生命徵象圖">`;
+        s += `<rect width="${HV.W}" height="${HV.H}" fill="#fffffd"/>`;
+        // 背景色帶：上方異常 / 正常 / 下方異常
+        s += `<polygon points="${HV.X0},25 ${HV.X1},25 ${HV.X1},109 ${HV.X0},109" fill="#ffd4d3"/>`
+            + `<polygon points="${HV.X0},109 ${HV.X1},109 ${HV.X1},193 ${HV.X0},193" fill="#d3e7d0"/>`
+            + `<polygon points="${HV.X0},193 ${HV.X1},193 ${HV.X1},235 ${HV.X0},235" fill="#ffd4d3"/>`;
+        s += `<line x1="${HV.X0}" x2="${HV.X1}" y1="109" y2="109" stroke="#000" stroke-opacity=".2" stroke-width="1"/><line x1="${HV.X0}" x2="${HV.X1}" y1="193" y2="193" stroke="#000" stroke-opacity=".2" stroke-width="1"/>`;
+        // 日期：起點日 + 每個午夜（院內作法：日期標在上方，午夜畫深色垂直線）
+        const lbl = (ms, x) => { const d = new Date(ms); return `<text x="${x}" y="15" style="fill:#000;stroke:#000;stroke-width:.6;font-size:13px">${d.getMonth() + 1}/${d.getDate()}</text>`; };
+        s += lbl(win.fromMs, HV.X0);
+        const d0 = new Date(win.fromMs); d0.setHours(24, 0, 0, 0);
+        for (let m = d0.getTime(); m < win.toMs; m += 86400000) {
+            const x = X(m);
+            s += `<line x1="${x}" x2="${x}" y1="240" y2="25" stroke="#000" stroke-opacity=".2" stroke-width="1.5"/>${lbl(m, x)}`;
+        }
+        s += `<line x1="${HV.X1}" x2="${HV.X1}" y1="240" y2="25" stroke="#000" stroke-opacity=".2" stroke-width="1.5"/>`;
+        // 下方每 6 小時一個小時間刻度（院內圖沒有，短時間窗需要）
+        for (const t of timeTicks(win.fromMs, win.toMs)) {
+            if (!/:00$/.test(t.label)) continue;
+            s += `<text x="${X(t.ms)}" y="256" text-anchor="middle" style="fill:#898781;font-size:10px">${esc(t.label)}</text>`;
+        }
+        // 軸（可點擊切換該項顯示）
+        for (const a of HV_AXES) {
+            s += `<g class="ax${a.off ? ' off' : ''}" data-s="${a.k}" style="${st(a)}"><text x="${a.x - 30}" y="11">${a.k}</text><line x1="${a.x}" y1="235" x2="${a.x}" y2="25"/>`;
+            for (let v = a.lo; v <= a.hi + 1e-9; v += a.step) {
+                const y = Y(a, v);
+                s += `<text x="${a.x - 30}" y="${y}">${v}</text><line x1="${a.x - 5}" y1="${y}" x2="${a.x}" y2="${y}"/>`;
+            }
+            s += '</g>';
+        }
+        // 資料：T/P/R 各自的點與線（NA 斷線）；BP 為收縮/舒張壓的誤差線
+        for (const a of HV_AXES) {
+            s += `<g class="ser${a.off ? ' off' : ''}" data-s="${a.k}" style="${st(a)}">`;
+            if (a.k === 'BP') {
+                for (const o of series) {
+                    if (!Number.isFinite(o.SBP) || !Number.isFinite(o.DBP)) continue;
+                    const x = X(o.ms), y1 = Y(a, o.SBP), y2 = Y(a, o.DBP);
+                    s += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}"/><line x1="${x - 5}" y1="${y1}" x2="${x + 5}" y2="${y1}"/><line x1="${x - 5}" y1="${y2}" x2="${x + 5}" y2="${y2}"/>`
+                        + `<line class="hitl" x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" data-t="${esc(hm(o.ms))}" data-v="${o.SBP}/${o.DBP}"/>`;
+                }
+            } else {
+                let prev = null;
+                for (const o of series) {
+                    const v = o[a.k], x = X(o.ms);
+                    if (Number.isFinite(v)) {
+                        const y = Y(a, v);
+                        if (prev) s += `<line x1="${prev.x}" y1="${prev.y}" x2="${x}" y2="${y}"/>`;
+                        s += `<circle cx="${x}" cy="${y}" r="3"/><circle class="hit" cx="${x}" cy="${y}" r="9" data-t="${esc(hm(o.ms))}" data-v="${v}"/>`;
+                        prev = { x, y };
+                    } else if (o['na' + a.k]) {
+                        s += `<text class="na" x="${x}" y="${a.naY}" data-t="${esc(hm(o.ms))}" data-v="未量測">NA</text>`;
+                        prev = null; // 院內圖：未量測處斷線
+                    }
+                }
+            }
+            s += '</g>';
+        }
+        s += `<g class="tt" display="none" pointer-events="none"><rect fill="yellow" stroke="black" rx="2" ry="2"/><text x="5" y="18"><tspan class="t1" x="5" font-family="Arial" font-weight="bold" font-size="15"> </tspan><tspan class="t2" x="5" dy="1.2em" font-weight="bold" font-size="17" fill="blue"> </tspan></text></g></svg>`;
+        return s;
+    }
+
+    // NEWS 圖：院內為類別軸（每次量測等距）＋粉紅折線＋綠色面積。
+    // Y 軸固定從 0 起算（院內為自動縮放，分數 3→5 會被放大成滿版起伏，容易誤讀）。
+    function hospNews(series) {
+        const W = 640, H = 230, L = 46, R = 40, T = 20, B = 40;
+        const iw = W - L - R, ih = H - T - B;
+        const top = Math.max(7, Math.ceil(Math.max(...series.map((o) => o.news.total)) / 1) + 1);
+        const step = top > 12 ? 2 : 1;
+        const n = series.length;
+        const X = (i) => +(L + (n === 1 ? iw / 2 : (i * iw) / (n - 1))).toFixed(1);
+        const Y = (v) => +(T + (1 - v / top) * ih).toFixed(1);
+        const lab = (ms) => { const d = new Date(ms); return `${d.getDate()}日${d.getHours()}:${two(d.getMinutes())}`; };
+        let s = `<svg class="hsvg news" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="NEWS2 圖">`;
+        s += `<rect x="1.5" y="1.5" width="${W - 3}" height="${H - 3}" rx="14" fill="#fffffd" stroke="#536382" stroke-width="3"/>`;
+        s += `<rect x="${L}" y="${T}" width="${iw}" height="${ih}" fill="#eeffec"/>`;
+        const pts = series.map((o, i) => `${X(i)},${Y(o.news.total)}`);
+        s += `<polygon points="${X(0)},${T + ih} ${pts.join(' ')} ${X(n - 1)},${T + ih}" fill="#d6e9d3"/>`;
+        for (let v = 0; v <= top; v += step) {
+            s += `<line x1="${L}" x2="${L + iw}" y1="${Y(v)}" y2="${Y(v)}" stroke="#000" stroke-opacity=".12"/><text x="${L - 8}" y="${+Y(v) + 4}" text-anchor="end" style="fill:#666;font-size:12px">${v}</text>`;
+        }
+        // 風險參考線（院內圖沒有，加上細線並標字，避免只靠顏色）
+        for (const [v, t] of [[5, '5 中'], [7, '7 高']]) {
+            if (v > top) continue;
+            s += `<line x1="${L}" x2="${L + iw}" y1="${Y(v)}" y2="${Y(v)}" stroke="#d03b3b" stroke-opacity=".55" stroke-width="1"/><text x="${L + iw - 3}" y="${+Y(v) - 3}" text-anchor="end" style="fill:#b91c1c;font-size:10px">${t}</text>`;
+        }
+        const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(iw / 70))));
+        series.forEach((o, i) => {
+            s += `<line x1="${X(i)}" x2="${X(i)}" y1="${T}" y2="${T + ih}" stroke="#000" stroke-opacity=".1"/>`;
+            if (i % every === 0 && (n - 1 - i >= every || i === n - 1)) s += `<text x="${X(i)}" y="${H - 16}" text-anchor="middle" style="fill:#666;font-size:12px">${esc(lab(o.ms))}</text>`;
+        });
+        if (n > 1) s += `<polyline points="${pts.join(' ')}" fill="none" stroke="#f26080" stroke-width="2.5" stroke-linejoin="round"/>`;
+        series.forEach((o, i) => {
+            const tip = `${o.news.total}${o.news.partial ? '（缺 ' + o.news.missing.join('/') + '）' : ''}`;
+            s += `<circle cx="${X(i)}" cy="${Y(o.news.total)}" r="4.5" fill="${o.news.partial ? '#fffffd' : '#ffd0da'}" stroke="#f26080" stroke-width="2"${o.news.partial ? ' stroke-dasharray="2.5 2"' : ''}/>`
+                + `<circle class="hit" cx="${X(i)}" cy="${Y(o.news.total)}" r="10" data-t="${esc(hm(o.ms))}" data-v="NEWS2 ${esc(tip)}"/>`;
+        });
+        s += `<g class="tt" display="none" pointer-events="none"><rect fill="yellow" stroke="black" rx="2" ry="2"/><text x="5" y="18"><tspan class="t1" x="5" font-family="Arial" font-weight="bold" font-size="15"> </tspan><tspan class="t2" x="5" dy="1.2em" font-weight="bold" font-size="17" fill="blue"> </tspan></text></g></svg>`;
+        return s;
+    }
+
     function chartsHtml(r, win) {
         const series = r.vitals && r.vitals.series;
         if (!series || !series.length) return '';
@@ -278,10 +404,19 @@
             ms: o.ms, T: o.T, P: o.P, R: o.R, SBP: o.SBP, SpO2: o.SpO2, o2: !!o.onOxygen,
             n: o.news.total, lv: o.news.level, miss: o.news.missing,
         }));
-        return `<div class="charts" data-from="${win.fromMs}" data-to="${win.toMs}" data-series="${esc(JSON.stringify(slim))}">
+        return `<div class="charts" data-view="hosp" data-from="${win.fromMs}" data-to="${win.toMs}" data-series="${esc(JSON.stringify(slim))}">
+<div class="vbar"><span class="muted">圖表樣式</span><button class="btn-view on" data-view="hosp">院內樣式</button><button class="btn-view" data-view="split">分開顯示</button></div>
+<div class="view view-hosp">
+<div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項（血壓預設隱藏）</span></div>
+${hospVitals(series, win)}
+<div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 虛線圈 = 有缺項，分數可能低估</span></div>
+${hospNews(series)}
+</div>
+<div class="view view-split">
 <div class="mt">NEWS2（每次量測）<span class="muted"> · 空心點 = 有缺項</span></div>${newsChart(series, win)}
 <div class="minis">${PARAMS.map((p) => miniChart(p, series, win)).join('')}</div>
 <div class="legend"><span class="k"><i class="sw ok"></i>NEWS 0 分範圍</span><span class="k"><i class="sw dot"></i>範圍內</span><span class="k"><i class="sw dia s"></i>超出（1–2 分）</span><span class="k"><i class="sw dia c"></i>超出（3 分）</span></div>
+</div>
 ${dataTable(series)}</div>`;
     }
 
@@ -297,6 +432,38 @@ ${dataTable(series)}</div>`;
             const open = d.classList.toggle('open');
             b.setAttribute('aria-expanded', String(open));
         }));
+        document.querySelectorAll('.btn-view').forEach((b) => b.addEventListener('click', () => {
+            const box = b.closest('.charts');
+            box.setAttribute('data-view', b.getAttribute('data-view'));
+            box.querySelectorAll('.btn-view').forEach((x) => x.classList.toggle('on', x === b));
+        }));
+        document.querySelectorAll('svg.hsvg').forEach((svg) => {
+            svg.querySelectorAll('.ax').forEach((a) => a.addEventListener('click', () => {
+                const off = a.classList.toggle('off');
+                const g = svg.querySelector('.ser[data-s="' + a.getAttribute('data-s') + '"]');
+                if (g) g.classList.toggle('off', off);
+            }));
+            const tt = svg.querySelector('.tt'), box = tt.querySelector('rect'), text = tt.querySelector('text');
+            const t1 = tt.querySelector('.t1'), t2 = tt.querySelector('.t2'), vb = svg.viewBox.baseVal;
+            svg.querySelectorAll('.hit,.hitl').forEach((h) => {
+                h.addEventListener('pointermove', (ev) => {
+                    t1.textContent = h.getAttribute('data-t');
+                    t2.textContent = h.getAttribute('data-v');
+                    const pt = svg.createSVGPoint();
+                    pt.x = ev.clientX; pt.y = ev.clientY;
+                    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+                    tt.setAttribute('display', 'inline');
+                    const bb = text.getBBox();
+                    const w = bb.x + bb.width + 6, hh = bb.y + bb.height + 6;
+                    box.setAttribute('width', w); box.setAttribute('height', hh);
+                    let x = p.x + 10, y = p.y + 10;
+                    if (x + w > vb.width) x = vb.width - w;
+                    if (y + hh > vb.height) y = p.y - hh - 6;
+                    tt.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+                });
+                h.addEventListener('pointerleave', () => tt.setAttribute('display', 'none'));
+            });
+        });
         document.querySelectorAll('.charts').forEach((box) => {
             const data = JSON.parse(box.getAttribute('data-series'));
             const from = +box.getAttribute('data-from'), to = +box.getAttribute('data-to');
@@ -419,7 +586,16 @@ svg.ch .xh{stroke:var(--mut);stroke-width:1;pointer-events:none}
 .tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
 .tip{position:fixed;z-index:9;pointer-events:none;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.18)}
 .tip b{font-size:13px}.tip span{color:var(--mut)}.tip-h{color:var(--mut);margin-bottom:2px}
-@media print{.detail{display:table-row}.btn-tg{display:none}}
+.charts[data-view=hosp] .view-split,.charts[data-view=split] .view-hosp{display:none}
+.vbar{display:flex;gap:6px;align-items:center;font-size:12px;margin:2px 0 6px}
+.btn-view{font-size:12px;padding:1px 10px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);cursor:pointer}
+.btn-view.on{background:var(--new)}
+svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
+svg.hsvg .ax{cursor:pointer}svg.hsvg .ax text{stroke-width:.35;font-size:13px}svg.hsvg .ax line,svg.hsvg .ser line{stroke-width:1}
+svg.hsvg .ax.off{fill:lightgray!important;stroke:lightgray!important}svg.hsvg .ser.off{visibility:hidden}
+svg.hsvg .ser circle{stroke:none}svg.hsvg .ser text.na{font-size:12px;stroke-width:.4}
+svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;stroke-width:12}
+@media print{.detail{display:table-row}.btn-tg,.vbar{display:none}}
 </style></head><body>
 <h1>晨間簡報</h1>
 <div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 範圍：${esc(meta.scope)} · 共 ${results.length} 人，需注意 ${attention.length} 人</div>

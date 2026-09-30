@@ -150,9 +150,9 @@ function isOnOxygen(inside) {
             let m;
             if ((m = t.match(/\bT:\s*([\d.]*)\s*P:\s*(\d*)\s*R:\s*(\d*)/i))) {
                 const rec = { dt, ms, kind: 'tpr' };
-                if (m[1]) rec.T = parseFloat(m[1]);
-                if (m[2]) rec.P = +m[2];
-                if (m[3]) rec.R = +m[3];
+                if (m[1]) rec.T = parseFloat(m[1]); else rec.naT = true; // 缺值另外記下，畫圖時標 NA
+                if (m[2]) rec.P = +m[2]; else rec.naP = true;
+                if (m[3]) rec.R = +m[3]; else rec.naR = true;
                 if (rec.T !== undefined || rec.P !== undefined || rec.R !== undefined) singles.push(rec);
             } else if ((m = t.match(/BP:\s*(\d+)\/(\d+)/i))) {
                 singles.push({ dt, ms, kind: 'bp', SBP: +m[1], DBP: +m[2] });
@@ -173,6 +173,8 @@ function isOnOxygen(inside) {
             if (last && s.ms - last.ms <= CLUSTER_MINUTES * 60000) {
                 const { dt, ms, kind, ...rest } = s; // eslint-disable-line no-unused-vars
                 Object.assign(last, rest);
+                // 同組內後來的列若補上了值，先前的 NA 標記作廢
+                for (const k of ['T', 'P', 'R']) if (last[k] !== undefined) delete last['na' + k];
                 last.sources.push(kind);
                 last.endMs = s.ms;
             } else {

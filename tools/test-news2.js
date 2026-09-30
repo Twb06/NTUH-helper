@@ -78,3 +78,12 @@ console.log('news2: all tests passed');
     assert.ok(sc.partial && sc.missing.includes('RR'), 'missing RR must be flagged, not scored 0');
 }
 console.log('news2: real-format tests passed');
+
+// NA 標記：缺值要記下來；同組內補上值則作廢
+{
+    const o = N.parseVitalRows(['2026/09/29 13:23 T:37.1 P:84 R:', '2026/09/29 13:23 BP:112/74']);
+    assert.strictEqual(o[0].naR, true); assert.strictEqual(o[0].naT, undefined); assert.strictEqual(o[0].DBP, 74);
+    const m = N.parseVitalRows(['2026/09/29 13:23 T: P:80 R:', '2026/09/29 13:30 T:36.9 P:80 R:18']);
+    assert.strictEqual(m.length, 1); assert.strictEqual(m[0].T, 36.9); assert.strictEqual(m[0].naT, undefined);
+}
+console.log('news2: NA-flag tests passed');
