@@ -170,7 +170,6 @@
         res.severity = rank;
         res.flags = s ? s.flags.filter((f) => f !== '給氧中') : [];
         res.onO2 = !!(s && s.flags.includes('給氧中'));
-        res.attention = res.errors.length > 0 || rank > 0 || res.flags.length > 0 || !!res.lab || res.pacs.length > 0;
         return res;
     }
 
@@ -440,13 +439,14 @@ ${dataTable(series)}</div>`;
         const lvl = r.news ? r.news.level : 'none';
         const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）。若跳到登入頁，請再點一次">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
+        const noVitals = r.vitals && r.vitals.noData ? '<div class="muted nov">時間窗內沒有 vitals 量測（沒量不等於正常）</div>' : '';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const charts = chartsHtml(r, win);
         const openByDefault = !!charts; // 有圖的病人一律預設展開
         const toggle = charts ? `<br><button class="btn-tg" aria-expanded="${openByDefault ? 'true' : 'false'}">圖表</button>` : '';
         const main = `<tr class="lv-${lvl}">
 <td><b>${esc(p.bed)}</b>${toggle}</td>
-<td>${esc(p.name)}<br><small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}</small>${err}</td>
+<td>${esc(p.name)}<br><small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}</small>${noVitals}${err}</td>
 <td>${lab}</td><td>${pacs}</td></tr>`;
         return charts ? `${main}<tr class="detail${openByDefault ? ' open' : ''}"><td colspan="4">${charts}</td></tr>` : main;
     }
@@ -454,14 +454,6 @@ ${dataTable(series)}</div>`;
     function buildHtml(results, win, meta) {
         // 院內 NEWS 圖用的 Chart.js 與同目錄；簡報頁沿用同一份（失敗時退回 SVG 版）
         const chartBase = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + 'js/Chart.js-2.9.4/';
-        const attention = results.filter((r) => r.attention)
-            .sort((a, b) => (b.severity - a.severity) || ((b.news ? b.news.total : -1) - (a.news ? a.news.total : -1))
-                || ((b.p.hisEws || 0) - (a.p.hisEws || 0)) || a.p.bed.localeCompare(b.p.bed));
-        const quiet = results.filter((r) => !r.attention);
-        const noData = quiet.filter((r) => r.vitals && r.vitals.noData);
-        const stable = quiet.filter((r) => !(r.vitals && r.vitals.noData));
-        const names = (arr) => arr.map((r) => `${esc(r.p.bed)} ${esc(r.p.name)}`).join('、') || '—';
-
         return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>晨間簡報 ${esc(fmt(win.toMs))}</title>
 <style>
@@ -473,8 +465,7 @@ table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--li
 th{position:sticky;top:0;background:var(--bg);font-size:12px;color:var(--mut)}
 .lv-high td{background:var(--hi)}.lv-medium td{background:var(--md)}.lv-low-medium td{background:var(--lm)}
 .tag{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin:0 4px 2px 0;font-size:12px}.tag.new{background:var(--new)}a.tag{color:inherit;text-decoration:none}a.tag:hover{text-decoration:underline}
-.muted{color:var(--mut)}small{font-size:12px}.err{color:#b91c1c;margin-top:4px;font-size:12px}.rep{font-size:12px;color:var(--mut);max-width:320px}
-.box{margin-top:16px;padding:10px 12px;border:1px solid var(--line);border-radius:6px}.box h2{font-size:14px;margin:0 0 4px}
+.muted{color:var(--mut)}small{font-size:12px}.err{color:#b91c1c;margin-top:4px;font-size:12px}.rep{font-size:12px;color:var(--mut);max-width:320px}.nov{font-size:12px;margin-top:2px}
 .note{margin-top:16px;font-size:12px;color:var(--mut)}
 @media print{body{padding:0;font-size:11px}th{position:static}}
 :root{--series:#2a78d6;--serious:#ec835a;--critical:#d03b3b;--surf:#fff;--grid:#e1e0d9;--axis:#c3c2b7;--tk:#898781;--ok:rgba(137,135,129,.14);--bmed:rgba(250,178,25,.16);--bhigh:rgba(208,59,59,.14)}
@@ -495,10 +486,8 @@ svg.hsvg .ser circle{stroke:none}svg.hsvg .ser text.na{font-size:12px;stroke-wid
 svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;stroke-width:12}
 @media print{.detail{display:table-row}.btn-tg,</style></head><body>
 <h1>晨間簡報</h1>
-<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 範圍：${esc(meta.scope)} · 共 ${results.length} 人，需注意 ${attention.length} 人</div>
-${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th>檢驗</th><th>影像</th></tr></thead><tbody>${attention.map((r) => rowHtml(r, win)).join('')}</tbody></table>` : '<p>沒有需要注意的病人。</p>'}
-<div class="box"><h2>時間窗內沒有 vitals 量測（${noData.length}）</h2>${names(noData)}<div class="muted">「沒量」不等於「正常」，請視需要確認。</div></div>
-<div class="box"><h2>無異常、無新報告（${stable.length}）</h2>${names(stable)}</div>
+<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 範圍：${esc(meta.scope)} · 共 ${results.length} 人（依病房列表順序）</div>
+<table><thead><tr><th>床</th><th>病人</th><th>檢驗</th><th>影像</th></tr></thead><tbody>${results.map((r) => rowHtml(r, win)).join('')}</tbody></table>
 <div class="note">NEWS2 為 Scale 1；缺量項目不補零，標示於「缺」。第一版尚未納入護理紀錄／交班／照會 note，也未逐人調整基線（例如 COPD）。判讀僅供快速瀏覽，不取代臨床評估。資料僅存在本頁，不上傳。</div>
 <script src="${chartBase}Chart.min.js"><\/script><script src="${chartBase}chartjs-plugin-annotation.min-0.5.7.js"><\/script><script>(${pageScript.toString()})();<\/script></body></html>`;
     }
@@ -520,7 +509,7 @@ ${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th>檢驗</t
         btn.disabled = true;
         const results = await Promise.all(mine.map((p) => assess(p, win, now).catch((e) => ({
             p, errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null,
-            news: null, severity: 0, flags: [], onO2: false, attention: true,
+            news: null, severity: 0, flags: [], onO2: false,
         })).then((r) => { btn.textContent = `抓取中 ${++done}/${mine.length}`; return r; })));
         btn.disabled = false;
         btn.textContent = label;
