@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.5.2
+// @version      0.7.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -19,9 +19,12 @@
     /* global NTUHAsmx, NTUHNews2 */
 
     const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
-    // 同時處理的病人數。全部病人一起開跑時，後面病人的 OuterData 請求會排在大量處方頁／管路頁之後，
-    // 等超過逾時被我們自己中止（「signal is aborted without reason」）。所以限制同時處理的病人數，並放寬 OuterData 逾時。
-    const PATIENT_POOL = 3;
+    // 為什麼分兩階段（新竹實測 2026-09-30，11 位病人）：處方頁＋管路單獨測時加起來約 28 秒，剛好等於不論同時數怎麼調
+    // 的總時間（2 個、3 個、全部同時開跑都是 28～30 秒）→ 這兩個重頁面在伺服器端幾乎是一個接一個處理，
+    // 同時發再多也不會變快，只會讓 vitals／影像這種輕請求排在後面（全部同時開跑時平均等 17～19 秒）。
+    // 所以由我們決定順序：先抓完所有病人的輕請求（階段一），再抓重的（階段二，依病人順序小批處理）。
+    const HEAVY_POOL = 2;   // 階段二同時處理的病人數
+    // OuterData 逾時：請求要在瀏覽器／伺服器排隊，逾時計時包含排隊時間，所以放寬到 30 秒（lib 預設 12 秒）。
     const OUTER_TIMEOUT_MS = 30000;
 
     // HIS 的 date.js 會覆寫 Date.now，取毫秒一律走這個
@@ -208,7 +211,9 @@
         const sec = (ms) => (ms / 1000).toFixed(1) + 's';
         const defs = [
             ['rx', '處方頁（抗生素）', RX_CONCURRENCY], ['tubes', '管路', 1],
-            ['vitals', 'vitals（含排隊）', 0], ['pacs', '影像（含排隊）', 0], ['patient', '每位病人合計', 0],
+            ['vitals', 'vitals（含排隊）', 0], ['pacs', '影像（含排隊）', 0],
+            ['phase1', '階段一總計（vitals＋影像）', 0], ['phase2', '階段二總計（抗生素＋管路）', 0],
+            ['patient', '卡片完成時間（從按下起算）', 0],
         ];
         const rows = defs.filter(([k]) => S[k] && S[k].run.length).map(([k, label, conc]) => {
             const e = S[k];
@@ -322,36 +327,54 @@
         });
     }
 
-    async function assess(p, win, now) {
-        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null };
-        const ctx = ctxOf(p);
-
+    // 每位病人的結果容器。pending＝還沒回來的來源；頁面會依 pending 顯示「抓取中…」
+    function newResult(p, win, now) {
+        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes']) };
         const labMs = labTimeMs(p.labTitle, now);
         if (labMs !== null && labMs >= win.fromMs) res.lab = { ms: labMs };
-
-        const [v, x, rx, tb] = await Promise.allSettled([
-            timed('vitals', () => NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS })),
-            timed('pacs', () => NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS })),
-            fetchAbx(p, now),
-            fetchTubes(p, now),
-        ]);
-        if (v.status === 'fulfilled') {
-            const texts = vitalTexts(v.value);
-            const obs = NTUHNews2.parseVitalRows(texts);
-            res.vitals = NTUHNews2.summarizeWindow(obs, win.fromMs, win.toMs);
-            res.vitals.total = obs.length;
-            res.chartSeries = obs.filter((o) => o.ms >= win.refFromMs && o.ms <= win.toMs);
-            res.uo = NTUHNews2.parseUo(texts);
-            res.o2 = NTUHNews2.o2Change(res.vitals.series);
-        } else res.errors.push('vitals 抓取失敗：' + (v.reason && v.reason.message || v.reason));
-        if (x.status === 'fulfilled') res.pacs = parsePacs(x.value, win.fromMs);
-        else res.errors.push('影像抓取失敗：' + (x.reason && x.reason.message || x.reason));
-        if (rx.status === 'fulfilled') res.abx = rx.value;
-        else res.errors.push('抗生素抓取失敗：' + (rx.reason && rx.reason.message || rx.reason));
-        if (tb.status === 'fulfilled') res.tubes = tb.value;
-        else res.errors.push('管路抓取失敗：' + (tb.reason && tb.reason.message || tb.reason));
-
         return res;
+    }
+
+    // 來源回來（不論成功或失敗）就通知 onUpdate(src, res)，由呼叫端更新畫面；失敗只記在 res.errors，不丟出
+    function jobRunner(res, onUpdate) {
+        return async (src, label, work) => {
+            try { await work(); } catch (e) { res.errors.push(`${label}抓取失敗：` + (e && e.message || e)); } finally {
+                res.pending.delete(src);
+                try { onUpdate(src, res); } catch (e) { console.warn('[晨間簡報] 更新畫面失敗', src, e); }
+            }
+        };
+    }
+
+    // 階段一（輕）：vitals、影像。單獨測各約 0.1～2 秒
+    async function assessLight(res, win, onUpdate) {
+        const p = res.p;
+        const ctx = ctxOf(p);
+        const job = jobRunner(res, onUpdate);
+        await Promise.all([
+            job('vitals', 'vitals ', async () => {
+                const html = await timed('vitals', () => NTUHAsmx.outerData('vitalsign', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }));
+                const texts = vitalTexts(html);
+                const obs = NTUHNews2.parseVitalRows(texts);
+                res.vitals = NTUHNews2.summarizeWindow(obs, win.fromMs, win.toMs);
+                res.vitals.total = obs.length;
+                res.chartSeries = obs.filter((o) => o.ms >= win.refFromMs && o.ms <= win.toMs);
+                res.uo = NTUHNews2.parseUo(texts);
+                res.o2 = NTUHNews2.o2Change(res.vitals.series);
+            }),
+            job('pacs', '影像', async () => {
+                res.pacs = parsePacs(await timed('pacs', () => NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS })), win.fromMs);
+            }),
+        ]);
+    }
+
+    // 階段二（重）：抗生素（處方頁約 1.8 秒、200KB）、管路（頁面＋handler 約 0.7 秒，且必須一次一位）
+    async function assessHeavy(res, now, onUpdate) {
+        const p = res.p;
+        const job = jobRunner(res, onUpdate);
+        await Promise.all([
+            job('abx', '抗生素', async () => { res.abx = await fetchAbx(p, now); }),
+            job('tubes', '管路', async () => { res.tubes = await fetchTubes(p, now); }),
+        ]);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -479,61 +502,102 @@ ${hospVitals(series, { fromMs: win.refFromMs, toMs: win.toMs })}
 ${dataTable(series)}</details>`;
     }
 
-    // 頁面內互動（序列化後放進新分頁執行，不可引用外部變數）
+    // 頁面內互動（序列化後放進新分頁執行，不可引用外部變數）。
+    // 卡片內容是「邊抓邊塞」進頁面的，所以一律用事件委派，不在載入時逐一綁定。
     function pageScript() {
-        document.querySelectorAll('svg.hsvg').forEach((svg) => {
-            svg.querySelectorAll('.ax').forEach((a) => a.addEventListener('click', () => {
-                const off = a.classList.toggle('off');
-                const g = svg.querySelector('.ser[data-s="' + a.getAttribute('data-s') + '"]');
-                if (g) g.classList.toggle('off', off);
-            }));
+        let tipSvg = null;
+        const hideTip = () => {
+            if (!tipSvg) return;
+            const tt = tipSvg.querySelector('.tt');
+            if (tt) tt.setAttribute('display', 'none');
+            tipSvg = null;
+        };
+        document.addEventListener('click', (ev) => {
+            const a = ev.target.closest && ev.target.closest('.ax');
+            const svg = a && a.closest('svg.hsvg');
+            if (!svg) return;
+            const off = a.classList.toggle('off');
+            const g = svg.querySelector('.ser[data-s="' + a.getAttribute('data-s') + '"]');
+            if (g) g.classList.toggle('off', off);
+        });
+        document.addEventListener('pointermove', (ev) => {
+            const h = ev.target.closest && ev.target.closest('.hit,.hitl');
+            const svg = h && h.closest('svg.hsvg');
+            if (!svg) { hideTip(); return; }
+            if (tipSvg && tipSvg !== svg) hideTip();
+            tipSvg = svg;
             const tt = svg.querySelector('.tt'), box = tt.querySelector('rect'), text = tt.querySelector('text');
             const t1 = tt.querySelector('.t1'), t2 = tt.querySelector('.t2'), vb = svg.viewBox.baseVal;
-            svg.querySelectorAll('.hit,.hitl').forEach((h) => {
-                h.addEventListener('pointermove', (ev) => {
-                    t1.textContent = h.getAttribute('data-t');
-                    t2.textContent = h.getAttribute('data-v');
-                    const pt = svg.createSVGPoint();
-                    pt.x = ev.clientX; pt.y = ev.clientY;
-                    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
-                    tt.setAttribute('display', 'inline');
-                    const bb = text.getBBox();
-                    const w = bb.x + bb.width + 6, hh = bb.y + bb.height + 6;
-                    box.setAttribute('width', w); box.setAttribute('height', hh);
-                    let x = p.x + 10, y = p.y + 10;
-                    if (x + w > vb.width) x = vb.width - w;
-                    if (y + hh > vb.height) y = p.y - hh - 6;
-                    tt.setAttribute('transform', 'translate(' + x + ',' + y + ')');
-                });
-                h.addEventListener('pointerleave', () => tt.setAttribute('display', 'none'));
-            });
+            t1.textContent = h.getAttribute('data-t');
+            t2.textContent = h.getAttribute('data-v');
+            const pt = svg.createSVGPoint();
+            pt.x = ev.clientX; pt.y = ev.clientY;
+            const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+            tt.setAttribute('display', 'inline');
+            const bb = text.getBBox();
+            const w = bb.x + bb.width + 6, hh = bb.y + bb.height + 6;
+            box.setAttribute('width', w); box.setAttribute('height', hh);
+            let x = p.x + 10, y = p.y + 10;
+            if (x + w > vb.width) x = vb.width - w;
+            if (y + hh > vb.height) y = p.y - hh - 6;
+            tt.setAttribute('transform', 'translate(' + x + ',' + y + ')');
         });
     }
 
-    function cardHtml(r, win) {
-        const p = r.p;
-        const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
-        const pacs = r.pacs.length ? r.pacs.map((x) => (x.report ? `<details class="pc"><summary><span class="tag new">${esc(x.date)} ${esc(x.title)}</span></summary><div class="rep">${esc(x.report)}</div></details>` : `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span></div>`)).join('') : '<span class="muted">—</span>';
+    // ─── 卡片各區塊（每個區塊有自己的 id，抓完一個來源就只更新那一格）──────────
+    const PENDING_HTML = '<span class="muted">抓取中…</span>';
+    const dayTag = (x, cls) => `<span class="tag${cls}">${esc(x.name)}${x.route ? ' ' + esc(x.route) : ''} D${x.day}<small class="muted"> ${new Date(x.startMs).getMonth() + 1}/${new Date(x.startMs).getDate()} 起</small></span>`;
+
+    function renderVit(r, win) {
+        if (r.pending.has('vitals')) return '';
         const o2Cls = r.o2 && (r.o2.kind === 'new' || r.o2.kind === 'up') ? ' warn' : '';
         const o2 = r.o2 ? `<div><span class="tag${o2Cls}">${esc(r.o2.text)}${r.o2.ms ? '（' + esc(fmt(r.o2.ms)) + '）' : ''}</span></div>` : '';
         const uo = r.uo ? `<div class="muted nov">尿量 ${r.uo.val} mL${r.uo.ms ? '（' + esc(fmt(r.uo.ms)) + '）' : '（院內未標日期）'}</div>` : '';
         const noVitals = r.vitals && r.vitals.noData
             ? `<div class="muted nov">${r.chartSeries && r.chartSeries.length ? '昨夜（' + esc(fmt(win.fromMs)) + ' 起）沒有 vitals 量測，圖上為前一日的參考資料' : '時間窗內沒有 vitals 量測（沒量不等於正常）'}</div>` : '';
-        const dayTag = (x, cls) => `<span class="tag${cls}">${esc(x.name)}${x.route ? ' ' + esc(x.route) : ''} D${x.day}<small class="muted"> ${new Date(x.startMs).getMonth() + 1}/${new Date(x.startMs).getDate()} 起</small></span>`;
-        const abx = r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>';
-        const tubes = r.tubes ? (r.tubes.length ? r.tubes.map((x) => dayTag(x, '')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>';
-        const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
+        return o2 + uo + noVitals;
+    }
+    const renderErr = (r) => (r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '');
+    const renderAbx = (r) => (r.pending.has('abx') ? PENDING_HTML : r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
+    const renderTubes = (r) => (r.pending.has('tubes') ? PENDING_HTML : r.tubes ? (r.tubes.length ? r.tubes.map((x) => dayTag(x, '')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
+    const renderLab = (r) => (r.lab ? `<a class="tag new" href="${esc(labPageUrl(r.p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>');
+    function renderPacs(r) {
+        if (r.pending.has('pacs')) return PENDING_HTML;
+        if (!r.pacs.length) return '<span class="muted">—</span>';
+        return r.pacs.map((x) => {
+            const tag = `<span class="tag new">${esc(x.date)} ${esc(x.title)}</span>`;
+            return x.report ? `<details class="pc"><summary>${tag}</summary><div class="rep">${esc(x.report)}</div></details>` : `<div>${tag}</div>`;
+        }).join('');
+    }
+    const renderCharts = (r, win) => (r.pending.has('vitals') ? '<div class="muted nov">生命徵象圖：抓取中…</div>' : chartsHtml(r, win));
+
+    function cardShell(i, r, win) {
+        const p = r.p;
         return `<section class="card">
 <div class="hd"><b>${esc(p.bed)}</b> ${esc(p.name)} <small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small></div>
-${o2}${uo}${noVitals}${err}
-<div class="kv"><span class="k">抗生素</span><div>${abx}</div></div>
-<div class="kv"><span class="k">管路</span><div>${tubes}</div></div>
-<div class="kv"><span class="k">檢驗</span><div>${lab}</div></div>
-<div class="kv"><span class="k">影像</span><div>${pacs}</div></div>
-${chartsHtml(r, win)}</section>`;
+<div id="c${i}-vit">${renderVit(r, win)}</div>
+<div id="c${i}-err">${renderErr(r)}</div>
+<div class="kv"><span class="k">抗生素</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
+<div class="kv"><span class="k">管路</span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
+<div class="kv"><span class="k">檢驗</span><div id="c${i}-lab">${renderLab(r)}</div></div>
+<div class="kv"><span class="k">影像</span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
+<div id="c${i}-charts">${renderCharts(r, win)}</div></section>`;
     }
 
-    function buildHtml(results, win, meta) {
+    // 某個來源回來 → 只更新卡片上對應的格子（不重畫整張卡，使用者展開的影像報告／收合的圖表不會被重設）
+    function applyUpdate(w, i, src, r, win) {
+        if (!w || w.closed) return;
+        const set = (id, html) => { const el = w.document.getElementById(`c${i}-${id}`); if (el) el.innerHTML = html; };
+        if (src === 'vitals') { set('vit', renderVit(r, win)); set('charts', renderCharts(r, win)); }
+        if (src === 'pacs') set('pacs', renderPacs(r));
+        if (src === 'abx') set('abx', renderAbx(r));
+        if (src === 'tubes') set('tubes', renderTubes(r));
+        set('err', renderErr(r));
+    }
+    const setText = (w, id, text) => { if (w && !w.closed) { const el = w.document.getElementById(id); if (el) el.textContent = text; } };
+
+    // 頁面骨架：先把所有病人的空卡片（已知的床號、姓名、檢驗時間先填好）一次畫出來
+    function pageShell(states, win, scope) {
         return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>晨間簡報 ${esc(fmt(win.toMs))}</title>
 <style>
@@ -564,9 +628,9 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 @media print{body{padding:0;font-size:11px}.card{break-inside:avoid}}
 </style></head><body>
 <h1>晨間簡報</h1>
-<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 圖表參考資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(meta.scope)} · 共 ${results.length} 人（依病房列表順序）</div>
-<div class="grid">${results.map((r) => cardHtml(r, win)).join('')}</div>
-${meta.statsHtml || ''}
+<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 圖表參考資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(scope)} · 共 ${states.length} 人（依病房列表順序） · <span id="prog">載入中 0/${states.length}</span></div>
+<div class="grid">${states.map((r, i) => cardShell(i, r, win)).join('')}</div>
+<div id="stats"></div>
 <script>(${pageScript.toString()})();<\/script></body></html>`;
     }
 
@@ -579,34 +643,61 @@ ${meta.statsHtml || ''}
         const mine = readPatients();
         if (!mine.length) { alert('找不到病人清單'); return; }
 
+        // 必須在「使用者點擊」的同一個動作裡先開分頁，否則抓完才開會被瀏覽器的彈出視窗封鎖擋下
+        const w = window.open('', '_blank');
+        if (!w) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
+
         const win = briefingWindow(START_HOUR);
         const now = nowMs();
+        const states = mine.map((p) => newResult(p, win, now));
+        w.document.open();
+        w.document.write(pageShell(states, win, '目前病房列表'));
+        w.document.close();
+
         const label = btn.textContent;
         const idleBg = btn.style.background;
-        let done = 0;
         // 執行中：換色＋等待游標＋顯示進度，避免使用者以為當掉
         btn.disabled = true;
         btn.style.background = '#d97706';
         btn.style.cursor = 'wait';
-        btn.textContent = `⏳ 抓取中 0/${mine.length}`;
-        let results;
+        const setProg = (phase, done) => {
+            const t = `${phase} ${done}/${mine.length}`;
+            btn.textContent = `⏳ ${t}`;
+            setText(w, 'prog', `載入中：${t}`);
+        };
+        // 程式錯誤的保險（正常情況 assess 不會丟出，來源失敗都記在 res.errors）
+        const markFailed = (r, i, e) => {
+            r.errors.push('判讀失敗：' + (e && e.message || e));
+            r.pending.clear();
+            for (const src of ['vitals', 'pacs', 'abx', 'tubes']) applyUpdate(w, i, src, r, win);
+        };
         const wall0 = nowMs();
         statsBook = {};
         try {
-            results = new Array(mine.length);
-            let next = 0;
+            // 階段一（輕）：所有病人的 vitals＋影像一起發，實際同時數由 lib 限制；畫面上生命徵象圖與影像先出現
+            let d1 = 0;
+            setProg('生命徵象與影像', 0);
+            await Promise.all(states.map(async (r, i) => {
+                try { await assessLight(r, win, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
+                setProg('生命徵象與影像', ++d1);
+            }));
+            recordStat('phase1', null, nowMs() - wall0);
+
+            // 階段二（重）：抗生素＋管路，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
+            const t2 = nowMs();
+            let d2 = 0, next = 0;
+            setProg('抗生素與管路', 0);
             const worker = async () => {
-                while (next < mine.length) {
+                while (next < states.length) {
                     const i = next++;
-                    const tp = nowMs();
-                    results[i] = await assess(mine[i], win, now).catch((e) => ({
-                        p: mine[i], errors: ['判讀失敗：' + (e && e.message || e)], vitals: null, pacs: [], lab: null, abx: null, tubes: null,
-                    }));
-                    recordStat('patient', null, nowMs() - tp);
-                    btn.textContent = `⏳ 抓取中 ${++done}/${mine.length}`;
+                    const r = states[i];
+                    try { await assessHeavy(r, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
+                    recordStat('patient', null, nowMs() - wall0);
+                    setProg('抗生素與管路', ++d2);
                 }
             };
-            await Promise.all(Array.from({ length: Math.min(PATIENT_POOL, mine.length) }, worker));
+            await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));
+            recordStat('phase2', null, nowMs() - t2);
         } finally {
             btn.disabled = false;
             btn.style.background = idleBg;
@@ -614,12 +705,11 @@ ${meta.statsHtml || ''}
             btn.textContent = label;
         }
 
-        const stats = statsSummary(nowMs() - wall0);
+        const wallMs = nowMs() - wall0;
+        const stats = statsSummary(wallMs);
         console.log('[晨間簡報] 耗時統計'); console.table(stats.rows);
-        const html = buildHtml(results, win, { scope: '目前病房列表', statsHtml: stats.html });
-        const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
-        const w = window.open(url, '_blank');
-        if (!w) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
+        setText(w, 'prog', `完成（${(wallMs / 1000).toFixed(1)} 秒）`);
+        if (!w.closed) { const el = w.document.getElementById('stats'); if (el) el.innerHTML = stats.html; }
     }
 
     function mount() {
