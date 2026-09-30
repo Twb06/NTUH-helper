@@ -396,11 +396,21 @@ function isOnOxygen(inside) {
     // 單一病人：抓資料 + 判讀
     // ═══════════════════════════════════════════════════════════
 
+    // SESSION：病房列表網址上帶著（頁內每個連結都帶）。檢驗頁第一次開常落在「登入前院網」
+    // （該子系統的 session 尚未建立），帶上 SESSION 可減少這種情況（與 progress-note-data-helper 一致）。
+    // 只放進連結的 href，不顯示、不寫入儲存空間。
+    function pageSession() {
+        const m = location.search.match(/[?&]session=([^&]+)/i)
+            || document.documentElement.innerHTML.match(/SESSION=([a-zA-Z0-9]{34})/i);
+        return m ? m[1] : '';
+    }
+
     // 檢驗報告頁（與 progress-note-data-helper 的 [Lab] 同一頁）：靠 ChartNo 定位病人，
-    // SESSION/AccountIDSE/PersonID 都不需要；IntervalDay 為負數＝往前推幾天（-13 ≈ 兩週）。
+    // AccountIDSE/PersonID 都不需要；IntervalDay 為負數＝往前推幾天（-13 ≈ 兩週）。
     function labPageUrl(p) {
+        const ses = pageSession();
         return location.origin + '/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx'
-            + `?PatClass=I&WardCode=${encodeURIComponent(p.ward || '')}&ChartNo=${encodeURIComponent(p.chartNo)}`
+            + `?${ses ? 'SESSION=' + encodeURIComponent(ses) + '&' : ''}PatClass=I&WardCode=${encodeURIComponent(p.ward || '')}&ChartNo=${encodeURIComponent(p.chartNo)}`
             + '&HospitalCode=T0&Seed=&IntervalDay=-13';
     }
 
@@ -729,7 +739,7 @@ ${dataTable(series)}</div>`;
     function rowHtml(r, win) {
         const p = r.p;
         const lvl = r.news ? r.news.level : 'none';
-        const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
+        const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）。若跳到登入頁，請再點一次">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const charts = chartsHtml(r, win);
