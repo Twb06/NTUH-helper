@@ -87,3 +87,29 @@ console.log('news2: real-format tests passed');
     assert.strictEqual(m.length, 1); assert.strictEqual(m[0].T, 36.9); assert.strictEqual(m[0].naT, undefined);
 }
 console.log('news2: NA-flag tests passed');
+
+// 尿量：實測 U/O 列常無日期；有日期取最新
+{
+    assert.deepStrictEqual(N.parseUo(['U/O:0', '2026/09/29 13:23 T:37.1 P:84 R:']), { ms: null, val: 0 });
+    const d = N.parseUo(['U/O:250', '2026/09/29 06:00 U/O:300', '2026/09/30 06:00 U/O:120']);
+    assert.strictEqual(d.val, 120); assert.ok(d.ms > 0);
+    assert.strictEqual(N.parseUo(['T:37 P:80 R:18']), null);
+}
+// 給氧變化
+{
+    const mk = (o) => N.parseVitalRows(o);
+    const ser = (rows) => N.parseVitalRows(rows);
+    const room = (t) => `2026/09/29 ${t} SpO2:97%(%,L,)`;
+    const nc = (t, l) => `2026/09/29 ${t} SpO2:93%(28%,${l}L,Nasal Cannula)`;
+    assert.strictEqual(N.o2Change(ser([room('18:00'), room('21:00')])), null);                      // 全程室內空氣
+    let c = N.o2Change(ser([room('18:00'), nc('21:00', 3), nc('23:30', 3)]));
+    assert.strictEqual(c.kind, 'new'); assert.ok(c.text.includes('NC 3L'));
+    c = N.o2Change(ser([room('18:00'), nc('21:00', 3), room('23:30')])); assert.strictEqual(c.kind, 'transient');
+    c = N.o2Change(ser([nc('18:00', 3), room('23:30')])); assert.strictEqual(c.kind, 'off');
+    c = N.o2Change(ser([nc('18:00', 3), nc('23:30', 5)])); assert.strictEqual(c.kind, 'up'); assert.ok(c.text.includes('3→5'));
+    c = N.o2Change(ser([nc('18:00', 5), nc('23:30', 3)])); assert.strictEqual(c.kind, 'down');
+    c = N.o2Change(ser([nc('18:00', 3), nc('23:30', 3)])); assert.strictEqual(c.kind, 'on');
+    assert.strictEqual(N.o2Change([]), null); assert.strictEqual(N.o2Change(mk(['2026/09/29 18:00 T:36.5 P:70 R:16'])), null); // 沒有 SpO2
+    assert.strictEqual(N.oxygenInfo('%,L,').flow, null);
+}
+console.log('news2: UO / O2 tests passed');

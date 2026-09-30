@@ -185,6 +185,66 @@ function isOnOxygen(inside) {
         return clusters;
     }
 
+
+    // ─── 尿量（U/O）：院內的 U/O 列常常沒有日期（實測 "U/O:0"），含意（每班或每日）不明，
+    //     所以有日期的取最新一筆，沒有日期的只當「院內未標日期」原樣呈現，不做任何推論。
+    function parseUo(rowTexts) {
+        let dated = null, undated = null;
+        for (const raw of rowTexts) {
+            const t = String(raw).replace(/\s+/g, ' ').trim();
+            const m = t.match(/U\/?O:\s*(\d+)/i);
+            if (!m) continue;
+            const dtm = t.match(DT_RE);
+            if (dtm && +dtm[1] >= 2000) {
+                const ms = toMs(dtm[0]);
+                if (!dated || ms > dated.ms) dated = { ms, val: +m[1] };
+            } else if (undated === null) {
+                undated = { ms: null, val: +m[1] };
+            }
+        }
+        return dated || undated;
+    }
+
+    // ─── 給氧變化：只看時間窗內有量到 SpO2 的觀察（SpO2 括號內才有給氧資訊）
+    // inside 格式 "FiO2,流量,裝置"，例 "28%,3L,Nasal Cannula"
+    function oxygenInfo(inside) {
+        const parts = String(inside || '').split(',').map((x) => x.trim());
+        let flow = '', device = '';
+        if (parts.length >= 3) [, flow, device] = parts; else device = parts[0] || '';
+        const f = parseFloat(String(flow).replace(/[^\d.]/g, ''));
+        const dev = /cannula/i.test(device) ? 'NC' : /mask/i.test(device) ? 'Mask' : device;
+        return { flow: Number.isFinite(f) ? f : null, device: dev };
+    }
+
+    /**
+     * @returns {null | {kind:'new'|'transient'|'off'|'up'|'down'|'on', ms:number|null, text:string}}
+     *   全程室內空氣、或時間窗內沒有 SpO2 → null（沒有值得標的變化）
+     */
+    function o2Change(series) {
+        const obs = (series || []).filter((o) => Number.isFinite(o.SpO2));
+        if (!obs.length) return null;
+        const on = (o) => !!o.onOxygen;
+        const desc = (o) => { const x = oxygenInfo(o.inside); return [x.device, x.flow !== null ? x.flow + 'L' : ''].filter(Boolean).join(' ') || '給氧'; };
+        const first = obs[0], last = obs[obs.length - 1];
+        if (!on(first) && obs.some(on)) {
+            const t = obs.find(on);
+            return on(last)
+                ? { kind: 'new', ms: t.ms, text: '新增給氧 ' + desc(t) }
+                : { kind: 'transient', ms: t.ms, text: '曾短暫給氧 ' + desc(t) };
+        }
+        if (on(first) && !on(last)) {
+            const t = obs.find((o, i) => i > 0 && !on(o));
+            return { kind: 'off', ms: t ? t.ms : last.ms, text: '脫離給氧' };
+        }
+        if (on(first) && on(last)) {
+            const f0 = oxygenInfo(first.inside).flow, f1 = oxygenInfo(last.inside).flow;
+            if (f0 !== null && f1 !== null && f1 > f0) return { kind: 'up', ms: last.ms, text: `給氧流量上升 ${f0}→${f1} L` };
+            if (f0 !== null && f1 !== null && f1 < f0) return { kind: 'down', ms: last.ms, text: `給氧流量下降 ${f0}→${f1} L` };
+            return { kind: 'on', ms: null, text: '持續給氧 ' + desc(last) };
+        }
+        return null;
+    }
+
     /**
      * 時間窗內的摘要：最差一組 NEWS2、各參數極值、超出條件的個別項目
      * @param {Array<object>} obs parseVitalRows 的結果
@@ -254,7 +314,7 @@ function isOnOxygen(inside) {
         CLUSTER_MINUTES,
         scoreNews2, scoreRR, scoreSpO2, scoreSBP, scoreHR, scoreTemp,
         gcsTotal, isOnOxygen,
-        parseVitalRows, summarizeWindow, overnightWindow,
+        parseVitalRows, parseUo, oxygenInfo, o2Change, summarizeWindow, overnightWindow,
     };
 
     if (typeof module !== 'undefined' && module.exports) module.exports = api;

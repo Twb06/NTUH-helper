@@ -62,6 +62,7 @@
                 attending: txt(cells[7]),
                 resident: txt(cells[8]),
                 hisEws: parseInt(txt(news), 10),
+                hospDay: (tr.innerHTML.match(/住院總天數\s*[:：]\s*(\d+)/) || [])[1] || '',
                 labTitle,
             });
         }
@@ -156,9 +157,12 @@
             NTUHAsmx.outerData('pacs', { context: ctx }),
         ]);
         if (v.status === 'fulfilled') {
-            const obs = NTUHNews2.parseVitalRows(vitalTexts(v.value));
+            const texts = vitalTexts(v.value);
+            const obs = NTUHNews2.parseVitalRows(texts);
             res.vitals = NTUHNews2.summarizeWindow(obs, win.fromMs, win.toMs);
             res.vitals.total = obs.length;
+            res.uo = NTUHNews2.parseUo(texts);
+            res.o2 = NTUHNews2.o2Change(res.vitals.series);
         } else res.errors.push('vitals 抓取失敗：' + (v.reason && v.reason.message || v.reason));
         if (x.status === 'fulfilled') res.pacs = parsePacs(x.value, win.fromMs);
         else res.errors.push('影像抓取失敗：' + (x.reason && x.reason.message || x.reason));
@@ -439,6 +443,9 @@ ${dataTable(series)}</div>`;
         const lvl = r.news ? r.news.level : 'none';
         const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）。若跳到登入頁，請再點一次">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
+        const o2Cls = r.o2 && (r.o2.kind === 'new' || r.o2.kind === 'up') ? ' warn' : '';
+        const o2 = r.o2 ? `<div><span class="tag${o2Cls}">${esc(r.o2.text)}${r.o2.ms ? '（' + esc(fmt(r.o2.ms)) + '）' : ''}</span></div>` : '';
+        const uo = r.uo ? `<div class="muted nov">尿量 ${r.uo.val} mL${r.uo.ms ? '（' + esc(fmt(r.uo.ms)) + '）' : '（院內未標日期）'}</div>` : '';
         const noVitals = r.vitals && r.vitals.noData ? '<div class="muted nov">時間窗內沒有 vitals 量測（沒量不等於正常）</div>' : '';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const charts = chartsHtml(r, win);
@@ -446,7 +453,7 @@ ${dataTable(series)}</div>`;
         const toggle = charts ? `<br><button class="btn-tg" aria-expanded="${openByDefault ? 'true' : 'false'}">圖表</button>` : '';
         const main = `<tr class="lv-${lvl}">
 <td><b>${esc(p.bed)}</b>${toggle}</td>
-<td>${esc(p.name)}<br><small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}</small>${noVitals}${err}</td>
+<td>${esc(p.name)}<br><small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small>${o2}${uo}${noVitals}${err}</td>
 <td>${lab}</td><td>${pacs}</td></tr>`;
         return charts ? `${main}<tr class="detail${openByDefault ? ' open' : ''}"><td colspan="4">${charts}</td></tr>` : main;
     }
@@ -464,7 +471,7 @@ h1{font-size:18px;margin:0 0 4px}.sub{color:var(--mut);margin-bottom:12px}
 table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
 th{position:sticky;top:0;background:var(--bg);font-size:12px;color:var(--mut)}
 .lv-high td{background:var(--hi)}.lv-medium td{background:var(--md)}.lv-low-medium td{background:var(--lm)}
-.tag{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin:0 4px 2px 0;font-size:12px}.tag.new{background:var(--new)}a.tag{color:inherit;text-decoration:none}a.tag:hover{text-decoration:underline}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin:0 4px 2px 0;font-size:12px}.tag.new{background:var(--new)}.tag.warn{background:var(--md);border-color:#fdba74}a.tag{color:inherit;text-decoration:none}a.tag:hover{text-decoration:underline}
 .muted{color:var(--mut)}small{font-size:12px}.err{color:#b91c1c;margin-top:4px;font-size:12px}.rep{font-size:12px;color:var(--mut);max-width:320px}.nov{font-size:12px;margin-top:2px}
 .note{margin-top:16px;font-size:12px;color:var(--mut)}
 @media print{body{padding:0;font-size:11px}th{position:static}}
