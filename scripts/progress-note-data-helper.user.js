@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.0.1
-// @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。
+// @version      1.1.0
+// @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -173,8 +173,10 @@
         // 檢驗報告：worker 是 lab-summary.user.js（跑在 MedicalReportContent.aspx，預設清單）
         // 此頁靠 ChartNo 定位病人，另帶 WardCode/HospitalCode。
         // SESSION 是選填不是必要：不帶它這頁一樣開得起來（手動貼不含 SESSION 的網址
-        // 可正常帶出資料），但第一次背景開頁比較容易落在登入前院網，有就帶上以減少
-        // 下方 retryTab 重開。因此 SOURCE_REQUIRES.lab 只要求 ChartNo。
+        // 可正常帶出資料），有就帶上。因此 SOURCE_REQUIRES.lab 只要求 ChartNo。
+        // v1.1.0 起 lab 不再有專屬的提早收尾＋重試：原本「開空白頁」的根因是
+        // Progress 頁抓不到 ChartNo（v1.0.0/v1.0.1 已修多來源解析＋分院格式），
+        // 不是 session 未建立，所以那套鷹架已無作用，移除後與其他 tab 來源同步。
         // IntervalDay 為負數＝往前多推幾天（-1 只有這兩天，-13 可帶出 14 天）。
         lab: {
             label: '[Lab]',
@@ -735,29 +737,6 @@
         else window.open(url, '_blank');
     }
 
-    // lab 特例：第一次背景開常落在登入前院網（該子系統 session 尚未建立），但第一次開會把 session 建起來。
-    // 故若失敗就重開一次（等同使用者手動先開一次的效果），給較短預算輪詢回傳。
-    async function retryTab(key, params, results) {
-        const src = SOURCES[key];
-        const token = makeToken(key);
-        console.log(LOG, '重試背景頁', key, token);
-        deleteSharedData('ntuh_data_' + token);
-        openTab(src.buildUrl(params, token));
-        const start = nowMs();
-        while (nowMs() - start < 20000) {
-            const raw = getSharedData('ntuh_data_' + token);
-            if (raw) {
-                deleteSharedData('ntuh_data_' + token);
-                let data; try { data = JSON.parse(raw); } catch { data = { ok: false, error: '解析回傳失敗' }; }
-                results[key] = { label: src.label, ...data };
-                console.log(LOG, '重試成功', key);
-                return;
-            }
-            await sleep(800);
-        }
-        console.log(LOG, '重試仍逾時', key); // 保留原本的失敗結果
-    }
-
     async function grabSources(keys) {
         const params = getPageParams();
         const results = {};
@@ -806,7 +785,7 @@
         const pollPromise = new Promise((resolve) => {
             if (!tasks.length) return resolve();
             const startTime = nowMs();
-            const TIMEOUT = 30000; // 藥歷圖 worker 需 postback reload、lab 重頁背景節流（其自身 20s 逾時），給足時間
+            const TIMEOUT = 30000; // 由最慢的來源決定：藥歷圖 worker 需 postback reload、lab 重頁（360KB）背景會被節流
             const poll = setInterval(() => {
                 for (const t of tasks) {
                     if (results[t.key]) continue;
@@ -819,11 +798,7 @@
                         results[t.key] = { label: t.src.label, ...data };
                     }
                 }
-                // 只剩 lab 沒回時提早收尾（12s），好早點觸發 lab 重試，不必空等到 30s
-                const onlyLabLeft = tabKeys.includes('lab') && !results['lab']
-                    && tasks.filter((t) => t.key !== 'lab').every((t) => results[t.key]);
-                if (tasks.every((t) => results[t.key]) || nowMs() - startTime > TIMEOUT
-                    || (onlyLabLeft && nowMs() - startTime > 12000)) {
+                if (tasks.every((t) => results[t.key]) || nowMs() - startTime > TIMEOUT) {
                     clearInterval(poll);
                     for (const t of tasks) {
                         if (!results[t.key]) results[t.key] = { label: t.src.label, ok: false, error: '逾時' };
@@ -834,11 +809,6 @@
         });
 
         await Promise.all([...fetchPromises, pollPromise]);
-        // lab 第一次常落在登入前院網而失敗 → 重開一次（第一次開已把 session 建起來）
-        // 缺 ChartNo 時不重試：重開幾次都一樣，直接留著錯誤訊息讓使用者看到原因
-        if (tabKeys.includes('lab') && (!results.lab || !results.lab.ok)) {
-            await retryTab('lab', params, results);
-        }
         // 每個結果掛上「點標題跳轉」網址：fetch 來源用 navUrl；tab 來源用 buildUrl 去掉 token
         keys.forEach((k) => {
             if (!results[k]) return;
