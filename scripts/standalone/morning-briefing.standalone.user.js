@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.2.0-standalone
+// @version      0.2.1-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -116,7 +116,7 @@ function isOnOxygen(inside) {
         for (const raw of rowTexts) {
             const t = String(raw).replace(/\s+/g, ' ').trim();
             const m = t.match(/U\/?O:\s*(\d+)/i);
-            if (!m) continue;
+            if (!m || +m[1] === 0) continue; // 0 多半是尚未填寫的預設值，不當作尿量
             const dtm = t.match(DT_RE);
             if (dtm && +dtm[1] >= 2000) {
                 const ms = toMs(dtm[0]);

@@ -65,7 +65,8 @@ console.log('news2: NA-flag tests passed');
 
 // 尿量：實測 U/O 列常無日期；有日期取最新
 {
-    assert.deepStrictEqual(N.parseUo(['U/O:0', '2026/09/29 13:23 T:37.1 P:84 R:']), { ms: null, val: 0 });
+    assert.strictEqual(N.parseUo(['U/O:0', '2026/09/29 13:23 T:37.1 P:84 R:']), null);                 // 0 不顯示
+    assert.deepStrictEqual(N.parseUo(['U/O:0', '2026/09/29 06:00 U/O:0', 'U/O:150']), { ms: null, val: 150 }); // 略過 0，取有數字的
     const d = N.parseUo(['U/O:250', '2026/09/29 06:00 U/O:300', '2026/09/30 06:00 U/O:120']);
     assert.strictEqual(d.val, 120); assert.ok(d.ms > 0);
     assert.strictEqual(N.parseUo(['T:37 P:80 R:18']), null);

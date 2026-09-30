@@ -104,7 +104,7 @@ function isOnOxygen(inside) {
         for (const raw of rowTexts) {
             const t = String(raw).replace(/\s+/g, ' ').trim();
             const m = t.match(/U\/?O:\s*(\d+)/i);
-            if (!m) continue;
+            if (!m || +m[1] === 0) continue; // 0 多半是尚未填寫的預設值，不當作尿量
             const dtm = t.match(DT_RE);
             if (dtm && +dtm[1] >= 2000) {
                 const ms = toMs(dtm[0]);
