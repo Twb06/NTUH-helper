@@ -205,7 +205,7 @@ function isOnOxygen(inside) {
         const inWin = obs.filter((o) => o.ms >= fromMs && o.ms <= toMs_);
         const latest = obs.length ? obs[obs.length - 1] : null;
         if (!inWin.length) {
-            return { count: 0, worst: null, latest: latest && withScore(latest), flags: [], ranges: {}, noData: true };
+            return { count: 0, worst: null, latest: latest && withScore(latest), flags: [], ranges: {}, series: [], noData: true };
         }
         const scored = inWin.map(withScore);
         // 最差 = 分數最高；同分取較晚（較新）
@@ -227,6 +227,7 @@ function isOnOxygen(inside) {
             count: inWin.length,
             worst,
             latest: withScore(latest),
+            series: scored,     // 時間窗內每組觀察值（含各自的 NEWS2），供畫圖用
             ranges,
             flags: flagsFor(ranges, inWin),
             noData: false,
@@ -457,6 +458,194 @@ function isOnOxygen(inside) {
     // 輸出：獨立新分頁
     // ═══════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════
+    // 圖表（純 inline SVG，不依賴外部函式庫；醫院網路可能擋 CDN）
+    // ═══════════════════════════════════════════════════════════
+    // 設計：NEWS2 時間線 + 五張 vitals 小圖，時間軸一致、滑過任一張圖全部同步。
+    // 標記：圓點 = 正常範圍內；菱形 + 狀態色 = 超出 NEWS 0 分範圍（形狀+顏色，不單靠顏色）；
+    //       NEWS 空心點 = 有缺項、分數可能低估。
+
+    const G = { l: 30, r: 10, t: 14, b: 20 };
+    const NEWS_DIM = { w: 640, h: 140 };
+    const MINI_DIM = { w: 204, h: 100 };
+
+    // score：沿用 NEWS2 各參數計分，「超出範圍」= 該項分數 > 0，與 NEWS 判讀一致
+    const PARAMS = [
+        { key: 'T', title: '體溫 °C', y: [35, 40], ticks: [36, 37, 38, 39, 40], band: [36.1, 38.0], score: (v) => NTUHNews2.scoreTemp(v) },
+        { key: 'P', title: '心跳 /min', y: [40, 140], ticks: [50, 90, 130], band: [51, 90], score: (v) => NTUHNews2.scoreHR(v) },
+        { key: 'R', title: '呼吸 /min', y: [6, 30], ticks: [10, 20, 30], band: [12, 20], score: (v) => NTUHNews2.scoreRR(v) },
+        { key: 'SBP', title: '收縮壓 mmHg', y: [70, 200], ticks: [90, 130, 170, 200], band: [111, 200], score: (v) => NTUHNews2.scoreSBP(v) },
+        { key: 'SpO2', title: 'SpO₂ %', y: [86, 100], ticks: [88, 92, 96, 100], band: [96, 100], score: (v) => NTUHNews2.scoreSpO2(v) },
+    ];
+
+    function timeTicks(fromMs, toMs) {
+        const H = 3600000, span = toMs - fromMs;
+        const stepH = span <= 30 * H ? 6 : span <= 72 * H ? 12 : 24;
+        const d = new Date(fromMs);
+        d.setMinutes(0, 0, 0);
+        const out = [];
+        for (let t = d.getTime(); t <= toMs; t += H) {
+            if (t < fromMs) continue;
+            const dt = new Date(t);
+            if (dt.getHours() % stepH !== 0) continue;
+            out.push({ ms: t, label: dt.getHours() === 0 ? `${dt.getMonth() + 1}/${dt.getDate()}` : `${two(dt.getHours())}:00` });
+        }
+        return out;
+    }
+
+    // o: { dim, win, yr, yticks, bands:[{lo,hi,cls,label}], pts:[{ms,v,cls,hollow}], title, tag }
+    function buildChart(o) {
+        const w = o.dim.w, h = o.dim.h, iw = w - G.l - G.r, ih = h - G.t - G.b;
+        const span = o.win.toMs - o.win.fromMs;
+        const x = (ms) => +(G.l + ((ms - o.win.fromMs) / span) * iw).toFixed(1);
+        const clamp = (v) => Math.min(o.yr[1], Math.max(o.yr[0], v));
+        const y = (v) => +(G.t + (1 - (clamp(v) - o.yr[0]) / (o.yr[1] - o.yr[0])) * ih).toFixed(1);
+        let s = `<svg class="ch" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="${esc(o.title)}" data-vw="${w}" data-l="${G.l}" data-w="${iw}">`;
+        for (const b of o.bands || []) {
+            if (b.hi <= o.yr[0] || b.lo >= o.yr[1]) continue;
+            s += `<rect class="${b.cls}" x="${G.l}" y="${y(b.hi)}" width="${iw}" height="${+(y(b.lo) - y(b.hi)).toFixed(1)}"/>`;
+            if (b.label) s += `<text class="band-lbl" x="${w - G.r - 3}" y="${+y(b.hi) + 10}" text-anchor="end">${esc(b.label)}</text>`;
+        }
+        for (const t of o.yticks) {
+            s += `<line class="grid" x1="${G.l}" x2="${w - G.r}" y1="${y(t)}" y2="${y(t)}"/><text class="tick" x="${G.l - 5}" y="${+y(t) + 3}" text-anchor="end">${t}</text>`;
+        }
+        for (const t of timeTicks(o.win.fromMs, o.win.toMs)) {
+            s += `<line class="grid v" x1="${x(t.ms)}" x2="${x(t.ms)}" y1="${G.t}" y2="${G.t + ih}"/><text class="tick" x="${x(t.ms)}" y="${h - 6}" text-anchor="middle">${esc(t.label)}</text>`;
+        }
+        s += `<line class="axis" x1="${G.l}" x2="${w - G.r}" y1="${G.t + ih}" y2="${G.t + ih}"/>`;
+        if (o.pts.length > 1) s += `<polyline class="ln" points="${o.pts.map((p) => `${x(p.ms)},${y(p.v)}`).join(' ')}"/>`;
+        for (const p of o.pts) {
+            const cx = x(p.ms), cy = y(p.v);
+            if (p.cls === 'flag-s' || p.cls === 'flag-c') s += `<path class="${p.cls}" d="M${cx} ${cy - 5.5}l5.5 5.5l-5.5 5.5l-5.5 -5.5z"/>`;
+            else s += `<circle class="dot${p.hollow ? ' hollow' : ''}" cx="${cx}" cy="${cy}" r="4"/>`;
+        }
+        if (o.label) {
+            const lx = x(o.label.ms), ly = y(o.label.v);
+            const anchor = lx > w - G.r - 26 ? 'end' : lx < G.l + 20 ? 'start' : 'middle';
+            const ty = ly < G.t + 14 ? ly + 16 : ly - 8;
+            s += `<text class="lbl" x="${lx}" y="${+ty.toFixed(1)}" text-anchor="${anchor}">${esc(o.label.text)}</text>`;
+        }
+        s += `<line class="xh" y1="${G.t}" y2="${G.t + ih}" x1="0" x2="0" visibility="hidden"/></svg>`;
+        return s;
+    }
+
+    function newsChart(series, win) {
+        const maxT = Math.max(9, ...series.map((o) => o.news.total));
+        const top = Math.ceil(maxT / 2) * 2 + 1;
+        const worst = series.reduce((a, b) => (b.news.total >= a.news.total ? b : a), series[0]);
+        return buildChart({
+            dim: NEWS_DIM, win, yr: [0, top], yticks: [0, 3, 5, 7, 9].filter((t) => t <= top), title: 'NEWS2 時間線',
+            bands: [
+                { lo: 5, hi: 7, cls: 'bd-med', label: '5–6 中' },
+                { lo: 7, hi: top, cls: 'bd-high', label: '≥7 高' },
+            ],
+            pts: series.map((o) => ({ ms: o.ms, v: o.news.total, hollow: o.news.partial })),
+            label: { ms: worst.ms, v: worst.news.total, text: `最高 ${worst.news.total}` },
+        });
+    }
+
+    function miniChart(param, series, win) {
+        const vals = series.filter((o) => Number.isFinite(o[param.key])).map((o) => ({ ms: o.ms, v: o[param.key] }));
+        if (!vals.length) return `<div class="mini"><div class="mt">${esc(param.title)}</div><div class="muted nodata">時間窗內無此項</div></div>`;
+        const lo = Math.min(param.y[0], ...vals.map((p) => p.v) .map((v) => Math.floor(v - 1)));
+        const hi = Math.max(param.y[1], ...vals.map((p) => p.v).map((v) => Math.ceil(v + 1)));
+        const pts = vals.map((p) => {
+            const sc = param.score(p.v);
+            return { ms: p.ms, v: p.v, cls: sc >= 3 ? 'flag-c' : sc > 0 ? 'flag-s' : '' };
+        });
+        // 直接標示：有超出範圍就標最嚴重的那個點，否則標最後一筆
+        const bad = pts.filter((p) => p.cls);
+        const pick = bad.length ? bad.reduce((a, b) => (param.score(b.v) > param.score(a.v) ? b : a)) : pts[pts.length - 1];
+        return `<div class="mini"><div class="mt">${esc(param.title)}</div>${buildChart({
+            dim: MINI_DIM, win, yr: [lo, hi], yticks: param.ticks.filter((t) => t >= lo && t <= hi), title: param.title,
+            bands: [{ lo: param.band[0], hi: param.band[1], cls: 'bd-ok' }],
+            pts, label: { ms: pick.ms, v: pick.v, text: String(pick.v) },
+        })}</div>`;
+    }
+
+    function dataTable(series) {
+        const c = (v) => (Number.isFinite(v) ? v : '—');
+        return `<details class="tv"><summary>數據表（${series.length} 組）</summary><table><thead><tr><th>時間</th><th>NEWS2</th><th>T</th><th>HR</th><th>RR</th><th>SBP</th><th>SpO₂</th></tr></thead><tbody>${
+            series.map((o) => `<tr><td>${esc(fmt(o.ms))}</td><td>${o.news.total}${o.news.partial ? '*' : ''}</td><td>${c(o.T)}</td><td>${c(o.P)}</td><td>${c(o.R)}</td><td>${c(o.SBP)}</td><td>${Number.isFinite(o.SpO2) ? o.SpO2 + '%' + (o.onOxygen ? ' 給氧' : '') : '—'}</td></tr>`).join('')
+        }</tbody></table><div class="muted">* 有缺項，分數可能低估</div></details>`;
+    }
+
+    function chartsHtml(r, win) {
+        const series = r.vitals && r.vitals.series;
+        if (!series || !series.length) return '';
+        const slim = series.map((o) => ({
+            ms: o.ms, T: o.T, P: o.P, R: o.R, SBP: o.SBP, SpO2: o.SpO2, o2: !!o.onOxygen,
+            n: o.news.total, lv: o.news.level, miss: o.news.missing,
+        }));
+        return `<div class="charts" data-from="${win.fromMs}" data-to="${win.toMs}" data-series="${esc(JSON.stringify(slim))}">
+<div class="mt">NEWS2（每次量測）<span class="muted"> · 空心點 = 有缺項</span></div>${newsChart(series, win)}
+<div class="minis">${PARAMS.map((p) => miniChart(p, series, win)).join('')}</div>
+<div class="legend"><span class="k"><i class="sw ok"></i>NEWS 0 分範圍</span><span class="k"><i class="sw dot"></i>範圍內</span><span class="k"><i class="sw dia s"></i>超出（1–2 分）</span><span class="k"><i class="sw dia c"></i>超出（3 分）</span></div>
+${dataTable(series)}</div>`;
+    }
+
+    // 頁面內互動（序列化後放進新分頁執行，不可引用外部變數）
+    function pageScript() {
+        const tip = document.createElement('div');
+        tip.className = 'tip';
+        tip.hidden = true;
+        document.body.appendChild(tip);
+        const two = (n) => String(n).padStart(2, '0');
+        document.querySelectorAll('.btn-tg').forEach((b) => b.addEventListener('click', () => {
+            const d = b.closest('tr').nextElementSibling;
+            const open = d.classList.toggle('open');
+            b.setAttribute('aria-expanded', String(open));
+        }));
+        document.querySelectorAll('.charts').forEach((box) => {
+            const data = JSON.parse(box.getAttribute('data-series'));
+            const from = +box.getAttribute('data-from'), to = +box.getAttribute('data-to');
+            const svgs = [...box.querySelectorAll('svg.ch')];
+            const nearest = (f) => {
+                const t = from + f * (to - from);
+                let best = 0, bd = Infinity;
+                data.forEach((d, i) => { const dd = Math.abs(d.ms - t); if (dd < bd) { bd = dd; best = i; } });
+                return best;
+            };
+            const row = (name, val) => {
+                const r = document.createElement('div');
+                const v = document.createElement('b'); v.textContent = val;
+                const n = document.createElement('span'); n.textContent = ' ' + name;
+                r.append(v, n);
+                return r;
+            };
+            const hide = () => { tip.hidden = true; svgs.forEach((s) => s.querySelector('.xh').setAttribute('visibility', 'hidden')); };
+            svgs.forEach((svg) => {
+                svg.addEventListener('pointermove', (ev) => {
+                    const rc = svg.getBoundingClientRect();
+                    const vw = +svg.getAttribute('data-vw');
+                    const f = ((ev.clientX - rc.left) * (vw / rc.width) - +svg.getAttribute('data-l')) / +svg.getAttribute('data-w');
+                    if (f < -0.02 || f > 1.02) return hide();
+                    const d = data[nearest(Math.min(1, Math.max(0, f)))];
+                    const ff = (d.ms - from) / (to - from);
+                    svgs.forEach((s) => {
+                        const x = +s.getAttribute('data-l') + ff * +s.getAttribute('data-w');
+                        const l = s.querySelector('.xh');
+                        l.setAttribute('x1', x); l.setAttribute('x2', x); l.setAttribute('visibility', 'visible');
+                    });
+                    const dt = new Date(d.ms);
+                    tip.replaceChildren();
+                    const head = document.createElement('div');
+                    head.className = 'tip-h';
+                    head.textContent = `${dt.getMonth() + 1}/${dt.getDate()} ${two(dt.getHours())}:${two(dt.getMinutes())}`;
+                    tip.append(head, row('NEWS2' + (d.miss && d.miss.length ? '（缺 ' + d.miss.join('/') + '）' : ''), d.n));
+                    const add = (name, v, u) => { if (v !== undefined && v !== null) tip.append(row(name, v + (u || ''))); };
+                    add('體溫', d.T); add('心跳', d.P); add('呼吸', d.R); add('收縮壓', d.SBP);
+                    add('SpO₂', d.SpO2, d.SpO2 !== undefined ? '%' + (d.o2 ? ' 給氧' : '') : '');
+                    tip.hidden = false;
+                    const tw = tip.offsetWidth;
+                    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tw - 8) + 'px';
+                    tip.style.top = (ev.clientY + 14) + 'px';
+                });
+                svg.addEventListener('pointerleave', hide);
+            });
+        });
+    }
+
     const LEVEL_LABEL = { high: '高', medium: '中', 'low-medium': '單項紅', low: '低', none: '—' };
 
     function rangeText(r, unit = '') {
@@ -464,7 +653,7 @@ function isOnOxygen(inside) {
         return r.min === r.max ? `${r.min}${unit}` : `${r.min}–${r.max}${unit}`;
     }
 
-    function rowHtml(r) {
+    function rowHtml(r, win) {
         const p = r.p, s = r.vitals, n = r.news;
         const lvl = n ? n.level : 'none';
         const v = s && !s.noData ? `T ${rangeText(s.ranges.T)} · HR ${rangeText(s.ranges.P)} · RR ${rangeText(s.ranges.R)}<br>SBP ${rangeText(s.ranges.SBP)} · SpO₂ ${rangeText(s.ranges.SpO2, '%')}${r.onO2 ? ' · 給氧' : ''}` : '<span class="muted">' + (s ? '時間窗內無量測' : '—') + '</span>';
@@ -474,11 +663,15 @@ function isOnOxygen(inside) {
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const hisEws = Number.isFinite(p.hisEws) ? p.hisEws : '—';
-        return `<tr class="lv-${lvl}">
-<td><b>${esc(p.bed)}</b></td>
+        const charts = chartsHtml(r, win);
+        const openByDefault = charts && (r.severity > 0 || r.flags.length > 0);
+        const toggle = charts ? `<br><button class="btn-tg" aria-expanded="${openByDefault ? 'true' : 'false'}">圖表</button>` : '';
+        const main = `<tr class="lv-${lvl}">
+<td><b>${esc(p.bed)}</b>${toggle}</td>
 <td>${esc(p.name)}<br><small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}</small></td>
 <td class="c">${hisEws}</td><td class="c">${news}</td>
 <td>${flags}${err}</td><td>${v}</td><td>${lab}</td><td>${pacs}</td></tr>`;
+        return charts ? `${main}<tr class="detail${openByDefault ? ' open' : ''}"><td colspan="8">${charts}</td></tr>` : main;
     }
 
     function buildHtml(results, win, meta) {
@@ -505,14 +698,35 @@ th{position:sticky;top:0;background:var(--bg);font-size:12px;color:var(--mut)}.c
 .box{margin-top:16px;padding:10px 12px;border:1px solid var(--line);border-radius:6px}.box h2{font-size:14px;margin:0 0 4px}
 .note{margin-top:16px;font-size:12px;color:var(--mut)}
 @media print{body{padding:0;font-size:11px}th{position:static}}
+:root{--series:#2a78d6;--serious:#ec835a;--critical:#d03b3b;--surf:#fff;--grid:#e1e0d9;--axis:#c3c2b7;--tk:#898781;--ok:rgba(137,135,129,.14);--bmed:rgba(250,178,25,.16);--bhigh:rgba(208,59,59,.14)}
+@media (prefers-color-scheme:dark){:root{--series:#3987e5;--surf:#14171a;--grid:#2c2c2a;--axis:#383835;--ok:rgba(137,135,129,.18);--bmed:rgba(250,178,25,.18);--bhigh:rgba(208,59,59,.22)}}
+.detail{display:none}.detail.open{display:table-row}.detail>td{background:transparent!important;padding:8px 8px 14px}
+.btn-tg{margin-top:4px;font-size:12px;padding:1px 8px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);cursor:pointer}
+.btn-tg[aria-expanded=true]{background:var(--new)}
+.mt{font-size:12px;color:var(--mut);margin:2px 0}.minis{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:6px}.mini{min-width:0}.nodata{width:204px;padding:30px 0;text-align:center}
+svg.ch{max-width:100%;height:auto;display:block;touch-action:pan-y}
+svg.ch .grid{stroke:var(--grid);stroke-width:1}svg.ch .grid.v{stroke-opacity:.6}svg.ch .axis{stroke:var(--axis);stroke-width:1}
+svg.ch .tick{fill:var(--tk);font-size:10px}svg.ch .lbl{fill:var(--fg);font-size:11px;font-weight:600}svg.ch .band-lbl{fill:var(--mut);font-size:10px}
+svg.ch .bd-ok{fill:var(--ok)}svg.ch .bd-med{fill:var(--bmed)}svg.ch .bd-high{fill:var(--bhigh)}
+svg.ch .ln{fill:none;stroke:var(--series);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+svg.ch .dot{fill:var(--series);stroke:var(--surf);stroke-width:2}svg.ch .dot.hollow{fill:var(--surf);stroke:var(--series);stroke-width:2}
+svg.ch .flag-s{fill:var(--serious);stroke:var(--surf);stroke-width:2}svg.ch .flag-c{fill:var(--critical);stroke:var(--surf);stroke-width:2}
+svg.ch .xh{stroke:var(--mut);stroke-width:1;pointer-events:none}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}.k{display:inline-flex;align-items:center;gap:5px}
+.sw{display:inline-block;width:12px;height:12px}.sw.ok{background:var(--ok);border:1px solid var(--grid)}.sw.dot{border-radius:50%;background:var(--series);width:9px;height:9px}
+.sw.dia{transform:rotate(45deg) scale(.7)}.sw.dia.s{background:var(--serious)}.sw.dia.c{background:var(--critical)}
+.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
+.tip{position:fixed;z-index:9;pointer-events:none;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.tip b{font-size:13px}.tip span{color:var(--mut)}.tip-h{color:var(--mut);margin-bottom:2px}
+@media print{.detail{display:table-row}.btn-tg{display:none}}
 </style></head><body>
 <h1>晨間簡報</h1>
 <div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 範圍：${esc(meta.scope)} · 共 ${results.length} 人，需注意 ${attention.length} 人</div>
-${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c">院內<br>EWS</th><th class="c">昨夜最高<br>NEWS2</th><th>異常</th><th>Vitals 範圍</th><th>檢驗</th><th>影像</th></tr></thead><tbody>${attention.map(rowHtml).join('')}</tbody></table>` : '<p>沒有需要注意的病人。</p>'}
+${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c">院內<br>EWS</th><th class="c">昨夜最高<br>NEWS2</th><th>異常</th><th>Vitals 範圍</th><th>檢驗</th><th>影像</th></tr></thead><tbody>${attention.map((r) => rowHtml(r, win)).join('')}</tbody></table>` : '<p>沒有需要注意的病人。</p>'}
 <div class="box"><h2>時間窗內沒有 vitals 量測（${noData.length}）</h2>${names(noData)}<div class="muted">「沒量」不等於「正常」，請視需要確認。</div></div>
 <div class="box"><h2>無異常、無新報告（${stable.length}）</h2>${names(stable)}</div>
 <div class="note">NEWS2 為 Scale 1；缺量項目不補零，標示於「缺」。第一版尚未納入護理紀錄／交班／照會 note，也未逐人調整基線（例如 COPD）。判讀僅供快速瀏覽，不取代臨床評估。資料僅存在本頁，不上傳。</div>
-</body></html>`;
+<script>(${pageScript.toString()})();<\/script></body></html>`;
     }
 
     // ═══════════════════════════════════════════════════════════

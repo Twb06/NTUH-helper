@@ -193,7 +193,7 @@ function isOnOxygen(inside) {
         const inWin = obs.filter((o) => o.ms >= fromMs && o.ms <= toMs_);
         const latest = obs.length ? obs[obs.length - 1] : null;
         if (!inWin.length) {
-            return { count: 0, worst: null, latest: latest && withScore(latest), flags: [], ranges: {}, noData: true };
+            return { count: 0, worst: null, latest: latest && withScore(latest), flags: [], ranges: {}, series: [], noData: true };
         }
         const scored = inWin.map(withScore);
         // 最差 = 分數最高；同分取較晚（較新）
@@ -215,6 +215,7 @@ function isOnOxygen(inside) {
             count: inWin.length,
             worst,
             latest: withScore(latest),
+            series: scored,     // 時間窗內每組觀察值（含各自的 NEWS2），供畫圖用
             ranges,
             flags: flagsFor(ranges, inWin),
             noData: false,

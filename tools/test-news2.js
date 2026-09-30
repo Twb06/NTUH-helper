@@ -43,6 +43,8 @@ const now = new Date(2026, 8, 30, 7, 0).getTime();
 const w = N.overnightWindow(now);
 const s = N.summarizeWindow(obs, w.fromMs, w.toMs);
 assert.strictEqual(s.count, 3);
+assert.strictEqual(s.series.length, 3);
+assert.ok(s.series.every((o) => o.news && typeof o.news.total === 'number'));
 assert.strictEqual(s.worst.dt, '2026/09/30 02:00');
 assert.ok(s.worst.news.total >= 7, 'worst NEWS ' + s.worst.news.total);
 assert.ok(s.flags.some((f) => f.startsWith('發燒')) && s.flags.some((f) => f.startsWith('低血壓')));
