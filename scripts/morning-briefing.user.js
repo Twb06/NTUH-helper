@@ -100,8 +100,8 @@
     // 單一病人：抓資料 + 判讀
     // ═══════════════════════════════════════════════════════════
 
-    // SESSION：病房列表網址上帶著（頁內每個連結都帶）。檢驗頁第一次開常落在「登入前院網」
-    // （該子系統的 session 尚未建立），帶上 SESSION 可減少這種情況（與 progress-note-data-helper 一致）。
+    // SESSION：病房列表網址上帶著（頁內每個連結都帶）。實測：不帶時點連結會跳到需要登入的頁面，
+    // 帶上後可正常開啟（新竹分院）。只確認了這個結果，機制未確認，因此不在此推測原因。
     // 只放進連結的 href，不顯示、不寫入儲存空間。
     function pageSession() {
         const m = location.search.match(/[?&]session=([^&]+)/i)
@@ -455,7 +455,7 @@ ${dataTable(series)}</div>`;
     function rowHtml(r, win) {
         const p = r.p;
         const lvl = r.news ? r.news.level : 'none';
-        const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）。若跳到登入頁，請再點一次">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
+        const lab = r.lab ? `<a class="tag new" href="${esc(labPageUrl(p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>';
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
         const o2Cls = r.o2 && (r.o2.kind === 'new' || r.o2.kind === 'up') ? ' warn' : '';
         const o2 = r.o2 ? `<div><span class="tag${o2Cls}">${esc(r.o2.text)}${r.o2.ms ? '（' + esc(fmt(r.o2.ms)) + '）' : ''}</span></div>` : '';
