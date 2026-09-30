@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* global NTUHAsmx, NTUHNews2 */
+    /* global NTUHAsmx, NTUHNews2, Chart */
 
     const OPT_KEY = 'ntuh_morning_briefing';
     const DEFAULTS = {
@@ -409,8 +409,13 @@
 <div class="view view-hosp"><div class="hrow">
 <div class="hcol hv"><div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項（血壓預設隱藏）</span></div>
 ${hospVitals(series, win)}</div>
-<div class="hcol hn"><div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 虛線圈 = 有缺項，分數可能低估</span></div>
-${hospNews(series)}</div>
+<div class="hcol hn"><div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 空心點 = 有缺項，分數可能低估</span></div>
+<div class="nwrap"><canvas class="newsc" width="862" height="258" data-news="${esc(JSON.stringify({
+    labels: series.map((o) => { const d = new Date(o.ms); return `${d.getDate()}日${d.getHours()}:${two(d.getMinutes())}`; }),
+    values: series.map((o) => o.news.total),
+    partial: series.map((o) => o.news.partial),
+    missing: series.map((o) => o.news.missing),
+}))}"></canvas><div class="nfb">${hospNews(series)}</div></div></div>
 </div></div>
 <div class="view view-split">
 <div class="mt">NEWS2（每次量測）<span class="muted"> · 空心點 = 有缺項</span></div>${newsChart(series, win)}
@@ -427,16 +432,69 @@ ${dataTable(series)}</div>`;
         tip.hidden = true;
         document.body.appendChild(tip);
         const two = (n) => String(n).padStart(2, '0');
+        // NEWS 圖：使用院內同一份 Chart.js 2.9.4 + annotation 0.5.7，設定照院內（色帶、線、提示框）。
+        // 載入失敗時保留 SVG 後備版。只在容器可見時建立，因為 display:none 下 Chart.js 量到的尺寸是 0。
+        const ensureNews = () => {
+            if (!window.Chart) return;
+            document.querySelectorAll('canvas.newsc').forEach((cv) => {
+                const wrap = cv.parentNode;
+                if (cv.getAttribute('data-done') || wrap.offsetParent === null) return;
+                cv.setAttribute('data-done', '1');
+                const d = JSON.parse(cv.getAttribute('data-news'));
+                const PINK = 'rgba(255, 99, 132, 1)';
+                cv.style.display = 'block';
+                wrap.querySelector('.nfb').style.display = 'none';
+                const box = (id, yMin, yMax, border, bg) => {
+                    const a = { type: 'box', drawTime: 'beforeDatasetsDraw', id, xScaleID: 'x-axis-0', yScaleID: 'y-axis-0', borderColor: border, borderWidth: 0, backgroundColor: bg };
+                    if (yMin !== null) a.yMin = yMin;
+                    if (yMax !== null) a.yMax = yMax;
+                    return a;
+                };
+                new Chart(cv, {
+                    type: 'line',
+                    data: {
+                        labels: d.labels,
+                        datasets: [{
+                            label: 'NEWS趨勢圖', data: d.values, borderColor: PINK, tension: 0, borderWidth: 2, pointHoverRadius: 5,
+                            pointBorderColor: PINK,
+                            pointBackgroundColor: d.partial.map((p) => (p ? '#ffffff' : 'rgba(255, 99, 132, 0.35)')),
+                        }],
+                    },
+                    options: {
+                        legend: { display: false },
+                        animation: { duration: 400 },
+                        tooltips: {
+                            callbacks: {
+                                label: (ti) => 'NEWS2 ' + ti.yLabel + (d.partial[ti.index] ? '（缺 ' + d.missing[ti.index].join('/') + '，分數可能低估）' : ''),
+                            },
+                        },
+                        // 院內設定寫成 Chart.js 3 的語法（min:0、stepSize:1），2.9.4 讀不到而退回自動縮放；這裡用 2.x 的寫法實現原意
+                        scales: { yAxes: [{ ticks: { min: 0, suggestedMax: 9, stepSize: 1 } }] },
+                        annotation: {
+                            drawTime: 'afterDatasetsDraw',
+                            annotations: [
+                                box('danger-box', 7, null, 'rgba(255, 99, 132, 0.2)', 'rgba(255, 99, 132, 0.2)'),
+                                box('warrning-box', 5, 7, 'rgba(255, 165, 0, 0.2)', 'rgba(255, 165, 0, 0.2)'),
+                                box('normal-box', 0, 5, 'rgba(0, 255, 0, 0.2)', 'rgba(0, 255, 0, 0.1)'),
+                            ],
+                        },
+                    },
+                });
+            });
+        };
         document.querySelectorAll('.btn-tg').forEach((b) => b.addEventListener('click', () => {
             const d = b.closest('tr').nextElementSibling;
             const open = d.classList.toggle('open');
             b.setAttribute('aria-expanded', String(open));
+            ensureNews();
         }));
         document.querySelectorAll('.btn-view').forEach((b) => b.addEventListener('click', () => {
             const box = b.closest('.charts');
             box.setAttribute('data-view', b.getAttribute('data-view'));
             box.querySelectorAll('.btn-view').forEach((x) => x.classList.toggle('on', x === b));
+            ensureNews();
         }));
+        ensureNews();
         document.querySelectorAll('svg.hsvg').forEach((svg) => {
             svg.querySelectorAll('.ax').forEach((a) => a.addEventListener('click', () => {
                 const off = a.classList.toggle('off');
@@ -543,6 +601,8 @@ ${dataTable(series)}</div>`;
     }
 
     function buildHtml(results, win, meta) {
+        // 院內 NEWS 圖用的 Chart.js 與同目錄；簡報頁沿用同一份（失敗時退回 SVG 版）
+        const chartBase = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + 'js/Chart.js-2.9.4/';
         const attention = results.filter((r) => r.attention)
             .sort((a, b) => (b.severity - a.severity) || ((b.news ? b.news.total : -1) - (a.news ? a.news.total : -1))
                 || ((b.p.hisEws || 0) - (a.p.hisEws || 0)) || a.p.bed.localeCompare(b.p.bed));
@@ -591,6 +651,7 @@ svg.ch .xh{stroke:var(--mut);stroke-width:1;pointer-events:none}
 .btn-view{font-size:12px;padding:1px 10px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);cursor:pointer}
 .btn-view.on{background:var(--new)}
 svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
+.nwrap{position:relative;width:100%;max-width:862px}.newsc{display:none;width:100%}.nwrap .nfb{display:block}
 .hrow{display:flex;gap:12px;align-items:flex-start}
 .hcol{min-width:0}.hcol.hv{flex:990 1 0}.hcol.hn{flex:640 1 0}
 .hrow svg.hsvg{width:100%}.hcol.hv svg.hsvg{max-width:990px}.hcol.hn svg.hsvg{max-width:640px}
@@ -607,7 +668,7 @@ ${attention.length ? `<table><thead><tr><th>床</th><th>病人</th><th class="c"
 <div class="box"><h2>時間窗內沒有 vitals 量測（${noData.length}）</h2>${names(noData)}<div class="muted">「沒量」不等於「正常」，請視需要確認。</div></div>
 <div class="box"><h2>無異常、無新報告（${stable.length}）</h2>${names(stable)}</div>
 <div class="note">NEWS2 為 Scale 1；缺量項目不補零，標示於「缺」。第一版尚未納入護理紀錄／交班／照會 note，也未逐人調整基線（例如 COPD）。判讀僅供快速瀏覽，不取代臨床評估。資料僅存在本頁，不上傳。</div>
-<script>(${pageScript.toString()})();<\/script></body></html>`;
+<script src="${chartBase}Chart.min.js"><\/script><script src="${chartBase}chartjs-plugin-annotation.min-0.5.7.js"><\/script><script>(${pageScript.toString()})();<\/script></body></html>`;
     }
 
     // ═══════════════════════════════════════════════════════════
