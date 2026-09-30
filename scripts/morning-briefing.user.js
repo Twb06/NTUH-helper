@@ -74,11 +74,15 @@
     // ═══════════════════════════════════════════════════════════
     // 週一自動回溯到週五晚上，涵蓋整個週末
 
+    const REF_HOUR = 8; // 圖表參考資料起點（前一日幾點）
+
     function briefingWindow(startHour) {
         const n = new Date(nowMs());
         const daysBack = n.getDay() === 1 ? 3 : 1;
         const from = new Date(n.getFullYear(), n.getMonth(), n.getDate() - daysBack, startHour, 0).getTime();
-        return { fromMs: from, toMs: n.getTime(), daysBack };
+        // 圖表另外往前多看到前一日 08:00 當參考基準（異常判斷、給氧、抽血、影像仍用昨夜時間窗）
+        const ref = new Date(n.getFullYear(), n.getMonth(), n.getDate() - daysBack, REF_HOUR, 0).getTime();
+        return { fromMs: from, refFromMs: Math.min(ref, from), toMs: n.getTime(), daysBack };
     }
 
     // 列表 title「最新檢驗結果時間:HH:MM (N 小時內)」只有時分，往回推到最近的過去時間點
@@ -161,6 +165,7 @@
             const obs = NTUHNews2.parseVitalRows(texts);
             res.vitals = NTUHNews2.summarizeWindow(obs, win.fromMs, win.toMs);
             res.vitals.total = obs.length;
+            res.chartSeries = NTUHNews2.scoreSeries(obs.filter((o) => o.ms >= win.refFromMs && o.ms <= win.toMs));
             res.uo = NTUHNews2.parseUo(texts);
             res.o2 = NTUHNews2.o2Change(res.vitals.series);
         } else res.errors.push('vitals 抓取失敗：' + (v.reason && v.reason.message || v.reason));
@@ -225,7 +230,7 @@
     ];
     const hm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
 
-    function hospVitals(series, win) {
+    function hospVitals(series, win, markMs) {
         const span = win.toMs - win.fromMs;
         const X = (ms) => +(HV.X0 + ((ms - win.fromMs) / span) * (HV.X1 - HV.X0)).toFixed(2);
         const Y = (a, v) => {
@@ -249,6 +254,12 @@
             s += `<line x1="${x}" x2="${x}" y1="240" y2="25" stroke="#000" stroke-opacity=".2" stroke-width="1.5"/>${lbl(m, x)}`;
         }
         s += `<line x1="${HV.X1}" x2="${HV.X1}" y1="240" y2="25" stroke="#000" stroke-opacity=".2" stroke-width="1.5"/>`;
+        // 昨夜起點：其左邊是前一日白天的參考資料
+        if (markMs && markMs > win.fromMs && markMs < win.toMs) {
+            const mx = X(markMs), md = new Date(markMs);
+            s += `<line x1="${mx}" x2="${mx}" y1="25" y2="235" stroke="#536382" stroke-width="1.5" stroke-dasharray="5 3"/>`
+                + `<text x="${mx + 4}" y="37" style="fill:#536382;font-size:11px;font-weight:600">昨夜 ${two(md.getHours())}:${two(md.getMinutes())} 起</text>`;
+        }
         // 下方每 6 小時一個小時間刻度（院內圖沒有，短時間窗需要）
         for (const t of timeTicks(win.fromMs, win.toMs)) {
             if (!/:00$/.test(t.label)) continue;
@@ -334,17 +345,19 @@
     }
 
     function chartsHtml(r, win) {
-        const series = r.vitals && r.vitals.series;
+        const series = r.chartSeries;
         if (!series || !series.length) return '';
         return `<div class="charts"><div class="hrow">
 <div class="hcol hv"><div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項</span></div>
-${hospVitals(series, win)}</div>
+${hospVitals(series, { fromMs: win.refFromMs, toMs: win.toMs }, win.fromMs)}</div>
 <div class="hcol hn"><div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 空心點 = 有缺項，分數可能低估</span></div>
 <div class="nwrap"><canvas class="newsc" width="862" height="258" data-news="${esc(JSON.stringify({
     labels: series.map((o) => { const d = new Date(o.ms); return `${d.getDate()}日${d.getHours()}:${two(d.getMinutes())}`; }),
     values: series.map((o) => o.news.total),
     partial: series.map((o) => o.news.partial),
     missing: series.map((o) => o.news.missing),
+    boundary: series.findIndex((o) => o.ms >= win.fromMs),
+    boundaryText: `昨夜 ${two(new Date(win.fromMs).getHours())}:${two(new Date(win.fromMs).getMinutes())} 起`,
 }))}"></canvas><div class="nfb">${hospNews(series)}</div></div></div>
 </div>
 ${dataTable(series)}</div>`;
@@ -393,6 +406,7 @@ ${dataTable(series)}</div>`;
                         annotation: {
                             drawTime: 'afterDatasetsDraw',
                             annotations: [
+                                ...(d.boundary > 0 ? [{ type: 'line', mode: 'vertical', scaleID: 'x-axis-0', value: d.labels[d.boundary], borderColor: 'rgba(83, 99, 130, 0.9)', borderWidth: 1.5, borderDash: [5, 3], label: { enabled: true, content: d.boundaryText, position: 'top', backgroundColor: 'rgba(83, 99, 130, 0.85)', fontSize: 10, xPadding: 4, yPadding: 2 } }] : []),
                                 box('danger-box', 7, null, 'rgba(255, 99, 132, 0.2)', 'rgba(255, 99, 132, 0.2)'),
                                 box('warrning-box', 5, 7, 'rgba(255, 165, 0, 0.2)', 'rgba(255, 165, 0, 0.2)'),
                                 box('normal-box', 0, 5, 'rgba(0, 255, 0, 0.2)', 'rgba(0, 255, 0, 0.1)'),
@@ -446,7 +460,8 @@ ${dataTable(series)}</div>`;
         const o2Cls = r.o2 && (r.o2.kind === 'new' || r.o2.kind === 'up') ? ' warn' : '';
         const o2 = r.o2 ? `<div><span class="tag${o2Cls}">${esc(r.o2.text)}${r.o2.ms ? '（' + esc(fmt(r.o2.ms)) + '）' : ''}</span></div>` : '';
         const uo = r.uo ? `<div class="muted nov">尿量 ${r.uo.val} mL${r.uo.ms ? '（' + esc(fmt(r.uo.ms)) + '）' : '（院內未標日期）'}</div>` : '';
-        const noVitals = r.vitals && r.vitals.noData ? '<div class="muted nov">時間窗內沒有 vitals 量測（沒量不等於正常）</div>' : '';
+        const noVitals = r.vitals && r.vitals.noData
+            ? `<div class="muted nov">${r.chartSeries && r.chartSeries.length ? '昨夜（' + esc(fmt(win.fromMs)) + ' 起）沒有 vitals 量測，圖上為前一日的參考資料' : '時間窗內沒有 vitals 量測（沒量不等於正常）'}</div>` : '';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const charts = chartsHtml(r, win);
         const openByDefault = !!charts; // 有圖的病人一律預設展開
@@ -493,7 +508,7 @@ svg.hsvg .ser circle{stroke:none}svg.hsvg .ser text.na{font-size:12px;stroke-wid
 svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;stroke-width:12}
 @media print{.detail{display:table-row}.btn-tg,</style></head><body>
 <h1>晨間簡報</h1>
-<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 範圍：${esc(meta.scope)} · 共 ${results.length} 人（依病房列表順序）</div>
+<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 圖表參考資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(meta.scope)} · 共 ${results.length} 人（依病房列表順序）</div>
 <table><thead><tr><th>床</th><th>病人</th><th>檢驗</th><th>影像</th></tr></thead><tbody>${results.map((r) => rowHtml(r, win)).join('')}</tbody></table>
 <div class="note">NEWS2 為 Scale 1；缺量項目不補零，標示於「缺」。第一版尚未納入護理紀錄／交班／照會 note，也未逐人調整基線（例如 COPD）。判讀僅供快速瀏覽，不取代臨床評估。資料僅存在本頁，不上傳。</div>
 <script src="${chartBase}Chart.min.js"><\/script><script src="${chartBase}chartjs-plugin-annotation.min-0.5.7.js"><\/script><script>(${pageScript.toString()})();<\/script></body></html>`;

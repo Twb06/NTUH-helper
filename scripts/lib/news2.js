@@ -286,6 +286,9 @@ function isOnOxygen(inside) {
 
     function withScore(o) { return { ...o, news: scoreNews2(o) }; }
 
+    // 對一串觀察值逐組算 NEWS2（供畫圖用；不做時間窗篩選）
+    function scoreSeries(obs) { return (obs || []).map(withScore); }
+
     // 給人看的個別異常標記（不等於 NEWS 加分，而是「這段時間發生過」）
     function flagsFor(ranges, obs) {
         const f = [];
@@ -314,7 +317,7 @@ function isOnOxygen(inside) {
         CLUSTER_MINUTES,
         scoreNews2, scoreRR, scoreSpO2, scoreSBP, scoreHR, scoreTemp,
         gcsTotal, isOnOxygen,
-        parseVitalRows, parseUo, oxygenInfo, o2Change, summarizeWindow, overnightWindow,
+        parseVitalRows, parseUo, oxygenInfo, o2Change, summarizeWindow, overnightWindow, scoreSeries,
     };
 
     if (typeof module !== 'undefined' && module.exports) module.exports = api;

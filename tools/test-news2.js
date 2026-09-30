@@ -113,3 +113,10 @@ console.log('news2: NA-flag tests passed');
     assert.strictEqual(N.oxygenInfo('%,L,').flow, null);
 }
 console.log('news2: UO / O2 tests passed');
+
+{
+    const sc = N.scoreSeries(N.parseVitalRows(['2026/09/29 08:00 T:36.8 P:70 R:16', '2026/09/29 08:00 BP:120/70', '2026/09/29 08:00 SpO2:98%(%,L,)']));
+    assert.strictEqual(sc.length, 1); assert.strictEqual(sc[0].news.total, 0);
+    assert.deepStrictEqual(N.scoreSeries(null), []);
+}
+console.log('news2: scoreSeries test passed');
