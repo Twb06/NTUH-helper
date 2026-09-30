@@ -1,27 +1,7 @@
 /* eslint-env node */
-// node tools/test-news2.js — NEWS2 核心的自我檢查（無測試框架，失敗即 exit 1）
+// node tools/test-news2.js — vitalsign 解析的自我檢查（無測試框架，失敗即 exit 1）
 const assert = require('assert');
 const N = require('../scripts/lib/news2.js');
-
-// 官方對照：全正常 = 0
-assert.strictEqual(N.scoreNews2({ R: 16, SpO2: 98, onOxygen: false, SBP: 120, P: 70, T: 36.8, gcs: 'E4M6V5' }).total, 0);
-// 邊界
-assert.strictEqual(N.scoreRR(8), 3); assert.strictEqual(N.scoreRR(9), 1); assert.strictEqual(N.scoreRR(20), 0); assert.strictEqual(N.scoreRR(21), 2); assert.strictEqual(N.scoreRR(25), 3);
-assert.strictEqual(N.scoreSpO2(91), 3); assert.strictEqual(N.scoreSpO2(93), 2); assert.strictEqual(N.scoreSpO2(95), 1); assert.strictEqual(N.scoreSpO2(96), 0);
-assert.strictEqual(N.scoreSBP(90), 3); assert.strictEqual(N.scoreSBP(100), 2); assert.strictEqual(N.scoreSBP(110), 1); assert.strictEqual(N.scoreSBP(219), 0); assert.strictEqual(N.scoreSBP(220), 3);
-assert.strictEqual(N.scoreHR(40), 3); assert.strictEqual(N.scoreHR(50), 1); assert.strictEqual(N.scoreHR(90), 0); assert.strictEqual(N.scoreHR(110), 1); assert.strictEqual(N.scoreHR(130), 2); assert.strictEqual(N.scoreHR(131), 3);
-assert.strictEqual(N.scoreTemp(35.0), 3); assert.strictEqual(N.scoreTemp(35.5), 1); assert.strictEqual(N.scoreTemp(36.1), 0); assert.strictEqual(N.scoreTemp(38.0), 0); assert.strictEqual(N.scoreTemp(38.5), 1); assert.strictEqual(N.scoreTemp(39.1), 2);
-
-// 等級：單項 3 分 → low-medium；>=5 medium；>=7 high
-let r = N.scoreNews2({ R: 16, SpO2: 98, SBP: 85, P: 70, T: 36.8, gcs: 'E4M6V5' });
-assert.strictEqual(r.total, 3); assert.strictEqual(r.level, 'low-medium');
-r = N.scoreNews2({ R: 24, SpO2: 92, onOxygen: true, SBP: 100, P: 115, T: 38.5, gcs: 'E4M6V5' });
-assert.strictEqual(r.total, 2 + 2 + 2 + 2 + 2 + 1); assert.strictEqual(r.level, 'high');
-// 缺項不補零，標 partial
-r = N.scoreNews2({ P: 70 });
-assert.ok(r.partial && r.missing.includes('RR'));
-// GCS 插管 (V=T) 保守判意識改變
-assert.strictEqual(N.scoreNews2({ gcs: 'E4M6VT' }).parts.Consciousness, 3);
 
 // 解析 + 合併：TPR 與 BP 差 5 分鐘 → 同一組；SpO2 room air vs NC
 const rows = [
@@ -44,9 +24,6 @@ const w = N.overnightWindow(now);
 const s = N.summarizeWindow(obs, w.fromMs, w.toMs);
 assert.strictEqual(s.count, 3);
 assert.strictEqual(s.series.length, 3);
-assert.ok(s.series.every((o) => o.news && typeof o.news.total === 'number'));
-assert.strictEqual(s.worst.dt, '2026/09/30 02:00');
-assert.ok(s.worst.news.total >= 7, 'worst NEWS ' + s.worst.news.total);
 assert.ok(s.flags.some((f) => f.startsWith('發燒')) && s.flags.some((f) => f.startsWith('低血壓')));
 
 // 時間窗內完全無資料要明確標 noData，不能當成正常
@@ -74,8 +51,6 @@ console.log('news2: all tests passed');
     assert.strictEqual(N.isOnOxygen('%,3L,Nasal Cannula'), true);
     assert.strictEqual(N.isOnOxygen('%,L,'), false);
     assert.strictEqual(N.isOnOxygen(''), false);
-    const sc = N.scoreNews2(o[0]);
-    assert.ok(sc.partial && sc.missing.includes('RR'), 'missing RR must be flagged, not scored 0');
 }
 console.log('news2: real-format tests passed');
 
@@ -114,9 +89,3 @@ console.log('news2: NA-flag tests passed');
 }
 console.log('news2: UO / O2 tests passed');
 
-{
-    const sc = N.scoreSeries(N.parseVitalRows(['2026/09/29 08:00 T:36.8 P:70 R:16', '2026/09/29 08:00 BP:120/70', '2026/09/29 08:00 SpO2:98%(%,L,)']));
-    assert.strictEqual(sc.length, 1); assert.strictEqual(sc[0].news.total, 0);
-    assert.deepStrictEqual(N.scoreSeries(null), []);
-}
-console.log('news2: scoreSeries test passed');

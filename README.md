@@ -17,7 +17,7 @@
 | `chart-medication` | 藥歷圖整理用藥為「商品名 起日-迄日」，區分進行中／已停用並顯示療程天數；支援 Progress Note Data Helper 背景抓取，自動選取全部病人類別以完整取得抗生素藥歷 | 通用 | 藥歷圖頁點右上角「整理藥物」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/chart-medication.user.js) |
 | `prescription-viewer` | 處方頁整理目前用藥為「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內／自備藥分組，供一眼檢視與複製；也支援背景抓取現行處方 | 通用 | 處方頁點右上角「整理處方」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
 | `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；結果可在「趨勢」段落與「表格」對齊兩種呈現間切換，並記住呈現與輸出疏密設定；支援 Culture／PCR、CSF 獨立分組、PCT、抗藥性標註、清單／橫式／綠單模式，以及背景抓取檢驗摘要 | 通用 | 報告頁點右下角「整理檢驗」，結果框標題列可切換趨勢／表格與輸出疏密 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
-| `morning-briefing` | 晨間簡報：病房列表一鍵在新分頁產生「昨夜狀態」總覽，依列表順序列出所有病人；每人附生命徵象圖與 NEWS 圖、給氧／尿量變化、新檢驗與影像報告（NEWS 為自算 NEWS2，非院內數值） | 通用 | 病房列表頁點右下角「☀ 晨間簡報」，⚙ 設定昨夜起點 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js) |
+| `morning-briefing` | 晨間簡報：病房列表一鍵在新分頁產生「昨夜狀態」總覽，依列表順序列出所有病人，一行並排兩人；每人附生命徵象圖、給氧／尿量變化、新檢驗與影像報告 | 通用 | 病房列表頁點右下角「☀ 晨間簡報」，⚙ 設定昨夜起點 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js) |
 | `nursing-handover-summary` | 護理交班頁擷取飲食、管路、照會等，整理成精簡 note | 通用 | 開啟護理交班頁右下角自動顯示 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/nursing-handover-summary.user.js) |
 
 ### 自動執行型
