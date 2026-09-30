@@ -210,12 +210,12 @@
     // 來源：院內 SVGDrawer 產生的生命徵象圖。幾何與規則照抄：
     //   繪圖區 x 140–975、y 25–235（五等分，每格 42）；四條軸由左至右 BP/R/P/T，各自同色；
     //   正常帶 = 中間 2/5（T 36–38、P 60–100、R 10–22、BP 50–150），其餘為異常區；
-    //   NA（未量測）不連線；預設顯示 T/P/R，BP 預設隱藏，點軸可切換。
+    //   NA（未量測）不連線；四項預設全部顯示（院內預設隱藏 BP，這裡改為顯示），點軸可切換。
     // 配色取自院內圖：異常 #ffd4d3、正常 #d3e7d0、NEWS 折線 #f26080。
 
     const HV = { X0: 140, X1: 975, Y0: 25, Y1: 235, W: 990, H: 262 };
     const HV_AXES = [
-        { k: 'BP', x: 32, color: 'green', lo: 0, hi: 250, step: 50, off: true },
+        { k: 'BP', x: 32, color: 'green', lo: 0, hi: 250, step: 50 },
         { k: 'R', x: 68, color: 'black', lo: 4, hi: 34, step: 6, naY: 205 },
         { k: 'P', x: 104, color: 'red', lo: 40, hi: 140, step: 20, naY: 185 },
         { k: 'T', x: 140, color: 'blue', lo: 35, hi: 40, step: 1, naY: 225 },
@@ -334,7 +334,7 @@
         const series = r.vitals && r.vitals.series;
         if (!series || !series.length) return '';
         return `<div class="charts"><div class="hrow">
-<div class="hcol hv"><div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項（血壓預設隱藏）</span></div>
+<div class="hcol hv"><div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項</span></div>
 ${hospVitals(series, win)}</div>
 <div class="hcol hn"><div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 空心點 = 有缺項，分數可能低估</span></div>
 <div class="nwrap"><canvas class="newsc" width="862" height="258" data-news="${esc(JSON.stringify({
@@ -442,7 +442,7 @@ ${dataTable(series)}</div>`;
         const pacs = r.pacs.length ? r.pacs.map((x) => `<div><span class="tag new">${esc(x.date)} ${esc(x.title)}</span>${x.report ? `<div class="rep">${esc(x.report)}</div>` : ''}</div>`).join('') : '<span class="muted">—</span>';
         const err = r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '';
         const charts = chartsHtml(r, win);
-        const openByDefault = charts && (r.severity > 0 || r.flags.length > 0);
+        const openByDefault = !!charts; // 有圖的病人一律預設展開
         const toggle = charts ? `<br><button class="btn-tg" aria-expanded="${openByDefault ? 'true' : 'false'}">圖表</button>` : '';
         const main = `<tr class="lv-${lvl}">
 <td><b>${esc(p.bed)}</b>${toggle}</td>
