@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.4.0
+// @version      0.5.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -172,7 +172,8 @@
         };
     }
     const rxGate = makeGate(2);
-    const tubeGate = makeGate(2);
+    // 管路一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰）
+    const tubeGate = makeGate(1);
 
     const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
     const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
@@ -225,65 +226,48 @@
         });
     }
 
-    // ─── 管路（CatheterCare.aspx，隱藏 iframe）───────────────────
-    // 頁面由 SIMILE Timeline 在瀏覽器端畫出，資料在全域 catheterTimeLine，所以一定要載入頁面。
-    // 簡報跑在同源的病房列表，可直接讀 iframe.contentWindow（不必開背景分頁，也不會被節流）。
-    // 事件包含每日「正常」等觀察紀錄與尚未到的空白項，過濾規則與 progress-note-data-helper 相同。
-    const CATH_OBS_RE = /^(正常|異常|外移|移位|脫落|滑脫|阻塞|滲液|滲血|紅腫|鬆脫|自拔|更換|[\s,，]|\+)+$/;
-    const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;
-
-    function readTimeline(w) {
-        const tl = w && w.catheterTimeLine;
-        if (!tl || typeof tl.getBand !== 'function') return null;
-        let src;
-        try { src = tl.getBand(0).getEventSource(); } catch { return null; }
-        if (!src || typeof src.getAllEventIterator !== 'function') return null;
-        const out = [];
-        const it = src.getAllEventIterator();
-        while (it.hasNext()) {
-            const e = it.next();
-            const t = (e.getText() || '').replace(/\s+/g, ' ').trim();
-            if (!t || CATH_OBS_RE.test(t) || CATH_PERIPHERAL_RE.test(t)) continue;
-            const removed = String(e._RemovedCatheter) === 'true' || (e.getProperty && e.getProperty('RemovedCatheter') === true);
-            if (removed) continue;
-            const st = e.getStart && e.getStart();
-            if (!st || !st.getTime) continue;
-            out.push({ name: t.replace(/\(.*?\)/g, '').trim() || t, startMs: st.getTime() });
-        }
-        return out;
-    }
+    // ─── 管路（CatheterCare_Handler.aspx）───────────────────────
+    // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
+    // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
+    // 額外參數一律被忽略（新竹實測 2026-09-30）。所以：
+    //   1. 一律一次一位（tubeGate=1），先載入該病人的頁面 HTML（不跑頁面 JS，約 0.5 秒）再立刻打 handler（約 0.1 秒）。
+    //   2. 每條管路的 <decorate> 都帶 <caseno>（＝病房列表的 AccountIDSE），逐條驗證，對不上就整批丟棄。
+    // 已知盲點：這位病人若一條管路都沒有，就沒有 caseno 可驗證；此時若有人在別的分頁操作 CatheterCare，
+    // 理論上可能拿到別人的空結果。簡報執行期間不要同時操作 CatheterCare。
+    const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;   // 周邊留置針不列入（CVC／PICC／Port-A 等中央導管要留）
+    const tubeText = (node, tag) => { const e = node.getElementsByTagName(tag)[0]; return e ? e.textContent.trim() : ''; };
+    const parseInsert = (t) => {
+        const m = t.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
+        return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN;
+    };
 
     async function fetchTubes(p, now) {
         return tubeGate(async () => {
-            const url = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/CatheterCare.aspx'
-                + `?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}&PatClass=I`;
-            const f = document.createElement('iframe');
-            // 放在畫面外但保持有尺寸（display:none 會讓 Timeline 量到 0）
-            f.style.cssText = 'position:fixed;left:-10000px;top:0;width:1100px;height:700px;border:0;';
-            let loaded = false;
-            f.addEventListener('load', () => { loaded = true; });
-            f.src = url;
-            document.body.appendChild(f);
+            const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
             try {
-                // timeline 物件一出現不代表事件都載完（實測每次結果不一致）：
-                // 要求 load 事件已觸發，且事件清單連續 STABLE_MS 都沒變才採用；逾時則用最後一次讀到的。
-                const STABLE_MS = 1500;
-                const t0 = nowMs();
-                let last = null, lastSig = '', stableSince = 0;
-                while (nowMs() - t0 < 25000) {
-                    let ev = null;
-                    try { ev = readTimeline(f.contentWindow); } catch { /* 尚未載入或被擋，繼續輪詢 */ }
-                    if (ev) {
-                        const sig = JSON.stringify(ev);
-                        if (sig !== lastSig) { lastSig = sig; stableSince = nowMs(); }
-                        last = ev;
-                        if (loaded && nowMs() - stableSince >= STABLE_MS) break;
-                    }
-                    await new Promise((r) => setTimeout(r, 300));
-                }
-                if (!last) throw new Error('逾時');
-                return last.map((x) => ({ ...x, day: dayNo(x.startMs, now) })).sort((a, b) => a.startMs - b.startMs);
-            } finally { f.remove(); }
+                const opt = { credentials: 'same-origin', signal: ctrl.signal };
+                const page = await fetch(`${dir}CatheterCare.aspx?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}&PatClass=I`, opt);
+                if (!page.ok) throw new Error('管路頁 HTTP ' + page.status);
+                await page.text();
+                const res = await fetch(`${dir}CatheterCare_Handler.aspx?aa=${nowMs()}&mode=getCatheterRecord&catherStatus=UnRemovedOnly`, opt);
+                if (!res.ok) throw new Error('管路資料 HTTP ' + res.status);
+                const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
+                if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('UnRemovedCatheter').length) throw new Error('管路資料格式不符');
+                const decs = [...doc.getElementsByTagName('decorate')];
+                const total = parseInt(tubeText(doc.getElementsByTagName('UnRemovedCatheter')[0], 'TotalCount'), 10);
+                if (Number.isFinite(total) && total !== decs.length) throw new Error(`管路數量不符（${total}／${decs.length}）`);
+                if (decs.some((d) => tubeText(d, 'caseno') !== p.caseno)) throw new Error('管路資料與病人不符，已丟棄');
+                return decs.map((d) => {
+                    const full = tubeText(d, 'CatheterName');
+                    return { full, name: full.replace(/\(.*?\)/g, '').trim() || full, startMs: parseInsert(tubeText(d, 'CatheterInsertDateTime')) };
+                }).filter((x) => x.full && !CATH_PERIPHERAL_RE.test(x.full) && Number.isFinite(x.startMs))
+                    .map((x) => ({ name: x.name, startMs: x.startMs, day: dayNo(x.startMs, now) }))
+                    .sort((a, b) => a.startMs - b.startMs);
+            } catch (e) {
+                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+            } finally { clearTimeout(timer); }
         });
     }
 
