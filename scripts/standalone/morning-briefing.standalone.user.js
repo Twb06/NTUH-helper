@@ -707,12 +707,12 @@ function isOnOxygen(inside) {
         }));
         return `<div class="charts" data-view="hosp" data-from="${win.fromMs}" data-to="${win.toMs}" data-series="${esc(JSON.stringify(slim))}">
 <div class="vbar"><span class="muted">圖表樣式</span><button class="btn-view on" data-view="hosp">院內樣式</button><button class="btn-view" data-view="split">分開顯示</button></div>
-<div class="view view-hosp">
-<div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項（血壓預設隱藏）</span></div>
-${hospVitals(series, win)}
-<div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 虛線圈 = 有缺項，分數可能低估</span></div>
-${hospNews(series)}
-</div>
+<div class="view view-hosp"><div class="hrow">
+<div class="hcol hv"><div class="mt">生命徵象<span class="muted"> · 綠色帶為正常範圍（T 36–38、P 60–100、R 10–22、BP 50–150），粉紅為異常；點左側軸名稱可顯示／隱藏該項（血壓預設隱藏）</span></div>
+${hospVitals(series, win)}</div>
+<div class="hcol hn"><div class="mt">NEWS2（每次量測，等距排列）<span class="muted"> · 虛線圈 = 有缺項，分數可能低估</span></div>
+${hospNews(series)}</div>
+</div></div>
 <div class="view view-split">
 <div class="mt">NEWS2（每次量測）<span class="muted"> · 空心點 = 有缺項</span></div>${newsChart(series, win)}
 <div class="minis">${PARAMS.map((p) => miniChart(p, series, win)).join('')}</div>
@@ -892,6 +892,10 @@ svg.ch .xh{stroke:var(--mut);stroke-width:1;pointer-events:none}
 .btn-view{font-size:12px;padding:1px 10px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);cursor:pointer}
 .btn-view.on{background:var(--new)}
 svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
+.hrow{display:flex;gap:12px;align-items:flex-start}
+.hcol{min-width:0}.hcol.hv{flex:990 1 0}.hcol.hn{flex:640 1 0}
+.hrow svg.hsvg{width:100%}.hcol.hv svg.hsvg{max-width:990px}.hcol.hn svg.hsvg{max-width:640px}
+@media (max-width:1000px){.hrow{flex-wrap:wrap}.hcol.hv,.hcol.hn{flex:1 1 100%}}
 svg.hsvg .ax{cursor:pointer}svg.hsvg .ax text{stroke-width:.35;font-size:13px}svg.hsvg .ax line,svg.hsvg .ser line{stroke-width:1}
 svg.hsvg .ax.off{fill:lightgray!important;stroke:lightgray!important}svg.hsvg .ser.off{visibility:hidden}
 svg.hsvg .ser circle{stroke:none}svg.hsvg .ser text.na{font-size:12px;stroke-width:.4}
