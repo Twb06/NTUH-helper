@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.8.0
+// @version      0.9.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -541,6 +541,36 @@ ${dataTable(series)}</div>`;
         return [['護理紀錄', u.nursing], ['交班', u.handover]]
             .map(([t, url]) => `<a class="tag" href="${esc(url)}" target="_blank" rel="noopener">${t} ↗</a>`).join('');
     }
+    // ─── 影像列表（PACSImageShowList.aspx）：點擊時才為「這一位」病人取得 PersonID ─────────────
+    // 這頁要 PersonID＋Seed（Seed 可留空；data-helper 亦同），但病房列表取不到 PersonID（身分證字號）。
+    // 折衷：不批次、不預先取——使用者點「影像」那一下，才 fetch 這位病人的處方頁（伺服器已把 PersonID 填在隱藏欄位
+    // hfPersonID），讀出後只放在函式內的區域變數、用來組網址並導向列表；不顯示、不存、不寫進頁面。
+    // 網址列會出現 PersonID，與使用者平常從 HIS 點進去相同。
+    async function openPacsList(w, p) {
+        const tab = w.open('', '_blank');   // 用結果分頁自己的 window，點擊的使用者動作才算數
+        if (!tab) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
+        const say = (msg) => {
+            try { tab.document.open(); tab.document.write(`<!doctype html><meta charset="utf-8"><title>影像列表</title><p style="font:14px system-ui;padding:16px">${esc(msg)}</p>`); tab.document.close(); } catch { /* 分頁已被關掉 */ }
+        };
+        say('正在開啟影像列表…');
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 20000);
+        try {
+            const url = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + 'MedicationV2.aspx'
+                + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}&Hosp=T0&Seed=&EMRPop=Y`;
+            const res = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const doc = NTUHAsmx.parseHtml(await res.text());
+            const field = doc.querySelector('[id$="hfPersonID"]');
+            const pid = field ? field.value.trim() : '';
+            if (!pid) throw new Error('取不到病人識別（頁面格式可能改了）');
+            tab.location.href = location.origin + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
+                + `?PersonID=${encodeURIComponent(pid)}&Seed=`;
+        } catch (e) {
+            say('無法開啟影像列表：' + (e.name === 'AbortError' ? '逾時' : e.message) + '。請改從病人頁面進入。');
+        } finally { clearTimeout(timer); }
+    }
+
     const titleLink = (text, url) => `<a href="${esc(url)}" target="_blank" rel="noopener" title="開啟${esc(text)}頁（新分頁）">${esc(text)} ↗</a>`;
     const renderCharts = (r, win) => (r.pending.has('vitals') ? '<div class="muted nov">生命徵象圖：抓取中…</div>' : chartsHtml(r, win));
 
@@ -554,7 +584,7 @@ ${dataTable(series)}</div>`;
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k">管路</span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
 <div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div id="c${i}-lab">${renderLab(r)}</div></div>
-<div class="kv"><span class="k">影像</span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
+<div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表（點擊時才取得這位病人的識別，約 2 秒）">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
 <div id="c${i}-charts">${renderCharts(r, win)}</div></section>`;
     }
@@ -627,6 +657,14 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.open();
         w.document.write(pageShell(states, win, '目前病房列表'));
         w.document.close();
+        // 「影像 ↗」：點擊時才為該病人開影像列表（邏輯在本頁，不在序列化進新分頁的 pageScript 裡）
+        w.document.addEventListener('click', (ev) => {
+            const a = ev.target.closest && ev.target.closest('a[data-pacs]');
+            if (!a) return;
+            ev.preventDefault();
+            const r = states[+a.getAttribute('data-pacs')];
+            if (r) openPacsList(w, r.p);
+        });
 
         const label = btn.textContent;
         const idleBg = btn.style.background;
