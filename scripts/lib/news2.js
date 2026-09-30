@@ -14,6 +14,7 @@
 //   - SpO2 一律用 Scale 1。COPD 等 Scale 2 病人請靠「逐人覆寫」處理（未實作）。
 //   - GCS < 15 一律視為意識改變（NEWS2 的 CVPU = 3 分），無法區分本來就有的基線。
 //   - 缺項不補零：分數只算有量到的項目，並標 partial，避免低估。
+//     例外：意識沒有 GCS 記錄時視為清醒，不算缺項。
 // ==============================================================
 
 /* global module */
@@ -88,7 +89,8 @@
         if (isNum(o.SpO2)) parts.O2 = scoreO2(!!o.onOxygen); else missing.push('O2');
 
         const g = gcsTotal(o.gcs);
-        if (g !== null) parts.Consciousness = scoreConsciousness(g < 15); else missing.push('Consciousness');
+        // 意識：病房 vitals 幾乎沒有 GCS 列，沒記錄就當作清醒（0 分），也不算缺項，避免每列都掛「缺」
+        if (g !== null) parts.Consciousness = scoreConsciousness(g < 15);
 
         const vals = Object.values(parts);
         const total = vals.reduce((a, b) => a + b, 0);
