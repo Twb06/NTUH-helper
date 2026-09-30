@@ -119,13 +119,16 @@
         return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
     }
 
-    // 由 SpO2 括號內字串判斷是否給氧。格式 "28%,5L,Mask"（FiO2,流量,裝置），空 = room air
-    function isOnOxygen(inside) {
-        const s = String(inside || '').trim();
-        if (!s) return false;
-        if (/room\s*air/i.test(s)) return false;
-        return /cannula|mask|nasal|\bNC\b|hfnc|niv|bipap|cpap|vent|ventilator|trach|t-?piece|\d+\s*L/i.test(s)
-            || /\d/.test(s); // 有 FiO2 或流量數字也視為給氧
+    // 由 SpO2 括號內字串判斷是否給氧。格式 "FiO2,流量,裝置"：
+//   room air 實測為 "%,L,"（三欄皆空）；給氧例 "28%,5L,Mask"。只有一欄時視為裝置。
+function isOnOxygen(inside) {
+        const parts = String(inside || '').split(',').map((x) => x.trim());
+        let fio2 = '', flow = '', device = '';
+        if (parts.length >= 3) [fio2, flow, device] = parts; else device = parts[0] || '';
+        if (device && !/^room\s*air$/i.test(device)) return true;
+        if (/\d/.test(flow)) return true;
+        const f = parseFloat(fio2);
+        return Number.isFinite(f) && f > 21;
     }
 
     /**
@@ -139,11 +142,16 @@
             const t = String(raw).replace(/\s+/g, ' ').trim();
             const dtm = t.match(DT_RE);
             if (!dtm) continue;
+            if (+dtm[1] < 2000) continue; // HIS 佔位用 0001/01/01
             const dt = dtm[0];
             const ms = toMs(dt);
             let m;
-            if ((m = t.match(/T:\s*([\d.]+)\s*P:\s*(\d+)\s*R:\s*(\d+)/i))) {
-                singles.push({ dt, ms, kind: 'tpr', T: parseFloat(m[1]), P: +m[2], R: +m[3] });
+            if ((m = t.match(/\bT:\s*([\d.]*)\s*P:\s*(\d*)\s*R:\s*(\d*)/i))) {
+                const rec = { dt, ms, kind: 'tpr' };
+                if (m[1]) rec.T = parseFloat(m[1]);
+                if (m[2]) rec.P = +m[2];
+                if (m[3]) rec.R = +m[3];
+                if (rec.T !== undefined || rec.P !== undefined || rec.R !== undefined) singles.push(rec);
             } else if ((m = t.match(/BP:\s*(\d+)\/(\d+)/i))) {
                 singles.push({ dt, ms, kind: 'bp', SBP: +m[1], DBP: +m[2] });
             } else if ((m = t.match(/SpO2:\s*(\d+)%\(([^)]*)\)/i))) {

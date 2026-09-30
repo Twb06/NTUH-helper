@@ -50,3 +50,29 @@ assert.ok(s.flags.some((f) => f.startsWith('發燒')) && s.flags.some((f) => f.s
 // 時間窗內完全無資料要明確標 noData，不能當成正常
 assert.strictEqual(N.summarizeWindow(obs, now, now + 1).noData, true);
 console.log('news2: all tests passed');
+
+// ── 實測格式（來自真實回傳的 Content 欄，數值已改成合成）──
+{
+    const real = [
+        '2026/09/30 06:40 SpO2:96%(%,L,)',            // room air 實測格式
+        '2026/09/30 06:40 T:36.8 P:65 R:18',
+        '2026/09/30 06:40 BP:111/56',
+        '2026/09/29 13:23 T:37.1 P:84 R:',            // R 常缺，不能連 T/P 一起丟
+        '2026/09/29 13:23 BP:112/74',
+        '2026/09/29 09:04 Pain score:0',
+        'U/O:0',                                      // 無日期
+        '0001/01/01 00:00 T: P:80 R:',                // 佔位列
+        '0001/01/01 00:00 T: P:73 R:',
+    ];
+    const o = N.parseVitalRows(real);
+    assert.strictEqual(o.length, 2, 'placeholder/undated rows must be dropped, got ' + o.length);
+    assert.strictEqual(o[0].T, 37.1); assert.strictEqual(o[0].P, 84); assert.strictEqual(o[0].R, undefined);
+    assert.strictEqual(o[1].onOxygen, false, 'room air "%,L," must not count as oxygen');
+    assert.strictEqual(N.isOnOxygen('28%,5L,Mask'), true);
+    assert.strictEqual(N.isOnOxygen('%,3L,Nasal Cannula'), true);
+    assert.strictEqual(N.isOnOxygen('%,L,'), false);
+    assert.strictEqual(N.isOnOxygen(''), false);
+    const sc = N.scoreNews2(o[0]);
+    assert.ok(sc.partial && sc.missing.includes('RR'), 'missing RR must be flagged, not scored 0');
+}
+console.log('news2: real-format tests passed');
