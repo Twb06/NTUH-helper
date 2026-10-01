@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      0.9.0-standalone
+// @version      1.0.0-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -545,7 +545,8 @@ function isOnOxygen(inside) {
     function newResult(p, win, now) {
         const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes']) };
         const labMs = labTimeMs(p.labTitle, now);
-        if (labMs !== null && labMs >= win.fromMs) res.lab = { ms: labMs };
+        // 檢驗、影像的納入起點與圖表／TPR 一致：前一日 REF_HOUR（08:00）起，避免漏掉白天的新報告
+        if (labMs !== null && labMs >= win.refFromMs) res.lab = { ms: labMs };
         return res;
     }
 
@@ -576,7 +577,7 @@ function isOnOxygen(inside) {
                 res.o2 = NTUHNews2.o2Change(res.vitals.series);
             }),
             job('pacs', '影像', async () => {
-                res.pacs = parsePacs(await NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }), win.fromMs);
+                res.pacs = parsePacs(await NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }), win.refFromMs);
             }),
         ]);
     }
@@ -896,7 +897,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 @media print{body{padding:0;font-size:11px}.card{break-inside:avoid}}
 </style></head><body>
 <h1>晨間簡報</h1>
-<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 圖表參考資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(scope)} · 共 ${states.length} 人（依病房列表順序） · <span id="prog">載入中 0/${states.length}</span></div>
+<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 檢驗、影像、圖表資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(scope)} · 共 ${states.length} 人（依病房列表順序） · <span id="prog">載入中 0/${states.length}</span></div>
 <div class="grid">${states.map((r, i) => cardShell(i, r, win)).join('')}</div>
 <script>(${pageScript.toString()})();<\/script></body></html>`;
     }
