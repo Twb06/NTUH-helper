@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.4.0
-// @description  用於例假日值班批次寫病房病程：複製最新 Progress Note，Subjective 填入 stable 後確認送出（可統一覆核者、可統一 Plan）
+// @version      1.5.0
+// @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS）／當日確認草稿（帶入 TPR 與導管）／複製最新 Progress Note 填 stable 後送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -30,7 +30,13 @@
         reviewer: 'keep',   // 'keep' = 維持原本 VS；'unify' = 統一填入員編
         reviewerId: '',
         plan: 'copy',       // 'copy' = 複製上一則；'keep' = 填入 Keep current management
+        mode: 'copy',       // 'prewrite' = 週五預寫草稿；'confirm' = 當日確認草稿；'copy' = 複製最新一則
+        days: 2,            // prewrite：往後幾天
+        vsids: [],          // prewrite：第 1、2、… 天的覆核 VS（員編）
     };
+
+    const DRAFT_HOUR = '09';  // 預寫草稿的時間
+    const MAX_DAYS = 7;
 
     function loadOptions() {
         try {
@@ -164,7 +170,7 @@
 
         // 強制顯示：在 console 輸入 sessionStorage.setItem('forceWeekend','1') 後重新整理
         if (sessionStorage.getItem('forceWeekend') === '1') {
-            createFAB('手動啟用');
+            createFAB();
         } else {
             checkHolidayAndShowFAB();
         }
@@ -207,7 +213,7 @@
             try { capturedPopup?.close(); } catch (e) { /* */ }
             addResult(state, '逾時');
             nextPatient(state);
-        }, 90000);
+        }, state.options?.mode === 'prewrite' ? 180000 : 90000);
     }
 
     function getPatients() {
@@ -288,12 +294,26 @@
         return FIXED_HOLIDAYS.includes(today);
     }
 
+    // 行事曆資訊：今天是否假日、之後連續幾天假日（給 FAB 與對話框預設用）
+    let calendarInfo = null;
+
+    function weekendRun() {
+        // fallback：只看週末。週五 → 2；週六 → 1；其餘 0
+        const day = new Date().getDay();
+        return day === 5 ? 2 : day === 6 ? 1 : 0;
+    }
+
     function checkHolidayAndShowFAB() {
-        const year = new Date().getFullYear();
+        const now = new Date();
+        const year = now.getFullYear();
         const url = `https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${year}.json`;
         const todayStr = getTodayYYYYMMDD();
 
-        // 先用 GM_xmlhttpRequest 抓 API
+        const fallback = () => {
+            calendarInfo = { isHoliday: isWeekend() || isFixedHoliday(), run: weekendRun(), label: '例假日' };
+            if (calendarInfo.isHoliday || calendarInfo.run > 0) createFAB();
+        };
+
         try {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -301,48 +321,59 @@
                 onload(res) {
                     try {
                         const data = JSON.parse(res.responseText);
-                        const today = data.find(d => d.date === todayStr);
-                        if (today?.isHoliday) {
-                            createFAB(today.description || '例假日');
+                        const byDate = new Map(data.map(d => [d.date, d]));
+                        const today = byDate.get(todayStr);
+                        let run = 0;
+                        const d = new Date(now);
+                        for (let i = 0; i < MAX_DAYS; i++) {
+                            d.setDate(d.getDate() + 1);
+                            if (d.getFullYear() !== year) break;  // 跨年不查
+                            const key = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+                            if (!byDate.get(key)?.isHoliday) break;
+                            run++;
                         }
-                    } catch {
-                        fallbackCheck();
-                    }
+                        calendarInfo = { isHoliday: !!today?.isHoliday, run, label: today?.description || '例假日' };
+                        if (calendarInfo.isHoliday || run > 0) createFAB();
+                    } catch { fallback(); }
                 },
-                onerror() { fallbackCheck(); },
-                ontimeout() { fallbackCheck(); },
+                onerror: fallback,
+                ontimeout: fallback,
                 timeout: 5000,
             });
-        } catch {
-            fallbackCheck();
-        }
-    }
-
-    function fallbackCheck() {
-        if (isWeekend() || isFixedHoliday()) {
-            createFAB('例假日');
-        }
+        } catch { fallback(); }
     }
 
     // --- Orchestrator UI ---
 
-    function createFAB(holidayLabel) {
+    // 共用右下角 dock：同頁多支腳本的浮動按鈕排進同一個容器，避免互相覆蓋（誰先載入誰建立）
+    function getDock() {
+        let d = document.getElementById('ntuh-dock');
+        if (!d) {
+            d = document.createElement('div');
+            d.id = 'ntuh-dock';
+            d.style.cssText = 'position:fixed;right:8px;bottom:64px;z-index:99999;display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none;font:14px system-ui,sans-serif';
+            document.body.appendChild(d);
+        }
+        return d;
+    }
+
+    function createFAB() {
         if (document.getElementById('ntuh-batch-fab')) return;
 
         const fab = document.createElement('button');
         fab.id = 'ntuh-batch-fab';
-        fab.textContent = '⚡ 週末病程';
+        fab.textContent = '週末病程';
         Object.assign(fab.style, {
-            position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
-            padding: '12px 20px', background: '#e67e22', color: '#fff',
-            border: 'none', borderRadius: '8px', fontSize: '15px',
+            pointerEvents: 'auto',
+            padding: '8px 14px', background: '#e67e22', color: '#fff',
+            border: 'none', borderRadius: '18px', fontSize: '14px',
             fontWeight: 'bold', cursor: 'pointer',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
         });
         fab.onmouseenter = () => { fab.style.background = '#d35400'; };
         fab.onmouseleave = () => { fab.style.background = '#e67e22'; };
         fab.onclick = () => { showOptionsDialog(); };
-        document.body.appendChild(fab);
+        getDock().appendChild(fab);
     }
 
     function showOptionsDialog() {
@@ -350,6 +381,10 @@
         if (patients.length === 0) { alert('找不到病人清單'); return; }
 
         const saved = loadOptions();
+        const cal = calendarInfo || { isHoliday: false, run: 0 };
+        // 預設模式依日期：假日當天 → 確認草稿；假日前 → 預寫；其他 → 複製
+        const defaultMode = cal.isHoliday ? 'confirm' : cal.run > 0 ? 'prewrite' : 'copy';
+        const defaultDays = Math.min(Math.max(cal.run || saved.days || 2, 1), MAX_DAYS);
 
         const overlay = document.createElement('div');
         Object.assign(overlay.style, {
@@ -361,22 +396,37 @@
         const box = document.createElement('div');
         Object.assign(box.style, {
             background: '#fff', borderRadius: '12px', padding: '24px',
-            maxWidth: '460px', width: '90%', display: 'flex',
-            flexDirection: 'column', gap: '16px', fontSize: '14px',
+            maxWidth: '480px', width: '90%', maxHeight: '90vh', overflowY: 'auto',
+            display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '14px',
             color: '#222', boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
         });
         box.addEventListener('click', e => e.stopPropagation());
 
         box.innerHTML = `
             <div style="font-size:17px;font-weight:bold;text-align:center">⚡ 週末病程（${patients.length} 位）</div>
-            <div style="background:#f7f7f7;border-radius:8px;padding:10px 12px;line-height:1.7">
-                1. 複製最新 Progress Note<br>
-                2. Subjective 填入 stable<br>
-                3. 自動帶入導管紀錄（若有）<br>
-                4. 確認送出
-            </div>
 
             <div>
+                <div style="font-weight:bold;margin-bottom:6px">模式</div>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-mode" value="prewrite"> 週五預寫：建立往後數天的草稿（暫存）
+                </label>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-mode" value="confirm"> 當日確認：把今天的草稿帶入 TPR／導管後送出
+                </label>
+                <label style="display:block;margin:4px 0;cursor:pointer">
+                    <input type="radio" name="wp-mode" value="copy"> 複製最新一則（Subjective 填 stable）後送出
+                </label>
+            </div>
+
+            <div id="wp-sec-prewrite" style="background:#f7f7f7;border-radius:8px;padding:10px 12px">
+                <div style="margin-bottom:8px">
+                    往後幾天：<input type="number" id="wp-days" min="1" max="${MAX_DAYS}" style="width:50px;padding:3px 6px;border:1px solid #bbb;border-radius:4px">
+                    <span style="color:#777;font-size:12px">（時間 ${DRAFT_HOUR}:00，Plan＝${KEEP_PLAN_TEXT}，Assessment 清空）</span>
+                </div>
+                <div id="wp-vs-list"></div>
+            </div>
+
+            <div id="wp-sec-reviewer">
                 <div style="font-weight:bold;margin-bottom:6px">覆核者</div>
                 <label style="display:block;margin:4px 0;cursor:pointer">
                     <input type="radio" name="wp-rev" value="keep"> 維持原本 VS
@@ -388,7 +438,7 @@
                 </label>
             </div>
 
-            <div>
+            <div id="wp-sec-plan">
                 <div style="font-weight:bold;margin-bottom:6px">Plan</div>
                 <label style="display:block;margin:4px 0;cursor:pointer">
                     <input type="radio" name="wp-plan" value="copy"> 複製上一則
@@ -409,40 +459,94 @@
         overlay.appendChild(box);
         document.body.appendChild(overlay);
 
+        const modeRadios = [...box.querySelectorAll('input[name="wp-mode"]')];
         const revRadios  = [...box.querySelectorAll('input[name="wp-rev"]')];
         const planRadios = [...box.querySelectorAll('input[name="wp-plan"]')];
         const idInput    = box.querySelector('#wp-rev-id');
+        const daysInput  = box.querySelector('#wp-days');
+        const vsList     = box.querySelector('#wp-vs-list');
         const warn       = box.querySelector('#wp-warn');
+        const secPre     = box.querySelector('#wp-sec-prewrite');
+        const secRev     = box.querySelector('#wp-sec-reviewer');
+        const secPlan    = box.querySelector('#wp-sec-plan');
 
-        const revPick  = revRadios.find(r => r.value === saved.reviewer)  || revRadios[0];
-        const planPick = planRadios.find(r => r.value === saved.plan)     || planRadios[0];
-        revPick.checked = true;
-        planPick.checked = true;
+        (modeRadios.find(r => r.value === defaultMode) || modeRadios[0]).checked = true;
+        (revRadios.find(r => r.value === saved.reviewer) || revRadios[0]).checked = true;
+        (planRadios.find(r => r.value === saved.plan) || planRadios[0]).checked = true;
         idInput.value = saved.reviewerId || '';
+        daysInput.value = defaultDays;
+
+        const curMode = () => modeRadios.find(r => r.checked)?.value || 'copy';
+
+        // 每天一個 VS 欄位；第 1 天改動會連動尚未手改過的其他天
+        const vsDefault = (saved.vsids || []).find(Boolean) || '';
+        const renderVs = () => {
+            const n = Math.min(Math.max(parseInt(daysInput.value, 10) || 1, 1), MAX_DAYS);
+            const old = [...vsList.querySelectorAll('input')].map(i => i.value);
+            vsList.innerHTML = '';
+            for (let i = 0; i < n; i++) {
+                const row = document.createElement('div');
+                row.style.cssText = 'margin:4px 0';
+                const lab = document.createElement('span');
+                lab.style.cssText = 'display:inline-block;width:150px';
+                const dt = new Date(); dt.setDate(dt.getDate() + i + 1);
+                lab.textContent = `+${i + 1} 天（${dt.getMonth() + 1}/${dt.getDate()}）VS：`;
+                const inp = document.createElement('input');
+                inp.type = 'text'; inp.maxLength = 12; inp.placeholder = '員編';
+                inp.style.cssText = 'width:110px;padding:3px 6px;border:1px solid #bbb;border-radius:4px';
+                inp.value = old[i] ?? (saved.vsids?.[i] || vsDefault);
+                row.append(lab, inp);
+                vsList.appendChild(row);
+            }
+            const first = vsList.querySelector('input');
+            first?.addEventListener('input', () => {
+                vsList.querySelectorAll('input').forEach(i => { if (i !== first) i.value = first.value; });
+            });
+        };
+        daysInput.addEventListener('change', renderVs);
+        renderVs();
 
         const syncId = () => {
             const unify = revRadios.find(r => r.checked)?.value === 'unify';
             idInput.disabled = !unify;
             idInput.style.opacity = unify ? '1' : '0.45';
         };
+        const syncMode = () => {
+            const m = curMode();
+            secPre.style.display = m === 'prewrite' ? '' : 'none';
+            secRev.style.display = m === 'prewrite' ? 'none' : '';
+            secPlan.style.display = m === 'copy' ? '' : 'none';  // 確認草稿不動 Plan
+        };
         revRadios.forEach(r => r.addEventListener('change', syncId));
+        modeRadios.forEach(r => r.addEventListener('change', syncMode));
         idInput.addEventListener('focus', () => {
             revRadios.find(r => r.value === 'unify').checked = true;
             syncId();
         });
         syncId();
+        syncMode();
 
         const close = () => overlay.remove();
         box.querySelector('#wp-cancel').onclick = close;
         overlay.onclick = close;
 
         box.querySelector('#wp-go').onclick = () => {
+            const mode = curMode();
             const options = {
+                mode,
                 reviewer: revRadios.find(r => r.checked)?.value || 'keep',
                 reviewerId: idInput.value.trim(),
                 plan: planRadios.find(r => r.checked)?.value || 'copy',
+                days: parseInt(daysInput.value, 10) || 1,
+                vsids: [...vsList.querySelectorAll('input')].map(i => i.value.trim()),
             };
-            if (options.reviewer === 'unify' && !options.reviewerId) {
+            if (mode === 'prewrite') {
+                if (options.vsids.some(v => !v)) {
+                    warn.textContent = '請填好每一天的覆核 VS 員編';
+                    warn.style.display = 'block';
+                    return;
+                }
+            } else if (options.reviewer === 'unify' && !options.reviewerId) {
                 warn.textContent = '請輸入要統一填入的員編';
                 warn.style.display = 'block';
                 idInput.focus();
@@ -465,7 +569,7 @@
         const p = state.patients[state.currentIndex];
 
         Object.assign(el.style, {
-            position: 'fixed', bottom: '30px', right: '30px', zIndex: '99999',
+            pointerEvents: 'auto',
             background: 'rgba(0,0,0,0.85)', color: '#fff', padding: '12px 20px',
             borderRadius: '8px', fontSize: '14px', fontWeight: 'bold',
             boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
@@ -493,7 +597,7 @@
 
         el.appendChild(text);
         el.appendChild(stopBtn);
-        document.body.appendChild(el);
+        getDock().appendChild(el);
     }
 
     function showFinalResults(state) {
@@ -671,6 +775,10 @@
     }
 
     function autoProcess() {
+        const mode = getBatchOptions().mode;
+        if (mode === 'prewrite') { prewriteProcess(); return; }
+        if (mode === 'confirm') { confirmDraftProcess(); return; }
+
         const today = getTodayMMDD();
 
         const yesterday = getYesterdayMMDD();
@@ -980,6 +1088,280 @@
         setTimeout(done, 3000);
 
         confirmBtn.click();
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // MODULE C：預寫草稿／確認草稿（週五預寫 → 假日當天確認）
+    // ═══════════════════════════════════════════════════════════
+
+    const P = 'NTUHWeb1_ProgressNoteMainTab_';
+    const $id = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // 等下一次 UpdatePanel postback 結束（先註冊再 click）；timeout 保底
+    function nextPostback(timeout = 5000) {
+        return new Promise(resolve => {
+            let done = false, handler = null, prm = null;
+            const fin = () => {
+                if (done) return;
+                done = true;
+                if (prm && handler) prm.remove_endRequest(handler);
+                setTimeout(resolve, 400);
+            };
+            if (window.Sys?.WebForms?.PageRequestManager) {
+                prm = Sys.WebForms.PageRequestManager.getInstance();
+                handler = fin;
+                prm.add_endRequest(handler);
+            }
+            setTimeout(fin, timeout);
+        });
+    }
+
+    async function clickAndWait(el, timeout) {
+        const wait = nextPostback(timeout);
+        el.click();
+        await wait;
+    }
+
+    function dateKey(d) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    function addDays(n) { const d = new Date(); d.setDate(d.getDate() + n); return d; }
+
+    // 統一讀取病程清單（兩種 DOM：grvSOList／tblNoteList）
+    // → [{ type, mmdd, flag, link }]，type 已轉小寫
+    function scanNotes() {
+        const out = [];
+        for (let i = 0; i < 80; i++) {
+            const typeEl = $id(`NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_Type`);
+            if (!typeEl) break;
+            const nameEl = $id(`NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_NoteName`);
+            const dateEl = $id(`NTUHWeb1_ucProgressNoteList_grvSOList_ctrl${i}_InsertDateTime`);
+            const type = typeEl.textContent.trim();
+            const name = nameEl?.textContent?.trim() || '';
+            out.push({
+                type: isProgressNote(type, name) ? 'progress' : type,
+                mmdd: dateEl?.textContent?.trim() || '',
+                flag: (typeEl.closest('tr')?.textContent || '').includes('暫') ? 'draft' : '',
+                link: nameEl,
+            });
+        }
+        if (out.length) return out;
+        document.querySelectorAll('#tblNoteList tbody tr[notetype]').forEach(tr => {
+            if (tr.getAttribute('islastverion') === 'false') return;
+            const dt = (tr.getAttribute('insertdatetime') || '').split(' ')[0].replace(/\//g, '-');
+            const cf = (tr.getAttribute('completeflag') || '').trim();
+            out.push({
+                type: tr.getAttribute('notetype'),
+                mmdd: dt.slice(5),
+                flag: cf === 'R' || cf === 'V' ? 'done' : 'draft',
+                link: tr.querySelector('a.candidateNameTD'),
+            });
+        });
+        return out;
+    }
+
+    // ── 日期／時間：沿用同學版的「穩定偵測」——表單載入後會自己重設日期，
+    //    要等值停止變動再改，改完還要再穩定一秒才算數 ──
+    function setDraftDateTime(target) {
+        const want = dateKey(target);
+        return new Promise(resolve => {
+            const start = Date.now();
+            let lastKey = null, lastChange = start;
+            const iv = setInterval(() => {
+                const now = Date.now();
+                const h = $id(P + 'ucInsertDateTime_HourInput');
+                if (h && h.value !== DRAFT_HOUR) h.value = DRAFT_HOUR;
+                if (now - start > 15000) { clearInterval(iv); resolve(false); return; }
+
+                const y = $id(P + 'ucInsertDateTime_YearInput');
+                const m = $id(P + 'ucInsertDateTime_MonthInput');
+                const d = $id(P + 'ucInsertDateTime_DayInput');
+                if (!(y && m && d && y.value && m.value && d.value)) return;
+
+                const key = `${y.value}-${m.value}-${d.value}`;
+                if (key !== lastKey) { lastKey = key; lastChange = now; return; }
+                if (now - lastChange < 500) return;
+
+                if (key !== want) {
+                    y.value = String(target.getFullYear());
+                    m.value = String(target.getMonth() + 1).padStart(2, '0');
+                    d.value = String(target.getDate()).padStart(2, '0');
+                    lastKey = want; lastChange = now;
+                    return;
+                }
+                if (now - lastChange >= 1000 && h?.value === DRAFT_HOUR) {
+                    clearInterval(iv);
+                    resolve(true);
+                }
+            }, 150);
+        });
+    }
+
+    async function createDraft(offset, vsid) {
+        const target = addDays(offset);
+        const tag = `+${offset}天(${target.getMonth() + 1}/${target.getDate()})`;
+
+        const insertBtn = $id('NTUHWeb1_btnInsertProgressNote');
+        if (!insertBtn) return `${tag}：找不到新增Progress按鈕`;
+        await clickAndWait(insertBtn, 6000);
+
+        if (!(await setDraftDateTime(target))) return `${tag}：日期欄位未穩定`;
+
+        const f = {
+            vsid: $id(P + 'ucDoctorInfo_vsid'),
+            assess: $id(P + 'ucPAP_txbAssessment1'),
+            plan: $id(P + 'ucPAP_txbPlan1'),
+            save: $id(P + 'btnSaveProgressNote'),
+        };
+        const missing = Object.keys(f).filter(k => !f[k]);
+        if (missing.length) return `${tag}：欄位不存在(${missing.join(',')})`;
+
+        // 與同學版一致：直接賦值、不觸發事件（避免 autopostback 重繪洗掉其他欄位）
+        f.vsid.value = vsid;
+        f.assess.value = '';
+        f.plan.value = KEEP_PLAN_TEXT.toLowerCase();
+        await clickAndWait(f.save, 6000);
+
+        // 驗證：清單出現該日期的 progress（清單 DOM 讀不到時只能標未驗證）
+        const mmdd = dateKey(target).slice(5);
+        for (let i = 0; i < 10; i++) {
+            const notes = scanNotes();
+            if (!notes.length) return `${tag}：已暫存（清單讀不到，未驗證）`;
+            if (notes.some(n => n.type === 'progress' && n.mmdd === mmdd)) return null;
+            await sleep(300);
+        }
+        return `${tag}：暫存後清單未見該日期，請手動確認`;
+    }
+
+    async function prewriteProcess() {
+        try {
+            const opts = getBatchOptions();
+            const existing = new Set(scanNotes().filter(n => n.type === 'progress').map(n => n.mmdd));
+            const made = [], skipped = [], problems = [];
+
+            for (let i = 0; i < opts.days; i++) {
+                const offset = i + 1;
+                const vsid = opts.vsids[i] || opts.vsids[0] || '';
+                const mmdd = dateKey(addDays(offset)).slice(5);
+                if (existing.has(mmdd)) { skipped.push(`+${offset}`); continue; }
+                const err = await createDraft(offset, vsid);
+                if (err) { problems.push(err); break; }  // 失敗就停，避免後面疊出殘缺草稿
+                made.push(`+${offset}`);
+            }
+
+            const parts = [];
+            if (made.length) parts.push(`✓ 已建草稿 ${made.join(' ')}`);
+            if (skipped.length) parts.push(`已存在略過 ${skipped.join(' ')}`);
+            if (problems.length) parts.push(`⚠ ${problems.join('；')}`);
+            notifyOpener(parts.join('；') || '無需建立');
+        } catch (e) {
+            notifyOpener('預寫錯誤：' + (e?.message || e));
+        }
+    }
+
+    // ── 當日確認：選取今日草稿 → 清 Subjective/填 stable → TPR → 導管 → 送出 ──
+
+    function waitHasData(id, timeout) {
+        return new Promise(resolve => {
+            const ok = () => $id(id)?.getAttribute('hasdata') === 'Y';
+            if (ok()) { resolve(true); return; }
+            const start = Date.now();
+            const iv = setInterval(() => {
+                if (ok()) { clearInterval(iv); resolve(true); }
+                else if (Date.now() - start > timeout) { clearInterval(iv); resolve(false); }
+            }, 50);
+        });
+    }
+
+    // 生命徵象 accordion 的「選取」連結：T/P/R/BP/…（沿用同學版的 ctrl 0-3,5）
+    const TPR_ITEMS = [0, 1, 2, 3, 5].map(n => `ctl00_VitalSignList_ctrl${n}_lkbSelectData`);
+
+    async function pullVitals() {
+        const header = $id('ui-accordion-accordion-header-0');
+        if (!header) return '生命徵象區塊不存在';
+        header.click();
+        const has = await waitHasData('divVitalSignData', 5000);
+
+        const clickItems = () => TPR_ITEMS.map($id).filter(Boolean).forEach(b => b.click());
+        const obj = $id(P + 'txbObject');
+        const assess = $id(P + 'ucPAP_txbAssessment1');
+        // 與同學版一致：Objective、Assessment 各清空後點一次欄位再帶入 TPR
+        if (obj) { obj.value = ''; obj.click(); clickItems(); }
+        if (assess) { assess.value = ''; assess.click(); clickItems(); }
+        return has ? '' : '無生命徵象';
+    }
+
+    async function pullCatheters() {
+        const bsi = $id(P + 'txbBSIBundle');
+        const header = $id('ui-accordion-accordion-header-1');
+        if (!bsi || !header) return '';
+        bsi.value = '';
+        bsi.click();
+        header.click();
+        await waitHasData('divBSIData', 5000);
+        for (let i = 0; ; i++) {
+            const b = $id(`ctl00_BSIList_ctrl${i}_lkbSelectData`);
+            if (!b) break;
+            b.click();
+        }
+        return '';
+    }
+
+    async function confirmDraftProcess() {
+        try {
+            const today = dateKey(new Date()).slice(5);
+            const todays = scanNotes().filter(n => n.type === 'progress' && n.mmdd === today && n.link);
+            if (!todays.length) { notifyOpener('無今日草稿'); return; }
+            const pick = todays.find(n => n.flag === 'draft') || todays[0];
+
+            await clickAndWait(pick.link, 6000);
+
+            const confirmBtn = $id(P + 'btnConfirmProgressNote');
+            if (!confirmBtn || !confirmBtn.offsetParent || confirmBtn.disabled) {
+                notifyOpener('今日病程已送出');
+                return;
+            }
+
+            const opts = getBatchOptions();
+            const notes = [];
+
+            // Subjective：空的才補 stable
+            const subj = $id(P + 'txbSubject');
+            if (!subj) { notifyOpener('Subjective 欄位不存在'); return; }
+            if (!subj.value.trim()) fillField(P + 'txbSubject', 'stable');
+
+            const vErr = await pullVitals();
+            if (vErr) notes.push(vErr);
+            await pullCatheters();
+
+            // 覆核者（預設維持草稿上週五指定的 VS）
+            if (!applyReviewerOption(opts)) notes.push('覆核者未填');
+
+            // 時間超過 10 點系統會擋，壓回 10
+            const hour = $id(P + 'ucInsertDateTime_HourInput');
+            if (hour) {
+                const h = parseInt(hour.value, 10);
+                if (!isNaN(h) && h > 10) { hour.value = '10'; notes.push('時間改回10點'); }
+            }
+
+            await sleep(opts.reviewer === 'unify' ? 1200 : 300);
+
+            await clickAndWait(confirmBtn, 6000);
+
+            // 驗證：只有 tblNoteList 版本有可靠的 completeflag；grvSOList 的「暫」判斷未實測，不拿來擋
+            if ($id('tblNoteList')) {
+                const mine = scanNotes().filter(n => n.type === 'progress' && n.mmdd === today);
+                if (mine.length && mine.every(n => n.flag === 'draft')) {
+                    notifyOpener('⚠ 送出後仍是草稿，請手動確認' + (notes.length ? `（${notes.join('、')}）` : ''));
+                    return;
+                }
+            }
+            notifyOpener('✓ 已送出' + (notes.length ? `（${notes.join('、')}）` : ''));
+        } catch (e) {
+            notifyOpener('確認錯誤：' + (e?.message || e));
+        }
     }
 
     // ═══════════════════════════════════════════════════════════

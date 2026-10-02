@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.0.0-standalone
+// @version      1.0.2-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -866,7 +866,7 @@ ${dataTable(series)}</div>`;
     const setText = (w, id, text) => { if (w && !w.closed) { const el = w.document.getElementById(id); if (el) el.textContent = text; } };
 
     // 頁面骨架：先把所有病人的空卡片（已知的床號、姓名、檢驗時間先填好）一次畫出來
-    function pageShell(states, win, scope) {
+    function pageShell(states, win) {
         return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>晨間簡報 ${esc(fmt(win.toMs))}</title>
 <style>
@@ -897,7 +897,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 @media print{body{padding:0;font-size:11px}.card{break-inside:avoid}}
 </style></head><body>
 <h1>晨間簡報</h1>
-<div class="sub">時間窗 ${esc(fmt(win.fromMs))} → ${esc(fmt(win.toMs))}${win.daysBack > 1 ? '（週一，回溯至週五）' : ''} · 檢驗、影像、圖表資料自 ${esc(fmt(win.refFromMs))} 起 · 範圍：${esc(scope)} · 共 ${states.length} 人（依病房列表順序） · <span id="prog">載入中 0/${states.length}</span></div>
+<div class="sub"><span id="prog">載入中 0/${states.length}</span></div>
 <div class="grid">${states.map((r, i) => cardShell(i, r, win)).join('')}</div>
 <script>(${pageScript.toString()})();<\/script></body></html>`;
     }
@@ -919,7 +919,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         const now = nowMs();
         const states = mine.map((p) => newResult(p, win, now));
         w.document.open();
-        w.document.write(pageShell(states, win, '目前病房列表'));
+        w.document.write(pageShell(states, win));
         w.document.close();
         // 「影像 ↗」：點擊時才為該病人開影像列表（邏輯在本頁，不在序列化進新分頁的 pageScript 裡）
         w.document.addEventListener('click', (ev) => {
@@ -979,17 +979,26 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         setText(w, 'prog', `完成（${((nowMs() - wall0) / 1000).toFixed(1)} 秒）`);
     }
 
+    // 共用右下角 dock：同頁多支腳本的浮動按鈕排進同一個容器，避免互相覆蓋（誰先載入誰建立）
+    function getDock() {
+        let d = document.getElementById('ntuh-dock');
+        if (!d) {
+            d = document.createElement('div');
+            d.id = 'ntuh-dock';
+            d.style.cssText = 'position:fixed;right:8px;bottom:64px;z-index:99999;display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none;font:14px system-ui,sans-serif';
+            document.body.appendChild(d);
+        }
+        return d;
+    }
+
     function mount() {
         if (document.getElementById('ntuh-mb-btn')) return;
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position:fixed;right:16px;bottom:64px;z-index:99999;display:flex;gap:6px;font:14px system-ui,sans-serif';
         const btn = document.createElement('button');
         btn.id = 'ntuh-mb-btn';
-        btn.textContent = '☀ 晨間簡報';
-        btn.style.cssText = 'padding:8px 14px;border:0;border-radius:18px;background:#0f766e;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)';
+        btn.textContent = '晨間簡報';
+        btn.style.cssText = 'pointer-events:auto;padding:8px 14px;border:0;border-radius:18px;background:#0f766e;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)';
         btn.onclick = () => run(btn);
-        wrap.append(btn);
-        document.body.appendChild(wrap);
+        getDock().appendChild(btn);
     }
 
     mount();
