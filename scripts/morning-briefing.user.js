@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.0.2
+// @version      1.1.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -716,6 +716,20 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         setText(w, 'prog', `完成（${((nowMs() - wall0) / 1000).toFixed(1)} 秒）`);
     }
 
+    // 嵌入：病房列表原生查詢區（#querycondition）最上方獨立一列，用原生 button 樣式；
+    // 兩支腳本共用同一個 slot（誰先載入誰建立）。找不到錨點回傳 null → 呼叫端退回浮動 dock
+    function getSlot() {
+        let slot = document.getElementById('ntuh-embed-slot');
+        if (slot) return slot;
+        const host = document.getElementById('querycondition');
+        if (!host) return null;
+        slot = document.createElement('div');
+        slot.id = 'ntuh-embed-slot';
+        slot.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px';
+        host.insertBefore(slot, host.firstChild);
+        return slot;
+    }
+
     // 共用右下角 dock：同頁多支腳本的浮動按鈕排進同一個容器，避免互相覆蓋（誰先載入誰建立）
     function getDock() {
         let d = document.getElementById('ntuh-dock');
@@ -731,11 +745,18 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
     function mount() {
         if (document.getElementById('ntuh-mb-btn')) return;
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.id = 'ntuh-mb-btn';
         btn.textContent = '晨間簡報';
-        btn.style.cssText = 'pointer-events:auto;padding:8px 14px;border:0;border-radius:18px;background:#0f766e;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)';
         btn.onclick = () => run(btn);
-        getDock().appendChild(btn);
+        const slot = getSlot();
+        if (slot) {
+            btn.className = 'button';   // 沿用頁面原生按鈕樣式
+            slot.appendChild(btn);
+        } else {
+            btn.style.cssText = 'pointer-events:auto;padding:8px 14px;border:0;border-radius:18px;background:#0f766e;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)';
+            getDock().appendChild(btn);
+        }
     }
 
     mount();

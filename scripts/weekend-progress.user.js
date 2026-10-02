@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.5.0
+// @version      1.5.1
 // @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS）／當日確認草稿（帶入 TPR 與導管）／複製最新 Progress Note 填 stable 後送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -345,6 +345,20 @@
 
     // --- Orchestrator UI ---
 
+    // 嵌入：病房列表原生查詢區（#querycondition）最上方獨立一列，用原生 button 樣式；
+    // 兩支腳本共用同一個 slot（誰先載入誰建立）。找不到錨點回傳 null → 呼叫端退回浮動 dock
+    function getSlot() {
+        let slot = document.getElementById('ntuh-embed-slot');
+        if (slot) return slot;
+        const host = document.getElementById('querycondition');
+        if (!host) return null;
+        slot = document.createElement('div');
+        slot.id = 'ntuh-embed-slot';
+        slot.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px';
+        host.insertBefore(slot, host.firstChild);
+        return slot;
+    }
+
     // 共用右下角 dock：同頁多支腳本的浮動按鈕排進同一個容器，避免互相覆蓋（誰先載入誰建立）
     function getDock() {
         let d = document.getElementById('ntuh-dock');
@@ -361,8 +375,16 @@
         if (document.getElementById('ntuh-batch-fab')) return;
 
         const fab = document.createElement('button');
+        fab.type = 'button';
         fab.id = 'ntuh-batch-fab';
         fab.textContent = '週末病程';
+        fab.onclick = () => { showOptionsDialog(); };
+        const slot = getSlot();
+        if (slot) {
+            fab.className = 'button';   // 沿用頁面原生按鈕樣式
+            slot.appendChild(fab);
+            return;
+        }
         Object.assign(fab.style, {
             pointerEvents: 'auto',
             padding: '8px 14px', background: '#e67e22', color: '#fff',
@@ -372,7 +394,6 @@
         });
         fab.onmouseenter = () => { fab.style.background = '#d35400'; };
         fab.onmouseleave = () => { fab.style.background = '#e67e22'; };
-        fab.onclick = () => { showOptionsDialog(); };
         getDock().appendChild(fab);
     }
 
