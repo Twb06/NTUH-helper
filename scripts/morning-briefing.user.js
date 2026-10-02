@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.1.0
+// @version      1.2.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -146,29 +146,42 @@
         return out;
     }
 
-    // ─── 抗生素（現行處方頁 MedicationV2.aspx）─────────────────
-    // 藥歷圖（Chart.aspx）需要 PersonID，病房列表取不到（不帶會 500）；處方頁只需 SESSION＋AccountIDSE。
-    // 處方表沒有藥品類別欄，只能用學名比對。天數 = 這張醫令的開始日起算（D1＝開始當天）；
-    // 中途改劑量或重開醫令會重新起算，天數可能低估。
-    // 清單來自院內「抗感染藥」全表，已排除慢性／非急性用藥（結核、HIV、B/C 肝、抗瘧、寄生蟲、外用）。
-    // 要增減藥：直接改下面的字串（不分大小寫、子字串比對）。
-    const ABX_NAMES = [
-        // 抗細菌
-        'penicillin', 'amoxicillin', 'ampicillin', 'dicloxacillin', 'oxacillin', 'piperacillin', 'sulbactam', 'tazobactam',
-        'avibactam', 'relebactam', 'cef', 'cephalexin', 'flomoxef', 'ertapenem', 'imipenem', 'meropenem', 'aztreonam',
-        'amikacin', 'gentamicin', 'tobramycin', 'ciprofloxacin', 'levofloxacin', 'moxifloxacin', 'nemonoxacin',
-        'pipemidic', 'azithromycin', 'clarithromycin', 'erythromycin', 'doxycycline', 'minocycline', 'tetracycline',
-        'tigecycline', 'vancomycin', 'teicoplanin', 'daptomycin', 'linezolid', 'colistin', 'polymyxin', 'fosfomycin',
-        'fusidate', 'clindamycin', 'metronidazole', 'co-trimoxazole', 'trimethoprim', 'sulfamethoxazole', 'fidaxomicin',
-        // 抗黴菌（全身性）
-        'fluconazole', 'itraconazole', 'voriconazole', 'posaconazole', 'isavuconazole', 'caspofungin', 'micafungin',
-        'anidulafungin', 'amphotericin', 'flucytosine',
-        // 急性抗病毒
-        'acyclovir', 'ganciclovir', 'oseltamivir', 'peramivir', 'remdesivir', 'foscarnet', 'baloxavir', 'molnupiravir', 'nirmatrelvir',
-    ];
-    const ABX_RE = new RegExp(ABX_NAMES.map((n) => n.replace(/[-]/g, '\\-')).join('|'), 'i');
+    // ─── 抗生素（MedicationHistory/Default.aspx）────────────────
+    // 藥歷頁只需 SESSION＋PersonID；PersonID 從病房病人清單 Cookie 依 AccountIDSE 配對。
+    // GET 取得 WebForms 表單，再 POST「抗生素」查詢；以院方分類為準，不再自行比對藥名。
+    // 查詢所有病人類別以避免「全選」Changed handler 清掉住院勾選，解析時只保留「住」。
+    // 只列已開始、停用日空白或 >= 今天的醫令；停用日只有日期，當天停用仍列入。
+    // D1＝目前這張醫令的開始日，改劑量／重開醫令仍會重新起算。
+    const medicationHistoryUrl = (personId) => location.origin
+        + '/WebApplication/OtherIndependentProj/MedicationHistory/Default.aspx'
+        + `?SESSION=${encodeURIComponent(pageSession())}&PersonID=${encodeURIComponent(personId)}`;
 
-    // 簡單併發閘門：同時最多 max 個任務（晨間簡報每人要開處方頁與管路頁，避免一次灌爆院內主機）
+    // Cookie 的 PatN 值是舊式 escape 編碼（%uXXXX、%XX），不能直接 decodeURIComponent。
+    // 只用中段「院區_類別_PersonID_AccountIDSE」配對，不依 PatN 順序或姓名判斷。
+    function personIdFromPatientList(cookieText, accountId) {
+        const prefix = 'Page_Session_InPatientPatientListSessionKey=';
+        const cookie = cookieText.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
+        if (!cookie) throw new Error('找不到病房病人清單 Cookie');
+        const decode = (value) => value.replace(/%u([0-9a-f]{4})|%([0-9a-f]{2})/gi,
+            (_, unicode, byte) => String.fromCharCode(parseInt(unicode || byte, 16)));
+        let value = cookie.slice(prefix.length);
+        // 容許 Cookie 外層也經過 escape；PatN 值仍各自解碼。
+        if (!/^Pat\d+=/.test(value)) value = decode(value);
+        let personId = '';
+        for (const entry of value.split('&')) {
+            const match = entry.match(/^Pat\d+=(.*)$/);
+            if (!match) continue;
+            const identity = decode(match[1]).split('|')[1]?.split('_');
+            if (!identity || identity.length !== 4 || identity[1] !== 'I'
+                || !identity[2] || identity[3] !== accountId) continue;
+            if (personId && personId !== identity[2]) throw new Error('病房 Cookie 的病人識別不一致');
+            personId = identity[2];
+        }
+        if (!personId) throw new Error('病房 Cookie 找不到此住院帳號的 PersonID');
+        return personId;
+    }
+
+    // 簡單併發閘門：同時最多 max 個任務（藥歷查詢與管路，避免一次灌爆院內主機）
     function makeGate(max) {
         let active = 0;
         const queue = [];
@@ -178,55 +191,98 @@
             try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
         };
     }
-    const rxGate = makeGate(3);   // 處方頁（約 200KB，最重的請求）
+    const rxGate = makeGate(3);   // 藥歷表單查詢
     // 管路一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰）
     const tubeGate = makeGate(1);
 
     const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
     const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
 
-    // 處方表：表頭對欄位（兩張表位置不同）。沿用 prescription-viewer 的判定，處理 DOMParser 文件（無 innerText）
-    function readRxGrid(t, ownOnly) {
-        if (!t || t.rows.length < 2) return [];
-        const col = { start: -1, name: -1, route: -1 };
-        [...t.rows[0].cells].forEach((td, i) => {
-            const h = td.textContent.replace(/\s+/g, '');
-            if (col.start < 0 && h.includes('開始日')) col.start = i;
-            if (col.name < 0 && h.includes('藥名')) col.name = i;
-            if (col.route < 0 && h.includes('途徑')) col.route = i;
-        });
-        if (col.start < 0 || col.name < 0) return [];
-        const cell = (tr, i) => (i >= 0 && tr.cells[i] ? tr.cells[i].textContent.replace(/\s+/g, ' ').trim() : '');
-        const out = [];
-        for (const tr of [...t.rows].slice(1)) {
-            const startRaw = cell(tr, col.start);
-            const rawName = cell(tr, col.name);
-            if (!/^\d{8}$/.test(startRaw) || !rawName) continue;
-            if (ownOnly && !/^\s*\[自備藥\]/.test(rawName)) continue;
-            out.push({ rawName, route: cell(tr, col.route), startMs: new Date(+startRaw.slice(0, 4), +startRaw.slice(4, 6) - 1, +startRaw.slice(6, 8)).getTime() });
+    function medicationHistoryQuery(doc, now) {
+        const form = doc.querySelector('form');
+        const query = doc.querySelector('[id$="_btnQuery"]');
+        const antibiotics = doc.querySelector('[id$="_ckbAntibiotics"]');
+        const date = doc.querySelector('[id$="_txbStartDate"]');
+        const days = doc.querySelector('[id$="_txbDays"]');
+        const patientTypes = [...doc.querySelectorAll('input[id*="_cblPatientType_"]')];
+        if (!form || !query || !antibiotics || !date || !days || !patientTypes.length
+            || !form.querySelector('input[name="__VIEWSTATE"]')) throw new Error('藥歷查詢表單讀不到');
+        const body = new URLSearchParams();
+        // 保留隱藏欄位（包含分段 VIEWSTATE）；不帶預設藥物分類、保存選項或其他按鈕。
+        for (const el of form.querySelectorAll('input')) {
+            if (!el.name || el.disabled || ['submit', 'button', 'checkbox', 'radio'].includes(el.type)) continue;
+            body.append(el.name, el.value);
         }
-        return out;
+        body.set('__EVENTTARGET', '');
+        body.set('__EVENTARGUMENT', '');
+        const d = new Date(now);
+        body.set(date.name, `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())}`);
+        // 查近 2 天的用藥紀錄（包含期間內持續使用、較早開始的醫令）。
+        body.set(days.name, '2');
+        for (const el of patientTypes) body.set(el.name, el.value);
+        const all = doc.querySelector('[id$="_ckbPatientTypeAll"]');
+        if (all) body.set(all.name, all.value);
+        body.set(antibiotics.name, antibiotics.value);
+        body.set(query.name, query.value);
+        return body;
+    }
+
+    function parseMedicationHistory(doc, now) {
+        const table = doc.querySelector('[id$="_grvData"]');
+        if (!table) {
+            const message = txt(doc.querySelector('[id$="_lblMessage"]'));
+            if (message.includes('日期範圍查無勾選範圍的處方資料')) return [];
+            throw new Error('藥歷結果表讀不到');
+        }
+        const headers = [...table.rows[0].cells].map(txt);
+        const start = headers.indexOf('開始日'), stop = headers.indexOf('停用日');
+        const nameCol = headers.indexOf('藥名'), content = headers.indexOf('處方內容');
+        if ([start, stop, nameCol, content].some((i) => i < 0)) throw new Error('藥歷欄位格式改變');
+        const dateMs = (text) => {
+            const m = text.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+            if (!m) throw new Error('藥歷日期格式無法判讀');
+            const d = new Date(+m[1], +m[2] - 1, +m[3]);
+            if (d.getFullYear() !== +m[1] || d.getMonth() !== +m[2] - 1 || d.getDate() !== +m[3]) throw new Error('藥歷日期無效');
+            return d.getTime();
+        };
+        const today = dayStart(now), out = [];
+        for (const tr of [...table.rows].slice(1)) {
+            if (txt(tr.cells[0]) !== '住') continue;
+            if (tr.cells.length !== headers.length) throw new Error('藥歷資料列格式改變');
+            const startMs = dateMs(txt(tr.cells[start]));
+            const stopText = txt(tr.cells[stop]);
+            if (startMs > today || (stopText && dateMs(stopText) < today)) continue;
+            const rawName = txt(tr.cells[nameCol]);
+            if (!rawName) throw new Error('藥歷藥名缺漏');
+            const prescription = txt(tr.cells[content]);
+            const route = (prescription.match(/\b(IV|IF|PO|IM|SC|SQ|TOPIC|INHL)\b/i) || [])[1] || '';
+            out.push({ name: rawName.split('(')[0].trim().slice(0, 40), route, prescription, startMs, day: dayNo(startMs, now) });
+        }
+        return out.sort((a, b) => a.startMs - b.startMs);
     }
 
     async function fetchAbx(p, now) {
         return rxGate(async () => {
-            const url = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + 'MedicationV2.aspx'
-                + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}&Hosp=T0&Seed=&EMRPop=Y`;
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 20000);
+            const timer = setTimeout(() => ctrl.abort(), 45000);
             try {
-                const res = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const doc = NTUHAsmx.parseHtml(await res.text());
-                // id 前綴會變（探測時是用尾綴找到的），一律用尾綴選取器
-                const general = doc.querySelector('[id$="OrderBox_dgrPhrOrder"]');
-                const own = doc.querySelector('[id$="OrderDisplayBox_dgrPhrOrder"]');
-                if (!general && !own) throw new Error('處方表讀不到');
-                const rows = readRxGrid(general, false).concat(readRxGrid(own, true));
-                return rows.filter((r) => ABX_RE.test(r.rawName)).map((r) => {
-                    const name = r.rawName.replace(/^\s*\[自備藥\]\s*/, '').split('(')[0].trim() || r.rawName.slice(0, 30);
-                    return { name: name.slice(0, 40), route: r.route, startMs: r.startMs, day: dayNo(r.startMs, now) };
-                }).sort((a, b) => a.startMs - b.startMs);
+                const pid = personIdFromPatientList(document.cookie, p.caseno);
+                const url = medicationHistoryUrl(pid);
+                const initial = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
+                if (!initial.ok) throw new Error('HTTP ' + initial.status);
+                let doc = NTUHAsmx.parseHtml(await initial.text());
+                // 已保存的「全部藥物」選項若觸發 Changed handler，可能清掉抗生素勾選。
+                // 使用回傳的新表單再送一次；仍未套用分類則報錯，不能把其他藥當抗生素。
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    const body = medicationHistoryQuery(doc, now);
+                    const res = await fetch(url, { method: 'POST', body, credentials: 'same-origin', signal: ctrl.signal });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    doc = NTUHAsmx.parseHtml(await res.text());
+                    const selected = [...doc.querySelectorAll('input[type="checkbox"]:checked')]
+                        .filter((el) => /_ckb/.test(el.id) && !/_ckbPatientTypeAll$/.test(el.id));
+                    if (selected.length === 1 && selected[0].id.endsWith('_ckbAntibiotics')) return parseMedicationHistory(doc, now);
+                }
+                throw new Error('藥歷未套用抗生素分類');
             } catch (e) {
                 throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
             } finally { clearTimeout(timer); }
@@ -319,7 +375,7 @@
         ]);
     }
 
-    // 階段二（重）：抗生素（處方頁約 1.8 秒、200KB）、管路（頁面＋handler 約 0.7 秒，且必須一次一位）
+    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）
     async function assessHeavy(res, now, onUpdate) {
         const p = res.p;
         const job = jobRunner(res, onUpdate);
@@ -498,7 +554,7 @@ ${dataTable(series)}</div>`;
 
     // ─── 卡片各區塊（每個區塊有自己的 id，抓完一個來源就只更新那一格）──────────
     const PENDING_HTML = '<span class="muted">抓取中…</span>';
-    const dayTag = (x, cls) => `<span class="tag${cls}">${esc(x.name)}${x.route ? ' ' + esc(x.route) : ''} D${x.day}<small class="muted"> ${new Date(x.startMs).getMonth() + 1}/${new Date(x.startMs).getDate()} 起</small></span>`;
+    const dayTag = (x, cls) => `<span class="tag${cls}"${x.prescription ? ` title="${esc(x.prescription)}"` : ''}>${esc(x.name)}${x.route ? ' ' + esc(x.route) : ''} D${x.day}<small class="muted"> ${new Date(x.startMs).getMonth() + 1}/${new Date(x.startMs).getDate()} 起</small></span>`;
 
     function renderVit(r, win) {
         if (r.pending.has('vitals')) return '';
@@ -542,34 +598,17 @@ ${dataTable(series)}</div>`;
         return [['護理紀錄', u.nursing], ['交班', u.handover]]
             .map(([t, url]) => `<a class="tag" href="${esc(url)}" target="_blank" rel="noopener">${t} ↗</a>`).join('');
     }
-    // ─── 影像列表（PACSImageShowList.aspx）：點擊時才為「這一位」病人取得 PersonID ─────────────
-    // 這頁要 PersonID＋Seed（Seed 可留空；data-helper 亦同），但病房列表取不到 PersonID（身分證字號）。
-    // 折衷：不批次、不預先取——使用者點「影像」那一下，才 fetch 這位病人的處方頁（伺服器已把 PersonID 填在隱藏欄位
-    // hfPersonID），讀出後只放在函式內的區域變數、用來組網址並導向列表；不顯示、不存、不寫進頁面。
-    // 網址列會出現 PersonID，與使用者平常從 HIS 點進去相同。
-    async function openPacsList(w, p) {
-        const tab = w.open('', '_blank');   // 用結果分頁自己的 window，點擊的使用者動作才算數
-        if (!tab) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
-        const say = (msg) => {
-            try { tab.document.open(); tab.document.write(`<!doctype html><meta charset="utf-8"><title>影像列表</title><p style="font:14px system-ui;padding:16px">${esc(msg)}</p>`); tab.document.close(); } catch { /* 分頁已被關掉 */ }
-        };
-        say('正在開啟影像列表…');
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 20000);
+    // 影像標題連結：點擊時從病房 Cookie 取得 PersonID，再開影像列表。
+    function openPacsList(w, p) {
         try {
-            const url = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '') + 'MedicationV2.aspx'
-                + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}&Hosp=T0&Seed=&EMRPop=Y`;
-            const res = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            const doc = NTUHAsmx.parseHtml(await res.text());
-            const field = doc.querySelector('[id$="hfPersonID"]');
-            const pid = field ? field.value.trim() : '';
-            if (!pid) throw new Error('取不到病人識別（頁面格式可能改了）');
-            tab.location.href = location.origin + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
+            const pid = personIdFromPatientList(document.cookie, p.caseno);
+            const url = location.origin + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
                 + `?PersonID=${encodeURIComponent(pid)}&Seed=`;
+            const tab = w.open(url, '_blank');
+            if (!tab) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
         } catch (e) {
-            say('無法開啟影像列表：' + (e.name === 'AbortError' ? '逾時' : e.message) + '。請改從病人頁面進入。');
-        } finally { clearTimeout(timer); }
+            alert('無法開啟影像列表：' + e.message + '。請改從病人頁面進入。');
+        }
     }
 
     const titleLink = (text, url) => `<a href="${esc(url)}" target="_blank" rel="noopener" title="開啟${esc(text)}頁（新分頁）">${esc(text)} ↗</a>`;
@@ -585,7 +624,7 @@ ${dataTable(series)}</div>`;
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k">管路</span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
 <div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div id="c${i}-lab">${renderLab(r)}</div></div>
-<div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表（點擊時才取得這位病人的識別，約 2 秒）">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
+<div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
 <div id="c${i}-charts">${renderCharts(r, win)}</div></section>`;
     }
@@ -658,7 +697,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.open();
         w.document.write(pageShell(states, win));
         w.document.close();
-        // 「影像 ↗」：點擊時才為該病人開影像列表（邏輯在本頁，不在序列化進新分頁的 pageScript 裡）
+        // 影像：點擊時為該病人開啟來源頁（邏輯在原頁）。
         w.document.addEventListener('click', (ev) => {
             const a = ev.target.closest && ev.target.closest('a[data-pacs]');
             if (!a) return;
@@ -716,20 +755,6 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         setText(w, 'prog', `完成（${((nowMs() - wall0) / 1000).toFixed(1)} 秒）`);
     }
 
-    // 嵌入：病房列表原生查詢區（#querycondition）最上方獨立一列，用原生 button 樣式；
-    // 兩支腳本共用同一個 slot（誰先載入誰建立）。找不到錨點回傳 null → 呼叫端退回浮動 dock
-    function getSlot() {
-        let slot = document.getElementById('ntuh-embed-slot');
-        if (slot) return slot;
-        const host = document.getElementById('querycondition');
-        if (!host) return null;
-        slot = document.createElement('div');
-        slot.id = 'ntuh-embed-slot';
-        slot.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px';
-        host.insertBefore(slot, host.firstChild);
-        return slot;
-    }
-
     // 共用右下角 dock：同頁多支腳本的浮動按鈕排進同一個容器，避免互相覆蓋（誰先載入誰建立）
     function getDock() {
         let d = document.getElementById('ntuh-dock');
@@ -749,10 +774,13 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         btn.id = 'ntuh-mb-btn';
         btn.textContent = '晨間簡報';
         btn.onclick = () => run(btn);
-        const slot = getSlot();
-        if (slot) {
-            btn.className = 'button';   // 沿用頁面原生按鈕樣式
-            slot.appendChild(btn);
+        const anchor = document.getElementById('NTUHWeb1_QueryInPatientPersonAccountControl1_ButtonBedPatientHistory')
+            || document.querySelector('[id$="QueryInPatientPersonAccountControl1_ButtonBedPatientHistory"]');
+        if (anchor) {
+            btn.className = anchor.className;
+            btn.style.cssText = anchor.style.cssText;
+            anchor.insertAdjacentElement('afterend', btn);
+            btn.before(document.createTextNode(' '));
         } else {
             btn.style.cssText = 'pointer-events:auto;padding:8px 14px;border:0;border-radius:18px;background:#0f766e;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)';
             getDock().appendChild(btn);
