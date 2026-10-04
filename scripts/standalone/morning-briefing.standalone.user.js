@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.2.0-standalone
+// @version      1.3.0-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -696,6 +696,8 @@ function isOnOxygen(inside) {
     ];
     const hm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
 
+    const TIP_G = '<g class="tt" display="none" pointer-events="none"><rect fill="yellow" stroke="black" rx="2" ry="2"/><text x="5" y="18"><tspan class="t1" x="5" font-family="Arial" font-weight="bold" font-size="15"> </tspan><tspan class="t2" x="5" dy="1.2em" font-weight="bold" font-size="17" fill="blue"> </tspan></text></g>';
+
     function hospVitals(series, win) {
         const span = win.toMs - win.fromMs;
         const X = (ms) => +(HV.X0 + ((ms - win.fromMs) / span) * (HV.X1 - HV.X0)).toFixed(2);
@@ -761,15 +763,58 @@ function isOnOxygen(inside) {
             }
             s += '</g>';
         }
-        s += `<g class="tt" display="none" pointer-events="none"><rect fill="yellow" stroke="black" rx="2" ry="2"/><text x="5" y="18"><tspan class="t1" x="5" font-family="Arial" font-weight="bold" font-size="15"> </tspan><tspan class="t2" x="5" dy="1.2em" font-weight="bold" font-size="17" fill="blue"> </tspan></text></g></svg>`;
+        s += TIP_G + '</svg>';
         return s;
+    }
+
+    // ─── SpO2 一行（放在生命徵象圖與數據表之間，時間軸與上方圖完全對齊）──────────────
+    // 每次量測一個數字，顏色依 SpO2 高低（≥96／94–95／92–93／≤91；這是常用切點，不是 NEWS 計分）；
+    // 給氧期間整段加藍底，開頭標裝置與流量（流量有變就標 2→3L）；未量測的時間留空。滑過數字顯示時間與給氧。
+    function spo2Row(series, win) {
+        const pts = series.filter((o) => Number.isFinite(o.SpO2));
+        if (!pts.length) return '';
+        const span = win.toMs - win.fromMs;
+        const X = (ms) => +(HV.X0 + ((ms - win.fromMs) / span) * (HV.X1 - HV.X0)).toFixed(2);
+        const W = HV.W, H = 46, Y0 = 3, Y1 = 29;
+        const color = (v) => (v >= 96 ? '#27500A' : v >= 94 ? '#854F0B' : v >= 92 ? '#b4531a' : '#a32d2d');
+        const o2Text = (o) => { const x = NTUHNews2.oxygenInfo(o.inside); return [x.device, x.flow !== null ? x.flow + 'L' : ''].filter(Boolean).join(' ') || '給氧'; };
+        const half = 40; // 給氧底色往前後延伸的上限（px），避免跨過很長的未量測空檔
+        let s = `<svg class="hsvg sp" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="SpO2">`;
+        s += `<rect width="${W}" height="${H}" fill="#fffffd"/>`
+            + `<text x="4" y="21" style="fill:#444;font-size:13px">SpO₂ %</text>`
+            + `<rect x="${HV.X0}" y="${Y0}" width="${HV.X1 - HV.X0}" height="${Y1 - Y0}" rx="3" fill="#fffffd" stroke="#c3c2b7" stroke-width="1"/>`;
+        // 給氧期間：連續的「給氧中」量測合成一段，底色從第一點往前半格到最後一點往後半格
+        for (let i = 0; i < pts.length; i++) {
+            if (!pts[i].onOxygen) continue;
+            let j = i;
+            while (j + 1 < pts.length && pts[j + 1].onOxygen) j++;
+            const left = Math.max(HV.X0, i > 0 ? Math.max((X(pts[i - 1].ms) + X(pts[i].ms)) / 2, X(pts[i].ms) - half) : X(pts[i].ms) - half);
+            const right = Math.min(HV.X1, j + 1 < pts.length ? Math.min((X(pts[j].ms) + X(pts[j + 1].ms)) / 2, X(pts[j].ms) + half) : X(pts[j].ms) + half);
+            s += `<rect x="${left.toFixed(1)}" y="${Y0}" width="${Math.max(2, right - left).toFixed(1)}" height="${Y1 - Y0}" fill="#b5d4f4" opacity=".65"/>`;
+            const f0 = NTUHNews2.oxygenInfo(pts[i].inside), f1 = NTUHNews2.oxygenInfo(pts[j].inside);
+            const label = (f0.flow !== null && f1.flow !== null && f0.flow !== f1.flow)
+                ? `${f0.device || '給氧'} ${f0.flow}→${f1.flow}L` : o2Text(pts[i]);
+            s += `<text x="${(left + 3).toFixed(1)}" y="${H - 6}" style="fill:#185FA5;font-size:12px">${esc(label)}</text>`;
+            i = j;
+        }
+        // 數字：與前一個太近（< 26px）就只畫小圓點，避免重疊；每個點都有可滑過的感應區
+        let lastX = -1e9;
+        for (const o of pts) {
+            const x = X(o.ms), c = color(o.SpO2), bold = o.SpO2 <= 93 ? 700 : 500;
+            if (x - lastX >= 26) { s += `<text x="${x}" y="21" text-anchor="middle" style="fill:${c};font-size:14px;font-weight:${bold}">${o.SpO2}</text>`; lastX = x; }
+            else s += `<circle cx="${x}" cy="${(Y0 + Y1) / 2}" r="2.5" fill="${c}"/>`;
+            s += `<circle class="hit" cx="${x}" cy="${(Y0 + Y1) / 2}" r="10" data-t="${esc(hm(o.ms))}" data-v="${o.SpO2}%${o.onOxygen ? '（' + esc(o2Text(o)) + '）' : '（室內空氣）'}"/>`;
+        }
+        return s + TIP_G + '</svg>';
     }
 
     function chartsHtml(r, win) {
         const series = r.chartSeries;
         if (!series || !series.length) return '';
         // 圖固定顯示（不收合）；標題「生命徵象 ↗」在卡片骨架（cardShell）裡，數據表仍可展開
-        return `<div class="charts">${hospVitals(series, { fromMs: win.refFromMs, toMs: win.toMs })}
+        const axis = { fromMs: win.refFromMs, toMs: win.toMs };
+        return `<div class="charts">${hospVitals(series, axis)}
+${spo2Row(series, axis)}
 ${dataTable(series)}</div>`;
     }
 
@@ -928,7 +973,7 @@ th{font-size:12px;color:var(--mut)}
 .pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
 .charts{margin-top:2px}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
-svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}
+svg.hsvg{max-width:100%;height:auto;display:block;margin:2px 0 8px}svg.hsvg.sp{margin:-6px 0 8px}
 svg.hsvg .ax{cursor:pointer}svg.hsvg .ax text{stroke-width:.35;font-size:13px}svg.hsvg .ax line,svg.hsvg .ser line{stroke-width:1}
 svg.hsvg .ax.off{fill:lightgray!important;stroke:lightgray!important}svg.hsvg .ser.off{visibility:hidden}
 svg.hsvg .ser circle{stroke:none}svg.hsvg .ser text.na{font-size:12px;stroke-width:.4}
