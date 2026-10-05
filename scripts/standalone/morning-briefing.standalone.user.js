@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.4.1-standalone
+// @version      1.5.0-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -552,6 +552,44 @@ function isOnOxygen(inside) {
         });
     }
 
+    // ─── 檢驗數值（OuterData lab，點開下拉才為該病人載入）────────────────────────────
+    // 需要 PersonId（從病房 Cookie 取，只在記憶體內用、不顯示、不存）。回傳一張 tblLabList，每列＝一個檢驗結果；
+    // 畫面上只有 4 個可見欄（日期 MMDD、類別、項目、科室），數值在後面 5 個隱藏欄：
+    // [4] 完整日期 yyyy/MM/dd　[5] 類別　[6] 數值　[7] 項目　[8] 單位（新竹實測 2026-10-05，lab-shape-probe）。
+    // 日期只到「日」（沒有時分），所以起點以日為單位；資料沒有異常標記也沒有參考範圍 → 只顯示值，不自己判斷高低。
+    // 同一筆可能重複出現（例如血液培養），以（日期、類別、項目、數值、單位）去重。
+    function parseLabList(html, sinceMs) {
+        const doc = NTUHAsmx.parseHtml(html);
+        const table = doc.querySelector('[id$="tblLabList"]');
+        if (!table) throw new Error('檢驗表讀不到');
+        const headers = [...table.rows[0].cells].map(txt);
+        if (!['日期', '項目'].every((h) => headers.includes(h))) throw new Error('檢驗欄位格式改變');
+        const since = dayStart(sinceMs);
+        const seen = new Set(), items = [];
+        let skipped = 0, minMs = Infinity, maxMs = -Infinity;
+        for (const tr of [...table.rows].slice(1)) {
+            const c = tr.cells;
+            const m = c.length >= 9 && txt(c[4]).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+            if (!m) { skipped += 1; continue; }   // 不能靜默丟掉：回報有幾列沒顯示
+            const dateMs = new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+            minMs = Math.min(minMs, dateMs); maxMs = Math.max(maxMs, dateMs);
+            const unit = txt(c[8]);
+            const row = { dateMs, category: txt(c[5]), value: txt(c[6]), item: txt(c[7]) || txt(c[2]), unit: unit === '*' ? '' : unit };
+            const key = [dateMs, row.category, row.item, row.value, row.unit].join('|');
+            if (seen.has(key)) continue;
+            seen.add(key);
+            if (dateMs >= since) items.push(row);
+        }
+        return { items, skipped, minMs, maxMs, since };
+    }
+
+    async function fetchLab(p, win) {
+        const pid = personIdFromPatientList(document.cookie, p.caseno);
+        const html = await NTUHAsmx.outerData('lab', { context: { ...ctxOf(p), PersonId: pid }, timeoutMs: OUTER_TIMEOUT_MS });
+        if (!html) return { items: [], skipped: 0, empty: true };
+        return parseLabList(html, win.refFromMs);
+    }
+
     // ─── 管路（CatheterCare_Handler.aspx）───────────────────────
     // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
     // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
@@ -925,6 +963,46 @@ ${dataTable(series)}</div>`;
         }
     }
 
+    // 檢驗數值下拉的內容：依日期（新→舊）分組，再依類別；數值很長（例如培養結果）就獨立一行
+    function renderLabBody(d, win) {
+        if (d.empty) return '<span class="muted">伺服器沒有回傳檢驗資料。</span>';
+        const md = (ms) => { const x = new Date(ms); return `${x.getMonth() + 1}/${x.getDate()}`; };
+        const warn = d.skipped ? `<div class="err">⚠ 有 ${d.skipped} 列格式不符、沒有顯示（請手動確認）</div>` : '';
+        const range = Number.isFinite(d.minMs) ? `資料窗口 ${md(d.minMs)}–${md(d.maxMs)}` : '';
+        if (!d.items.length) return `${warn}<span class="muted">${md(win.refFromMs)} 起沒有檢驗數值。${range}</span>`;
+        const byDate = new Map();
+        for (const it of d.items) {
+            if (!byDate.has(it.dateMs)) byDate.set(it.dateMs, new Map());
+            const cats = byDate.get(it.dateMs);
+            if (!cats.has(it.category)) cats.set(it.category, []);
+            cats.get(it.category).push(it);
+        }
+        const chip = (it) => (it.value.length > 28
+            ? `<div class="lbl"><b>${esc(it.item)}</b> ${esc(it.value)}</div>`
+            : `<span class="lv"><b>${esc(it.item)}</b> ${esc(it.value)}${it.unit ? `<small class="muted"> ${esc(it.unit)}</small>` : ''}</span>`);
+        const html = [...byDate.keys()].sort((a, b) => b - a).map((ms) => `<div class="lbd"><b>${md(ms)}</b>${
+            [...byDate.get(ms)].map(([cat, list]) => `<div class="lbc"><span class="muted">${esc(cat)}</span> ${list.map(chip).join('')}</div>`).join('')}</div>`).join('');
+        return `${warn}${html}<div class="muted nov">資料來源未提供異常標記與參考範圍，僅顯示數值。${range}。</div>`;
+    }
+
+    // 第一次展開才為該病人載入；失敗可收合再展開重試
+    async function loadLab(w, i, r, win) {
+        const body = w.document.getElementById(`c${i}-labbody`);
+        const sum = body && body.parentNode.querySelector('summary');
+        r.labState = 'loading';
+        if (body) body.innerHTML = '<span class="muted">載入中…</span>';
+        try {
+            const d = await fetchLab(r.p, win);
+            if (w.closed) return;
+            body.innerHTML = renderLabBody(d, win);
+            if (sum) sum.textContent = `檢驗數值（${d.items.length} 項）`;
+            r.labState = 'done';
+        } catch (e) {
+            r.labState = 'error';
+            if (!w.closed && body) body.innerHTML = `<div class="err">⚠ 檢驗數值抓取失敗：${esc(e.name === 'AbortError' ? '逾時' : e.message)}（收合再展開可重試）</div>`;
+        }
+    }
+
     const titleLink = (text, url) => `<a href="${esc(url)}" target="_blank" rel="noopener" title="開啟${esc(text)}頁（新分頁）">${esc(text)} ↗</a>`;
     const renderCharts = (r, win) => (r.pending.has('vitals') ? '<div class="muted nov">生命徵象圖：抓取中…</div>' : chartsHtml(r, win));
 
@@ -937,7 +1015,7 @@ ${dataTable(series)}</div>`;
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k"><a href="${esc(u.cath)}" target="ntuh-catheter" data-cath="1" title="開啟管路頁（固定開在同一個分頁；簡報載入完成後才能開）">管路 ↗</a></span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
-<div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div id="c${i}-lab">${renderLab(r)}</div></div>
+<div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div><div id="c${i}-lab">${renderLab(r)}</div><details class="lb" data-lab="${i}"><summary>檢驗數值（點開載入）</summary><div id="c${i}-labbody"></div></details></div></div>
 <div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
 <div id="c${i}-charts">${renderCharts(r, win)}</div></section>`;
@@ -976,6 +1054,7 @@ th{font-size:12px;color:var(--mut)}
 .hd{font-size:15px;margin-bottom:2px}.hd .lk{margin-left:6px}.hd .lk .tag{margin:0 3px 0 0}
 .kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:4.8em;font-size:12px;color:var(--mut)}
 .k a,.mt a{color:inherit;text-decoration:none}.k a:hover,.mt a:hover{text-decoration:underline}
+.lb{margin-top:2px}.lb>summary{cursor:pointer;font-size:12px;color:var(--mut)}.lbd{margin-top:4px;font-size:12px}.lbc{margin:1px 0 1px 10px}.lv{display:inline-block;margin:0 10px 2px 0}.lv b{font-weight:500}.lbl{margin:1px 0}
 .pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
 .charts{margin-top:2px}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
@@ -1011,6 +1090,13 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.open();
         w.document.write(pageShell(states, win));
         w.document.close();
+        // 檢驗數值：第一次展開才為該病人載入（toggle 不會冒泡，要用 capture）
+        w.document.addEventListener('toggle', (ev) => {
+            const dt = ev.target;
+            if (!dt.matches || !dt.matches('details.lb[data-lab]') || !dt.open) return;
+            const i = +dt.getAttribute('data-lab'), r = states[i];
+            if (r && r.labState !== 'loading' && r.labState !== 'done') loadLab(w, i, r, win);
+        }, true);
         let loading = true;   // 簡報載入中（finally 之後才會變 false）
         // 影像：點擊時為該病人開啟來源頁（邏輯在原頁）。管路：載入中先擋下，避免互相干擾。
         w.document.addEventListener('click', (ev) => {
