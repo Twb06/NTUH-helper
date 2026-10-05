@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.3.1-standalone
+// @version      1.4.1-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -886,8 +886,10 @@ ${dataTable(series)}</div>`;
         }).join('');
     }
     // 每張卡的快速連結（新分頁）。只用「SESSION＋AccountIDSE（或 ChartNo）」就能開的頁面（依 progress-note-data-helper
-    // 現有網址）；SESSION 只放在 href，不顯示、不存。不放藥歷圖／PACS（需要 PersonID）與管路頁
-    // （CatheterCare 的「目前病人」是伺服器端狀態，同時開兩位病人的頁面再操作，可能看到別人的資料）。
+    // 現有網址）；SESSION 只放在 href，不顯示、不存。藥歷圖／影像列表需要 PersonID，不在這裡組（影像在點擊時才組）。
+    // 管路頁（CatheterCare）的「目前病人」是伺服器端狀態：同時開兩位病人的頁面再回去操作，可能看到（甚至寫入）別人的資料。
+    // 所以管路連結：① 固定開在同一個具名分頁（target=ntuh-catheter，同一時間只會有一個管路分頁）；
+    // ② 簡報還在載入時點它會先擋下（我們串行讀管路，插進一個頁面載入會互相干擾）。
     function pageUrls(p) {
         const ses = encodeURIComponent(pageSession());
         const acct = encodeURIComponent(p.caseno);
@@ -898,6 +900,7 @@ ${dataTable(series)}</div>`;
             nursing: `${base}Nursing/NursingProgressNote.aspx?SESSION=${ses}&AccountIDSE=${acct}`,
             handover: `${base}Ward/OffDutyNurV2.aspx?SESSION=${ses}&InQuerySortMode=QByEmp&AccountIDSE=${acct}&Type=Nur`,
             rx: `${base}Ward/MedicationV2.aspx?SESSION=${ses}&PatClass=I&AccountIDSE=${acct}&Hosp=T0&Seed=&EMRPop=Y`,
+            cath: `${base}Nursing/CatheterCare.aspx?session=${ses}&AccountIDSE=${acct}&PatClass=I`,
         };
     }
     // 標題列只放護理紀錄、交班；檢驗、生命徵象圖、處方的連結分別放在各自區塊的標題裡（見 cardShell）
@@ -910,8 +913,11 @@ ${dataTable(series)}</div>`;
     function openPacsList(w, p) {
         try {
             const pid = personIdFromPatientList(document.cookie, p.caseno);
+            // 帶 SESSION：不帶時新分頁會被要求登入（與檢驗頁同樣的現象；實測帶上後正常，機制未確認）。
+            // SESSION 只放在 href，不顯示、不存。
+            const ses = pageSession();
             const url = location.origin + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
-                + `?PersonID=${encodeURIComponent(pid)}&Seed=`;
+                + `?${ses ? 'SESSION=' + encodeURIComponent(ses) + '&' : ''}PersonID=${encodeURIComponent(pid)}&Seed=`;
             const tab = w.open(url, '_blank');
             if (!tab) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
         } catch (e) {
@@ -930,7 +936,7 @@ ${dataTable(series)}</div>`;
 <div id="c${i}-vit">${renderVit(r, win)}</div>
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
-<div class="kv"><span class="k">管路</span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
+<div class="kv"><span class="k"><a href="${esc(u.cath)}" target="ntuh-catheter" data-cath="1" title="開啟管路頁（固定開在同一個分頁；簡報載入完成後才能開）">管路 ↗</a></span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
 <div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div id="c${i}-lab">${renderLab(r)}</div></div>
 <div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
@@ -1005,8 +1011,11 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.open();
         w.document.write(pageShell(states, win));
         w.document.close();
-        // 影像：點擊時為該病人開啟來源頁（邏輯在原頁）。
+        let loading = true;   // 簡報載入中（finally 之後才會變 false）
+        // 影像：點擊時為該病人開啟來源頁（邏輯在原頁）。管路：載入中先擋下，避免互相干擾。
         w.document.addEventListener('click', (ev) => {
+            const c = ev.target.closest && ev.target.closest('a[data-cath]');
+            if (c && loading) { ev.preventDefault(); alert('簡報還在載入管路，請等頁首顯示「完成」後再開管路頁（避免兩邊互相干擾）。'); return; }
             const a = ev.target.closest && ev.target.closest('a[data-pacs]');
             if (!a) return;
             ev.preventDefault();
@@ -1054,6 +1063,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
             };
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));
         } finally {
+            loading = false;
             btn.disabled = false;
             btn.style.background = idleBg;
             btn.style.cursor = 'pointer';
