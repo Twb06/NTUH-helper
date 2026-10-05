@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.1
+// @version      1.5.2
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -146,15 +146,11 @@
         return out;
     }
 
-    // ─── 抗生素（MedicationHistory/Default.aspx）────────────────
-    // 藥歷頁只需 SESSION＋PersonID；PersonID 從病房病人清單 Cookie 依 AccountIDSE 配對。
-    // GET 取得 WebForms 表單，再 POST「抗生素」查詢；以院方分類為準，不再自行比對藥名。
-    // 查詢所有病人類別以避免「全選」Changed handler 清掉住院勾選，解析時只保留「住」。
-    // 只列已開始、停用日空白或 >= 今天的醫令；停用日只有日期，當天停用仍列入。
-    // D1＝目前這張醫令的開始日，改劑量／重開醫令仍會重新起算。
-    const medicationHistoryUrl = (personId) => location.origin
-        + '/WebApplication/OtherIndependentProj/MedicationHistory/Default.aspx'
-        + `?SESSION=${encodeURIComponent(pageSession())}&PersonID=${encodeURIComponent(personId)}`;
+    // ─── 抗生素（AsynchronousProcessHandler.ashx）────────────
+    // 在 OpenWard 直接查當日一般藥物，不載入給藥頁或藥歷表單。
+    // ATC：J01 抗細菌、J02 抗黴菌、J04 抗分枝桿菌、J05 抗病毒；不包含疫苗／免疫球蛋白。
+    // PersonID 仍從病房清單 Cookie 依住院帳號配對。D1 是這張醫令的開始日。
+    const ANTIINFECTIVE_ATC = ['J01', 'J02', 'J04', 'J05'];
 
     // Cookie 的 PatN 值是舊式 escape 編碼（%uXXXX、%XX），不能直接 decodeURIComponent。
     // 只用中段「院區_類別_PersonID_AccountIDSE」配對，不依 PatN 順序或姓名判斷。
@@ -181,7 +177,7 @@
         return personId;
     }
 
-    // 簡單併發閘門：同時最多 max 個任務（藥歷查詢與管路，避免一次灌爆院內主機）
+    // 簡單併發閘門：同時最多 max 個任務（給藥資料查詢與管路，避免一次灌爆院內主機）
     function makeGate(max) {
         let active = 0;
         const queue = [];
@@ -191,72 +187,70 @@
             try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
         };
     }
-    const rxGate = makeGate(3);   // 藥歷表單查詢
+    const rxGate = makeGate(3);   // 給藥 XML 查詢
     // 管路一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰）
     const tubeGate = makeGate(1);
 
     const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
     const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
 
-    function medicationHistoryQuery(doc, now) {
-        const form = doc.querySelector('form');
-        const query = doc.querySelector('[id$="_btnQuery"]');
-        const antibiotics = doc.querySelector('[id$="_ckbAntibiotics"]');
-        const date = doc.querySelector('[id$="_txbStartDate"]');
-        const days = doc.querySelector('[id$="_txbDays"]');
-        const patientTypes = [...doc.querySelectorAll('input[id*="_cblPatientType_"]')];
-        if (!form || !query || !antibiotics || !date || !days || !patientTypes.length
-            || !form.querySelector('input[name="__VIEWSTATE"]')) throw new Error('藥歷查詢表單讀不到');
-        const body = new URLSearchParams();
-        // 保留隱藏欄位（包含分段 VIEWSTATE）；不帶預設藥物分類、保存選項或其他按鈕。
-        for (const el of form.querySelectorAll('input')) {
-            if (!el.name || el.disabled || ['submit', 'button', 'checkbox', 'radio'].includes(el.type)) continue;
-            body.append(el.name, el.value);
-        }
-        body.set('__EVENTTARGET', '');
-        body.set('__EVENTARGUMENT', '');
+    function medicationQueryUrl(p, personId, now) {
         const d = new Date(now);
-        body.set(date.name, `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())}`);
-        // 查近 2 天的用藥紀錄（包含期間內持續使用、較早開始的醫令）。
-        body.set(days.name, '2');
-        for (const el of patientTypes) body.set(el.name, el.value);
-        const all = doc.querySelector('[id$="_ckbPatientTypeAll"]');
-        if (all) body.set(all.name, all.value);
-        body.set(antibiotics.name, antibiotics.value);
-        body.set(query.name, query.value);
-        return body;
+        const url = new URL('AsynchronousProcessHandler.ashx', location.href);
+        url.search = new URLSearchParams({
+            Mode: 'Query', AccountIDSE: p.caseno, Personid: personId,
+            Year: String(d.getFullYear()), Month: String(d.getMonth() + 1), Day: String(d.getDate()),
+            SESSION: pageSession(),
+        }).toString();
+        return url.href;
     }
 
-    function parseMedicationHistory(doc, now) {
-        const table = doc.querySelector('[id$="_grvData"]');
-        if (!table) {
-            const message = txt(doc.querySelector('[id$="_lblMessage"]'));
-            if (message.includes('日期範圍查無勾選範圍的處方資料')) return [];
-            throw new Error('藥歷結果表讀不到');
+    function parseMedicationQuery(xmlText, p, now) {
+        const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+        if (doc.querySelector('parsererror') || doc.documentElement.tagName !== 'ObjectSerializer') {
+            throw new Error('給藥查詢未回傳有效 XML');
         }
-        const headers = [...table.rows[0].cells].map(txt);
-        const start = headers.indexOf('開始日'), stop = headers.indexOf('停用日');
-        const nameCol = headers.indexOf('藥名'), content = headers.indexOf('處方內容');
-        if ([start, stop, nameCol, content].some((i) => i < 0)) throw new Error('藥歷欄位格式改變');
-        const dateMs = (text) => {
-            const m = text.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
-            if (!m) throw new Error('藥歷日期格式無法判讀');
-            const d = new Date(+m[1], +m[2] - 1, +m[3]);
-            if (d.getFullYear() !== +m[1] || d.getMonth() !== +m[2] - 1 || d.getDate() !== +m[3]) throw new Error('藥歷日期無效');
+        const field = (node, tag) => txt(node.querySelector(tag));
+        const drugs = [...doc.querySelectorAll('Today > ActiveDrugs')];
+        if (field(doc, 'GeneralDrugsNo') !== String(drugs.length)) throw new Error('給藥查詢醫令數量不符');
+        // 驗證每一筆醫令的住院帳號，避免把不同病人的回應放到此卡片。
+        if (drugs.some((drug) => field(drug, 'AccountIdse') !== p.caseno)) throw new Error('給藥查詢病人不符');
+        const orderTime = (drug, prefix) => {
+            // 此 endpoint 的 Start/EndDateTime 常為 0001 預設值，需改讀顯示欄位。
+            const value = field(drug, prefix + 'DateTime');
+            const display = field(drug, prefix + 'DateTimeShowHH');
+            const special = field(drug, 'SpecialOrder');
+            const re = /(\d{4})[/-](\d{2})[/-](\d{2})[T\s]+(\d{2})(?::(\d{2}))?/;
+            const m = (!value.startsWith('0001-') && value.match(re))
+                || display.match(re)
+                || special.match(new RegExp((prefix === 'Start' ? '起' : '迄') + '[:：]\\s*' + re.source));
+            if (!m) return null;
+            // SpecialOrder 的正則沒有新增擷取群組，日期欄位索引與其他來源相同。
+            const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +(m[5] || 0));
+            if (d.getFullYear() !== +m[1] || d.getMonth() !== +m[2] - 1 || d.getDate() !== +m[3]
+                || +m[4] > 23 || +(m[5] || 0) > 59) throw new Error('給藥醫令日期無效');
             return d.getTime();
         };
-        const today = dayStart(now), out = [];
-        for (const tr of [...table.rows].slice(1)) {
-            if (txt(tr.cells[0]) !== '住') continue;
-            if (tr.cells.length !== headers.length) throw new Error('藥歷資料列格式改變');
-            const startMs = dateMs(txt(tr.cells[start]));
-            const stopText = txt(tr.cells[stop]);
-            if (startMs > today || (stopText && dateMs(stopText) < today)) continue;
-            const rawName = txt(tr.cells[nameCol]);
-            if (!rawName) throw new Error('藥歷藥名缺漏');
-            const prescription = txt(tr.cells[content]);
-            const route = (prescription.match(/\b(IV|IF|PO|IM|SC|SQ|TOPIC|INHL)\b/i) || [])[1] || '';
-            out.push({ name: rawName.split('(')[0].trim().slice(0, 40), route, prescription, startMs, day: dayNo(startMs, now) });
+        const out = [];
+        for (const drug of drugs) {
+            // 只用完整的第 5 層 ATC；院方資料可能混入不相關的分類層級（如 Celebrex 的 J01E）。
+            const codes = [...drug.querySelectorAll('DrugATCCodes > string')].map((node) => txt(node).toUpperCase())
+                .filter((code) => /^[A-Z]\d{2}[A-Z]{2}\d{2}$/.test(code));
+            if (!codes.some((code) => ANTIINFECTIVE_ATC.some((prefix) => code.startsWith(prefix)))) continue;
+            if (field(drug, 'OrderStatus') !== 'A') continue;
+            const startMs = orderTime(drug, 'Start'), endMs = orderTime(drug, 'End');
+            if (startMs === null) throw new Error('抗生素醫令開始時間缺漏');
+            // 沿用原版日期判斷：今天開始或結束的醫令仍列入。
+            if (dayStart(startMs) > dayStart(now) || (endMs !== null && dayStart(endMs) < dayStart(now))) continue;
+            const genericName = field(drug, 'GenericName');
+            const name = (genericName && genericName !== '自備藥' ? genericName : '')
+                || field(drug, 'TradeEngName') || field(drug, 'TradeEngNameComplex');
+            if (!name) throw new Error('抗生素藥名缺漏');
+            const route = field(drug, 'RouteCode');
+            const prescription = [field(drug, 'TradeEngNameComplex'), field(drug, 'OrderDose'),
+                field(drug, 'DoseUnit'), route, field(drug, 'RepeatPatternCode'), field(drug, 'SpecialOrder')]
+                .filter(Boolean).join(' ');
+            out.push({ name: name.slice(0, 40), route, prescription, startMs, day: dayNo(startMs, now) });
         }
         return out.sort((a, b) => a.startMs - b.startMs);
     }
@@ -267,22 +261,11 @@
             const timer = setTimeout(() => ctrl.abort(), 45000);
             try {
                 const pid = personIdFromPatientList(document.cookie, p.caseno);
-                const url = medicationHistoryUrl(pid);
-                const initial = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
-                if (!initial.ok) throw new Error('HTTP ' + initial.status);
-                let doc = NTUHAsmx.parseHtml(await initial.text());
-                // 已保存的「全部藥物」選項若觸發 Changed handler，可能清掉抗生素勾選。
-                // 使用回傳的新表單再送一次；仍未套用分類則報錯，不能把其他藥當抗生素。
-                for (let attempt = 0; attempt < 2; attempt++) {
-                    const body = medicationHistoryQuery(doc, now);
-                    const res = await fetch(url, { method: 'POST', body, credentials: 'same-origin', signal: ctrl.signal });
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    doc = NTUHAsmx.parseHtml(await res.text());
-                    const selected = [...doc.querySelectorAll('input[type="checkbox"]:checked')]
-                        .filter((el) => /_ckb/.test(el.id) && !/_ckbPatientTypeAll$/.test(el.id));
-                    if (selected.length === 1 && selected[0].id.endsWith('_ckbAntibiotics')) return parseMedicationHistory(doc, now);
-                }
-                throw new Error('藥歷未套用抗生素分類');
+                const res = await fetch(medicationQueryUrl(p, pid, now), {
+                    credentials: 'same-origin', cache: 'no-store', signal: ctrl.signal,
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return parseMedicationQuery(await res.text(), p, now);
             } catch (e) {
                 throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
             } finally { clearTimeout(timer); }
@@ -418,7 +401,7 @@
         ]);
     }
 
-    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）
+    // 階段二（重）：抗生素（直接查給藥 XML）、管路（頁面＋handler，必須一次一位）
     async function assessHeavy(res, now, onUpdate) {
         const p = res.p;
         const job = jobRunner(res, onUpdate);
