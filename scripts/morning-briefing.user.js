@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.1
+// @version      1.6.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -289,6 +289,110 @@
         });
     }
 
+    // ─── 檢驗數值的過濾與分組規則：取自 lab-summary（改動時兩邊要同步）──────────────────
+    // 新竹 LU 科室的項目名是中英混寫、空格不一致 → 用通則去中文＋正規化鍵查表，查不到就回傳去中文的原名（不丟資料）。
+    const LAB_CJK_RE = /[⺀-⿟　-〿㐀-䶿一-鿿豈-﫿]+/g;
+    const stripCJK = (x) => String(x || '').replace(LAB_CJK_RE, ' ').replace(/\s+/g, ' ').trim();
+    const nameKey = (x) => stripCJK(String(x || '').replace(/\(.*?\)/g, ' ')).replace(/[\s.\-_]/g, '').toLowerCase();
+    const LAB_NAME_MAP = {
+        // CBC：HE 科室的短名 + LH 科室的中英混寫
+        'HB': 'Hb', 'Hb': 'Hb', 'Hgb 血紅素': 'Hb',
+        'PLT': 'Plt', 'Platelet 血小板': 'Plt',
+        'WBC': 'WBC', 'W.B.C 白血球': 'WBC',
+        'MCV': 'MCV', 'MCV平均血球體積': 'MCV',
+        'R.B.C 紅血球': 'RBC', 'Hct 血球比容積': 'HCT',
+        'MCH平均血球血紅素': 'MCH', 'MCHC平均血色素比容積': 'MCHC',
+        // DC：HE 用縮寫、LH 用全名
+        'Seg': 'Seg', 'Neutrophil': 'Seg',
+        'Eos.': 'Eos.', 'Eosinophil': 'Eos.',
+        'Baso.': 'Baso.', 'Basophil': 'Baso.',
+        'Band': 'Band', 'Band neutrophil': 'Band',
+        'Lym.': 'Lym.', 'Lymphocyte': 'Lym.',
+        'Mono': 'Mono.', 'Mono.': 'Mono.', 'Monocyte': 'Mono.',
+        'Promyl.': 'Promyl.', 'Promyelocyte': 'Promyl.',
+        'Myelo.': 'Myelo.', 'Myelocyte': 'Myelo.',
+        'Meta': 'Meta', 'Metamyelocyte': 'Meta',
+        'Aty.Lym.': 'Aty.Lym.', 'Aty.Lymphocyte': 'Aty.Lym.',
+        'PlasmaCell': 'PlasmaCell', 'Plasma Cell': 'PlasmaCell',
+        'Normobl.': 'Normobl.', 'Normoblast': 'Normobl.',
+        // 生化
+        'Alb': 'Alb', 'ALB': 'Alb', 'Albumin': 'Alb',
+        'T-BIL': 'T-Bil', 'D-BIL': 'D-Bil',
+        'AST': 'AST', 'ALT': 'ALT', 'ALP': 'ALP',
+        'UN': 'BUN', 'BUN': 'BUN', 'CRE': 'CRE', 'UA': 'UA',
+        // LU 科室（新竹）用英文全名，非中文問題，需列舉
+        'Creatinine': 'CRE', 'Uric Acid': 'UA', 'RDW-CV': 'RDW', 'RDW': 'RDW',
+        'Na': 'Na', 'K': 'K', 'Mg': 'Mg', 'Ca': 'Ca', 'P': 'P', 'Cl': 'Cl',
+        'CRP': 'CRP', 'hsCRP': 'CRP',
+        'Procalcitonin': 'PCT',
+        'LacticAcid': 'LA', 'Lactate': 'LA',
+        'pH': 'pH', 'pCO2': 'PCO2', 'pO2': 'PO2',
+        'HCO3-': 'HCO3', 'Base Excess': 'BE',
+        'HbA1c': 'HbA1c', 'HbA1c糖化血色素': 'HbA1c',
+        'GLU AC': 'Glucose', 'Glucose': 'Glucose', 'Sugar': 'Glucose',
+        'NT-pro BNP': 'NT-proBNP', 'BNP': 'BNP',
+        'PT': 'PT', 'PT INR': 'INR', 'PTT': 'PTT',
+        'D-dimer': 'D-dimer', 'Fibrinogen': 'Fibrinogen',
+        'aPTT': 'aPTT',
+        'Ammonia N': 'NH3', 'Ammonia': 'NH3',
+        'CK': 'CK', 'CK-MB': 'CK-MB', 'Troponin-T': 'TnT', 'Troponin-I': 'TnI',
+        'TP': 'TP', 'LDH': 'LDH', 'AMY': 'AMY', 'Amylase': 'AMY',
+        'Lipase': 'Lip', 'GGT': 'GGT',
+        'T-CHO': 'T-CHO', 'TG': 'TG', 'LDL-C': 'LDL-C', 'HDL-C': 'HDL-C',
+        // 腫瘤標記
+        'Chromogranin A': 'CgA', 'CEA': 'CEA', 'AFP': 'AFP', 'PSA': 'PSA',
+        'CA19-9': 'CA19-9', 'CA-125': 'CA-125', 'CA15-3': 'CA15-3',
+        // 甲狀腺
+        'hsTSH': 'TSH', 'TSH': 'TSH', 'Free T4': 'Free T4', 'T4': 'T4', 'T3': 'T3',
+        // 血清學（B/C 肝、HIV、梅毒）
+        'HBsAg': 'HBsAg', 'Anti-HBs': 'Anti-HBs', 'Anti-HCV Ab': 'Anti-HCV',
+        'Anti-HCV': 'Anti-HCV',
+        'HIV Ag/Ab Combo -for screening test': 'HIV', 'HIV Ag/Ab Combo': 'HIV',
+        'S.T.S.': 'VDRL',
+    };
+    const LAB_NAME_BY_KEY = (() => {
+        const idx = {};
+        for (const [k, v] of Object.entries(LAB_NAME_MAP)) { const kk = nameKey(k); if (kk && !(kk in idx)) idx[kk] = v; }
+        return idx;
+    })();
+    const labDisplayName = (raw) => {
+        const clean = String(raw || '').replace(/\(.*?\)/g, '').trim();
+        return LAB_NAME_MAP[raw] || LAB_NAME_MAP[clean] || LAB_NAME_BY_KEY[nameKey(raw)] || stripCJK(clean) || clean;
+    };
+    // 血液檢體不看的項目（只在血液套用：尿液的 RBC／WBC 有意義）
+    const LAB_IGNORE = ['HCT', 'Hct', 'MCH', 'MCHC', 'RDW-CV', 'PS', 'RBC', 'Sugar', 'Auer body', 'Others', 'Reference Comment'];
+    // 不是檢驗值的列（子字串比對），以及整列名稱剛好等於才濾掉的（'Others' 是 LU 科室 CBC 的末列註記）
+    const LAB_SKIP_KEYWORDS = ['檢驗項目', '計算', '採檢', '登入', '最後', '本尿', 'High >', 'Low <', 'Average', '七日',
+        'BLOOD', 'Peripheral', 'URINE', 'OTHER', 'Venous', 'Catheter', 'Random', 'RANDOM', 'Special Instructions',
+        'RH', 'ABO Typing', 'antibody screen', 'Reference Comment'];
+    const LAB_SKIP_EXACT = new Set(['Others']);
+    const labShouldSkip = (raw) => {
+        const n = String(raw || '').trim();
+        return !n || LAB_SKIP_EXACT.has(n) || LAB_SKIP_KEYWORDS.some((kw) => n.indexOf(kw) > -1);
+    };
+    // 差別計數：正常範圍內就不顯示（只有異常才列）。罕見細胞（RARE_DIFF）有出現就列。
+    const LAB_DC_RANGE = { 'Eos.': [0, 8], 'Baso.': [0, 2], 'Band': [0, 5], 'Lym.': [20, 45], 'Mono.': [2, 10] };
+    // 臨床分組（順序即顯示順序，也是欄位順序）；Seg 附在 WBC 旁、MCV 附在 Hb 旁、eGFR 附在 CRE 旁
+    const LAB_GROUPS = [
+        ['Hemogram', ['WBC', 'Seg', 'Hb', 'MCV', 'Plt', 'CRP', 'PCT']],
+        ['DC', ['Band', 'Eos.', 'Baso.', 'Lym.', 'Mono.', 'Blast', 'Promyl.', 'Myelo.', 'Meta', 'Aty.Lym.', 'PlasmaCell', 'Normobl.']],
+        ['Liver', ['ALT', 'AST', 'ALP', 'T-Bil', 'D-Bil', 'GGT', 'Alb', 'TP', 'NH3']],
+        ['Renal', ['BUN', 'CRE', 'eGFR', 'UA']],
+        ['Electrolytes', ['Na', 'K', 'Cl', 'Ca', 'P', 'Mg']],
+        ['Cardiac', ['CK', 'CK-MB', 'TnT', 'NT-proBNP', 'BNP']],
+        ['Coagulation', ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen']],
+        ['Lipid', ['T-CHO', 'TG', 'LDL-C', 'HDL-C']],
+        ['Tumor marker', ['CgA', 'CEA', 'CA19-9', 'AFP', 'PSA', 'CA-125', 'CA15-3', 'SCC', 'NSE']],
+        ['Thyroid', ['TSH', 'Free T4', 'T4', 'T3']],
+        ['Serology', ['HBsAg', 'Anti-HBs', 'Anti-HCV', 'HIV', 'VDRL']],
+        ['Others', ['Glucose', 'HbA1c', 'LDH', 'AMY', 'Lip', 'VIT. B12', 'Folic Acid', 'LA']],
+    ];
+    const LAB_GROUP_OF = Object.fromEntries(LAB_GROUPS.flatMap(([g, names]) => names.map((n) => [n, g])));
+    // OuterData 沒有檢體欄，只有 HIS 類別：類別看起來是血液才套用 IGNORE；看起來是尿液／體液／氣體／培養的，
+    // 不歸進血液臨床分組（同名的 RBC／WBC／Glucose 在那些檢體意義不同）。類別不明就不丟、也照名稱分組。
+    const LAB_BLOOD_CAT_RE = /CBC|hemato|biochem|chem|coag|immun|serolog|tumor|thyroid|endocr/i;
+    const LAB_NONBLOOD_CAT_RE = /urin|csf|cerebro|stool|fecal|fluid|gas|culture|smear|cytolog|pathol/i;
+
     // ─── 檢驗數值（OuterData lab，點開下拉才為該病人載入）────────────────────────────
     // 需要 PersonId（從病房 Cookie 取，只在記憶體內用、不顯示、不存）。回傳一張 tblLabList，每列＝一個檢驗結果；
     // 畫面上只有 4 個可見欄（日期 MMDD、類別、項目、科室），數值在後面 5 個隱藏欄：
@@ -308,7 +412,7 @@
         if (!['日期', '項目'].every((h) => headers.includes(h))) throw new Error('檢驗欄位格式改變');
         const since = dayStart(sinceMs);
         const seen = new Set(), items = [];
-        let skipped = 0, minMs = Infinity, maxMs = -Infinity;
+        let skipped = 0, hidden = 0, minMs = Infinity, maxMs = -Infinity;
         for (const tr of [...table.rows].slice(1)) {
             const c = tr.cells;
             const m = c.length >= 9 && txt(c[4]).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
@@ -316,19 +420,28 @@
             const dateMs = new Date(+m[1], +m[2] - 1, +m[3]).getTime();
             minMs = Math.min(minMs, dateMs); maxMs = Math.max(maxMs, dateMs);
             const unit = txt(c[8]);
-            const row = { dateMs, category: txt(c[5]), value: txt(c[6]), item: txt(c[7]) || txt(c[2]), unit: unit === '*' ? '' : unit };
+            const rawItem = txt(c[7]) || txt(c[2]);
+            const category = txt(c[5]);
+            const item = labDisplayName(rawItem);
+            // lab-summary 的略過規則：非檢驗值的列、血液不看的項目；略過的筆數會在頁尾回報（不靜默）
+            // IGNORE 要「原始名稱」與「正規化後名稱」都檢查（與 lab-summary 一致）：RDW-CV 會被正規化成 RDW、Sugar 會被正規化成 Glucose，
+            // 只查正規化後的名稱會漏掉。
+            const cleanRaw = rawItem.replace(/\(.*?\)/g, '').trim();
+            const ignored = LAB_BLOOD_CAT_RE.test(category) && (LAB_IGNORE.includes(cleanRaw) || LAB_IGNORE.includes(item));
+            if (labShouldSkip(rawItem) || ignored) { if (dateMs >= since) hidden += 1; continue; }
+            const row = { dateMs, category, value: txt(c[6]), item, unit: unit === '*' ? '' : unit };
             const key = [dateMs, row.category, row.item, row.value, row.unit].join('|');
             if (seen.has(key)) continue;
             seen.add(key);
             if (dateMs >= since) items.push(row);
         }
-        return { items, skipped, minMs, maxMs, since };
+        return { items, skipped, hidden, minMs, maxMs, since };
     }
 
     async function fetchLab(p, win) {
         const pid = personIdFromPatientList(document.cookie, p.caseno);
         const html = await NTUHAsmx.outerData('lab', { context: { ...ctxOf(p), PersonId: pid }, timeoutMs: OUTER_TIMEOUT_MS });
-        if (!html) return { items: [], skipped: 0, empty: true };
+        if (!html) return { items: [], skipped: 0, hidden: 0, empty: true };
         return parseLabList(html, win.refFromMs);
     }
 
@@ -709,40 +822,69 @@ ${dataTable(series)}</div>`;
     // 等寬對齊、缺值填「-」；一張表最多 8 欄，超過就再開一段（只列該段真的有值的日期）。
     // 數值很長（例如培養結果）不放進表格，獨立列在「文字結果」。單位放在欄名的 tooltip。
     const LAB_MAX_COLS = 8;
+    // 一組項目 → 表格區塊（日期為列、項目為欄）。order：欄位順序；單位放欄名 tooltip
+    function labTableHtml(list, order, md) {
+        const cols = order.filter((n) => list.some((it) => it.item === n));
+        const unit = {};
+        for (const it of list) if (it.unit && !unit[it.item]) unit[it.item] = it.unit;
+        const dates = [...new Set(list.map((it) => it.dateMs))].sort((x, y) => x - y);
+        const cell = new Map();   // `${dateMs}|${item}` → 值（同一天同一項目有多筆就用 / 串起來）
+        for (const it of list) { const k = `${it.dateMs}|${it.item}`; cell.set(k, cell.has(k) ? `${cell.get(k)} / ${it.value}` : it.value); }
+        const blocks = [];
+        for (let st = 0; st < cols.length; st += LAB_MAX_COLS) {
+            const cs = cols.slice(st, st + LAB_MAX_COLS);
+            const rows = dates.filter((ms) => cs.some((c) => cell.has(`${ms}|${c}`)));
+            if (!rows.length) continue;
+            blocks.push(`<table class="lt"><thead><tr><th></th>${cs.map((c) => `<th title="${esc(unit[c] || '')}">${esc(c)}</th>`).join('')}</tr></thead><tbody>${
+                rows.map((ms) => `<tr><th>${md(ms)}</th>${cs.map((c) => `<td>${esc(cell.get(`${ms}|${c}`) || '-')}</td>`).join('')}</tr>`).join('')
+            }</tbody></table>`);
+        }
+        return blocks.join('');
+    }
+
+    // 檢驗數值下拉的內容（呈現與過濾比照 lab-summary 的「表格」）：
+    // 血液項目依臨床分組（Hemogram／DC／Liver／Renal／Electrolytes…，欄位順序固定、Seg／MCV／eGFR 附在主項目旁）；
+    // 分不進去的（類別看起來是尿液／體液／氣體，或名稱不在表內）維持依 HIS 類別各一張表；DC 差別計數只有異常才列。
+    // 數值很長（例如培養結果）不放進表格，獨立列在「文字結果」。
     function renderLabBody(d, win) {
         const md = (ms) => { const x = new Date(ms); return `${x.getMonth() + 1}/${x.getDate()}`; };
         if (d.empty) return '<span class="muted">伺服器沒有回傳檢驗資料。</span>';
         if (d.noTable) return '<span class="muted">近期沒有檢驗報告。<small>（頁面沒有檢驗表；若每位病人都是這樣，可能是院方改版）</small></span>';
         const warn = d.skipped ? `<div class="err">⚠ 有 ${d.skipped} 列格式不符、沒有顯示（請手動確認）</div>` : '';
         const range = Number.isFinite(d.minMs) ? `資料窗口 ${md(d.minMs)}–${md(d.maxMs)}` : '';
-        if (!d.items.length) return `${warn}<span class="muted">${md(win.refFromMs)} 起沒有檢驗數值。${range}</span>`;
+        if (!d.items.length) return `${warn}<span class="muted">${md(win.refFromMs)} 起沒有檢驗數值。${d.hidden ? `（另有 ${d.hidden} 筆依 lab-summary 規則略過）` : ''}${range}</span>`;
         const LONG = 28;
         const texts = d.items.filter((it) => it.value.length > LONG);
         const nums = d.items.filter((it) => it.value.length <= LONG);
-        // 類別（HIS 偶爾把類別填成 "Yes"，沒有意義，歸到「其他」）
-        const catOf = (it) => (!it.category || it.category === 'Yes' ? '其他' : it.category);
-        const cats = new Map();
-        for (const it of nums) { const c = catOf(it); if (!cats.has(c)) cats.set(c, []); cats.get(c).push(it); }
-        const tables = [...cats].map(([cat, list]) => {
-            const cols = [], unit = {};
-            for (const it of list) { if (!cols.includes(it.item)) cols.push(it.item); if (it.unit && !unit[it.item]) unit[it.item] = it.unit; }
-            const dates = [...new Set(list.map((it) => it.dateMs))].sort((x, y) => x - y);
-            const cell = new Map();   // `${dateMs}|${item}` → 值（同一天同一項目有多筆就用 / 串起來）
-            for (const it of list) { const k = `${it.dateMs}|${it.item}`; cell.set(k, cell.has(k) ? `${cell.get(k)} / ${it.value}` : it.value); }
-            const blocks = [];
-            for (let st = 0; st < cols.length; st += LAB_MAX_COLS) {
-                const cs = cols.slice(st, st + LAB_MAX_COLS);
-                const rows = dates.filter((ms) => cs.some((c) => cell.has(`${ms}|${c}`)));
-                if (!rows.length) continue;
-                blocks.push(`<table class="lt"><thead><tr><th></th>${cs.map((c) => `<th title="${esc(unit[c] || '')}">${esc(c)}</th>`).join('')}</tr></thead><tbody>${
-                    rows.map((ms) => `<tr><th>${md(ms)}</th>${cs.map((c) => `<td>${esc(cell.get(`${ms}|${c}`) || '-')}</td>`).join('')}</tr>`).join('')
-                }</tbody></table>`);
+        const catOf = (it) => (!it.category || it.category === 'Yes' ? '其他' : it.category);   // HIS 偶爾把類別填成 "Yes"，沒有意義
+        const groups = new Map(), rest = new Map();
+        for (const it of nums) {
+            const g = LAB_NONBLOOD_CAT_RE.test(it.category) ? null : LAB_GROUP_OF[it.item];
+            const bucket = g ? groups : rest, key = g || catOf(it);
+            if (!bucket.has(key)) bucket.set(key, []);
+            bucket.get(key).push(it);
+        }
+        // DC：正常範圍內不列（有任何一個值超出範圍才列整個項目）；罕見細胞沒有範圍，有就列
+        let dcHidden = 0;
+        if (groups.has('DC')) {
+            const byItem = new Map();
+            for (const it of groups.get('DC')) { if (!byItem.has(it.item)) byItem.set(it.item, []); byItem.get(it.item).push(it); }
+            const keep = [];
+            for (const [name, list] of byItem) {
+                const r = LAB_DC_RANGE[name];
+                const abnormal = !r || list.some((it) => { const v = parseFloat(it.value); return Number.isNaN(v) || v < r[0] || v > r[1]; });
+                if (abnormal) keep.push(...list); else dcHidden += list.length;
             }
-            return `<div class="lbh">${esc(cat)}</div>${blocks.join('')}`;
-        }).join('');
+            if (keep.length) groups.set('DC', keep); else groups.delete('DC');
+        }
+        const blocks = [];
+        for (const [g, names] of LAB_GROUPS) if (groups.has(g)) blocks.push(`<div class="lbh">${esc(g)}</div>${labTableHtml(groups.get(g), names, md)}`);
+        for (const [cat, list] of rest) blocks.push(`<div class="lbh">${esc(cat)}</div>${labTableHtml(list, [...new Set(list.map((it) => it.item))], md)}`);
         const textHtml = texts.length
             ? `<div class="lbh">文字結果</div>${texts.sort((x, y) => x.dateMs - y.dateMs).map((it) => `<div class="lbl"><span class="muted">${md(it.dateMs)}</span> <b>${esc(it.item)}</b> ${esc(it.value)}</div>`).join('')}` : '';
-        return `${warn}${tables}${textHtml}<div class="muted nov">資料來源未提供異常標記與參考範圍，僅顯示數值（欄名的 tooltip 是單位）。${range}。</div>`;
+        const hiddenN = (d.hidden || 0) + dcHidden;
+        const note = `資料來源未提供異常標記與參考範圍，僅顯示數值（欄名的 tooltip 是單位）。${hiddenN ? `已依 lab-summary 規則略過 ${hiddenN} 筆（HCT／MCH／MCHC／RBC 等血液不看的項目、非檢驗值的列、正常範圍內的差別計數）。` : ''}${range}。`;
+        return `${warn}${blocks.join('')}${textHtml}<div class="muted nov">${note}</div>`;
     }
 
     // 第一次展開才為該病人載入；失敗可收合再展開重試
