@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.0-standalone
+// @version      1.5.1-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -561,7 +561,12 @@ function isOnOxygen(inside) {
     function parseLabList(html, sinceMs) {
         const doc = NTUHAsmx.parseHtml(html);
         const table = doc.querySelector('[id$="tblLabList"]');
-        if (!table) throw new Error('檢驗表讀不到');
+        if (!table) {
+            // 這陣子沒有報告的病人，伺服器回傳的 HTML 不含檢驗表（使用者在 HIS 逐一確認過），視為「沒有資料」而不是錯誤。
+            // 風險：若院方改版導致表格不見，每位病人都會顯示「沒有報告」——訊息裡提示，並在 Console 留紀錄。
+            console.warn('[晨間簡報] OuterData lab 沒有 tblLabList，視為近期沒有檢驗報告（HTML 長度 ' + html.length + '）');
+            return { items: [], skipped: 0, noTable: true, minMs: Infinity, maxMs: -Infinity, since: dayStart(sinceMs) };
+        }
         const headers = [...table.rows[0].cells].map(txt);
         if (!['日期', '項目'].every((h) => headers.includes(h))) throw new Error('檢驗欄位格式改變');
         const since = dayStart(sinceMs);
@@ -963,26 +968,44 @@ ${dataTable(series)}</div>`;
         }
     }
 
-    // 檢驗數值下拉的內容：依日期（新→舊）分組，再依類別；數值很長（例如培養結果）就獨立一行
+    // 檢驗數值下拉的內容（呈現比照 lab-summary 的「表格」）：依類別分組；日期為列（舊→新）、項目為欄，
+    // 等寬對齊、缺值填「-」；一張表最多 8 欄，超過就再開一段（只列該段真的有值的日期）。
+    // 數值很長（例如培養結果）不放進表格，獨立列在「文字結果」。單位放在欄名的 tooltip。
+    const LAB_MAX_COLS = 8;
     function renderLabBody(d, win) {
-        if (d.empty) return '<span class="muted">伺服器沒有回傳檢驗資料。</span>';
         const md = (ms) => { const x = new Date(ms); return `${x.getMonth() + 1}/${x.getDate()}`; };
+        if (d.empty) return '<span class="muted">伺服器沒有回傳檢驗資料。</span>';
+        if (d.noTable) return '<span class="muted">近期沒有檢驗報告。<small>（頁面沒有檢驗表；若每位病人都是這樣，可能是院方改版）</small></span>';
         const warn = d.skipped ? `<div class="err">⚠ 有 ${d.skipped} 列格式不符、沒有顯示（請手動確認）</div>` : '';
         const range = Number.isFinite(d.minMs) ? `資料窗口 ${md(d.minMs)}–${md(d.maxMs)}` : '';
         if (!d.items.length) return `${warn}<span class="muted">${md(win.refFromMs)} 起沒有檢驗數值。${range}</span>`;
-        const byDate = new Map();
-        for (const it of d.items) {
-            if (!byDate.has(it.dateMs)) byDate.set(it.dateMs, new Map());
-            const cats = byDate.get(it.dateMs);
-            if (!cats.has(it.category)) cats.set(it.category, []);
-            cats.get(it.category).push(it);
-        }
-        const chip = (it) => (it.value.length > 28
-            ? `<div class="lbl"><b>${esc(it.item)}</b> ${esc(it.value)}</div>`
-            : `<span class="lv"><b>${esc(it.item)}</b> ${esc(it.value)}${it.unit ? `<small class="muted"> ${esc(it.unit)}</small>` : ''}</span>`);
-        const html = [...byDate.keys()].sort((a, b) => b - a).map((ms) => `<div class="lbd"><b>${md(ms)}</b>${
-            [...byDate.get(ms)].map(([cat, list]) => `<div class="lbc"><span class="muted">${esc(cat)}</span> ${list.map(chip).join('')}</div>`).join('')}</div>`).join('');
-        return `${warn}${html}<div class="muted nov">資料來源未提供異常標記與參考範圍，僅顯示數值。${range}。</div>`;
+        const LONG = 28;
+        const texts = d.items.filter((it) => it.value.length > LONG);
+        const nums = d.items.filter((it) => it.value.length <= LONG);
+        // 類別（HIS 偶爾把類別填成 "Yes"，沒有意義，歸到「其他」）
+        const catOf = (it) => (!it.category || it.category === 'Yes' ? '其他' : it.category);
+        const cats = new Map();
+        for (const it of nums) { const c = catOf(it); if (!cats.has(c)) cats.set(c, []); cats.get(c).push(it); }
+        const tables = [...cats].map(([cat, list]) => {
+            const cols = [], unit = {};
+            for (const it of list) { if (!cols.includes(it.item)) cols.push(it.item); if (it.unit && !unit[it.item]) unit[it.item] = it.unit; }
+            const dates = [...new Set(list.map((it) => it.dateMs))].sort((x, y) => x - y);
+            const cell = new Map();   // `${dateMs}|${item}` → 值（同一天同一項目有多筆就用 / 串起來）
+            for (const it of list) { const k = `${it.dateMs}|${it.item}`; cell.set(k, cell.has(k) ? `${cell.get(k)} / ${it.value}` : it.value); }
+            const blocks = [];
+            for (let st = 0; st < cols.length; st += LAB_MAX_COLS) {
+                const cs = cols.slice(st, st + LAB_MAX_COLS);
+                const rows = dates.filter((ms) => cs.some((c) => cell.has(`${ms}|${c}`)));
+                if (!rows.length) continue;
+                blocks.push(`<table class="lt"><thead><tr><th></th>${cs.map((c) => `<th title="${esc(unit[c] || '')}">${esc(c)}</th>`).join('')}</tr></thead><tbody>${
+                    rows.map((ms) => `<tr><th>${md(ms)}</th>${cs.map((c) => `<td>${esc(cell.get(`${ms}|${c}`) || '-')}</td>`).join('')}</tr>`).join('')
+                }</tbody></table>`);
+            }
+            return `<div class="lbh">${esc(cat)}</div>${blocks.join('')}`;
+        }).join('');
+        const textHtml = texts.length
+            ? `<div class="lbh">文字結果</div>${texts.sort((x, y) => x.dateMs - y.dateMs).map((it) => `<div class="lbl"><span class="muted">${md(it.dateMs)}</span> <b>${esc(it.item)}</b> ${esc(it.value)}</div>`).join('')}` : '';
+        return `${warn}${tables}${textHtml}<div class="muted nov">資料來源未提供異常標記與參考範圍，僅顯示數值（欄名的 tooltip 是單位）。${range}。</div>`;
     }
 
     // 第一次展開才為該病人載入；失敗可收合再展開重試
@@ -1054,7 +1077,8 @@ th{font-size:12px;color:var(--mut)}
 .hd{font-size:15px;margin-bottom:2px}.hd .lk{margin-left:6px}.hd .lk .tag{margin:0 3px 0 0}
 .kv{display:flex;gap:8px;margin-top:2px}.kv .k{flex:none;width:4.8em;font-size:12px;color:var(--mut)}
 .k a,.mt a{color:inherit;text-decoration:none}.k a:hover,.mt a:hover{text-decoration:underline}
-.lb{margin-top:2px}.lb>summary{cursor:pointer;font-size:12px;color:var(--mut)}.lbd{margin-top:4px;font-size:12px}.lbc{margin:1px 0 1px 10px}.lv{display:inline-block;margin:0 10px 2px 0}.lv b{font-weight:500}.lbl{margin:1px 0}
+.lb{margin-top:2px}.lb>summary{cursor:pointer;font-size:12px;color:var(--mut)}.lbh{margin:4px 0 1px;font-size:12px;color:var(--mut)}.lbl{margin:1px 0;font-size:12px}
+.lt{border-collapse:collapse;width:auto;margin:0 0 4px 8px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}.lt th,.lt td{border:0;padding:0 14px 0 0;text-align:left;white-space:nowrap;font-weight:400}.lt thead th{color:var(--mut)}.lt tbody th{color:var(--mut)}
 .pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
 .charts{margin-top:2px}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
