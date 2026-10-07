@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.59
+// @version      1.60
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -775,6 +775,13 @@ After the admission, the patient was in stable condition, the physical examinati
             .ntuh-blk-body-compact {
                 font-size: 9.6px;
             }
+            .ntuh-vt { margin-top: 4px; font-size: 10px; }
+            .ntuh-vt summary { cursor: pointer; color: #5f6f57; }
+            .ntuh-vt-scroll { max-height: 180px; overflow: auto; }
+            .ntuh-vt table { border-collapse: collapse; width: 100%; font-size: 10px; }  /* quirks mode 下 table 不繼承字級，要明講 */
+            .ntuh-vt th, .ntuh-vt td { border-bottom: 1px solid #e3ecd9; padding: 2px 5px 2px 0; text-align: left; white-space: nowrap; }
+            .ntuh-vt th { position: sticky; top: 0; background: #fffffd; }
+            .ntuh-vt-note { margin-top: 3px; font-size: 10px; color: #5f6f57; }
             .ntuh-divider {
                 border: none;
                 border-top: 1px solid #9db98a;
@@ -1249,14 +1256,14 @@ After the admission, the patient was in stable condition, the physical examinati
 
     // 區塊分組：key → 群組（顏色對應面板卡標題）
     const BLOCK_GROUPS = [
-        // tprbp／resp 的文字卡已移除（內容都在生命徵象圖裡）；資料仍由 data-helper 抓取，圖要用
-        { title: '生命徵象',   keys: ['gcs', 'uo', 'pain'], color: '#6fd0e0' },
+        // 生命徵象只剩一張圖卡（含可展開的數據表）：TPR／BP／SpO2／GCS／Pain／U/O 都在圖與數據表裡，文字卡已全數移除
+        { title: '生命徵象',   keys: [], color: '#6fd0e0' },
         { title: '管路 · 照護', keys: ['catheter', 'consult', 'diet'], color: '#7adba0' },
         { title: '藥物 · 報告', keys: ['rx', 'meds', 'lab', 'image'],  color: '#f0a860' },
     ];
     // key → 標題（供抓取前先畫骨架用；抓取後結果自帶 label 亦同）
     const KEY_LABELS = {
-        tprbp: '[TPR+BP]', gcs: '[GCS]', uo: '[UO]', pain: '[Pain]',
+        tprbp: '[TPR+BP]', uo: '[UO]',
         catheter: '[Tubes]', consult: '[Consult]', diet: '[Diet]',
         rx: '[Rx]', meds: '[Abx]', lab: '[Lab]', image: '[Image]',
     };
@@ -1276,6 +1283,10 @@ After the admission, the patient was in stable condition, the physical examinati
     const vcEsc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const vcTwo = (n) => String(n).padStart(2, '0');
     const vcHm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${vcTwo(d.getHours())}:${vcTwo(d.getMinutes())}`; };
+
+    // 滑過顯示時間與數值的黃色提示框（同 morning-briefing）：感應區帶 data-t／data-v，提示框畫在 svg 最上層
+    const VC_TIP = '<g class="tt" display="none" pointer-events="none"><rect fill="yellow" stroke="black" rx="2" ry="2"/><text x="5" y="13"><tspan class="t1" x="5" font-family="Arial" font-weight="bold" font-size="10"> </tspan><tspan class="t2" x="5" dy="1.2em" font-weight="bold" font-size="11" fill="blue"> </tspan></text></g>';
+    const vcHit = (x, y, r, t, v) => `<circle class="hit" cx="${x}" cy="${y}" r="${r}" fill="transparent" style="stroke:none" data-t="${vcEsc(t)}" data-v="${vcEsc(v)}"/>`;
 
     function vitalsChartSvg(series, win, pains) {
         const span = win.toMs - win.fromMs;
@@ -1317,16 +1328,16 @@ After the admission, the patient was in stable condition, the physical examinati
             }
             s += '</g>';
         }
-        // 資料：T/P/R 點與線（NA 斷線）；BP 為收縮/舒張壓誤差線。<title> 供滑過顯示時間與數值
+        // 資料：T/P/R 點與線（NA 斷線）；BP 為收縮/舒張壓誤差線。感應區（.hit／.hitl）供滑過顯示時間與數值
         for (const a of VC_AXES) {
             s += `<g class="ser" data-s="${a.k}" style="${st(a)}">`;
             if (a.k === 'BP') {
                 for (const o of series) {
                     if (!Number.isFinite(o.SBP) || !Number.isFinite(o.DBP)) continue;
                     const x = X(o.ms), y1 = Y(a, o.SBP), y2 = Y(a, o.DBP);
-                    s += `<g><title>${vcEsc(vcHm(o.ms))}  BP ${o.SBP}/${o.DBP}</title><line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" style="stroke-width:1"/>`
+                    s += `<g><line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" style="stroke-width:1"/>`
                         + `<line x1="${x - 3}" y1="${y1}" x2="${x + 3}" y2="${y1}" style="stroke-width:1"/><line x1="${x - 3}" y1="${y2}" x2="${x + 3}" y2="${y2}" style="stroke-width:1"/>`
-                        + `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="transparent" stroke-width="9"/></g>`;
+                        + `<line class="hitl" x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="transparent" stroke-width="9" data-t="${vcEsc(vcHm(o.ms))}" data-v="${o.SBP}/${o.DBP}"/></g>`;
                 }
             } else {
                 let prev = null;
@@ -1335,11 +1346,10 @@ After the admission, the patient was in stable condition, the physical examinati
                     if (Number.isFinite(v)) {
                         const y = Y(a, v);
                         if (prev) s += `<line x1="${prev.x}" y1="${prev.y}" x2="${x}" y2="${y}" style="stroke-width:1"/>`;
-                        s += `<circle cx="${x}" cy="${y}" r="2.3" style="stroke:none"><title>${vcEsc(vcHm(o.ms))}  ${a.k} ${v}</title></circle>`
-                            + `<circle cx="${x}" cy="${y}" r="7" fill="transparent" style="stroke:none"><title>${vcEsc(vcHm(o.ms))}  ${a.k} ${v}</title></circle>`;
+                        s += `<circle cx="${x}" cy="${y}" r="2.3" style="stroke:none"/>` + vcHit(x, y, 7, vcHm(o.ms), v);
                         prev = { x, y };
                     } else if (o['na' + a.k]) {
-                        s += `<text x="${x}" y="${a.naY}" text-anchor="middle" style="font-size:8px;stroke:none"><title>${vcEsc(vcHm(o.ms))}  ${a.k} 未量測</title>NA</text>`;
+                        s += `<text x="${x}" y="${a.naY}" text-anchor="middle" style="font-size:8px;stroke:none">NA</text>` + vcHit(x, a.naY - 3, 7, vcHm(o.ms), '未量測');
                         prev = null;
                     }
                 }
@@ -1370,9 +1380,9 @@ After the admission, the patient was in stable condition, the physical examinati
             let lastX = -1e9;
             for (const o of pts) {
                 const x = X(o.ms), c = color(o.SpO2);
-                const tip = `<title>${vcEsc(vcHm(o.ms))}  SpO₂ ${o.SpO2}%${o.onOxygen ? '（' + vcEsc(o2Text(o)) + '）' : '（室內空氣）'}</title>`;
-                if (x - lastX >= 17) { s += `<text x="${x}" y="${SY0 + 14}" text-anchor="middle" style="fill:${c};font-size:10px;font-weight:${o.SpO2 <= 93 ? 700 : 500}">${o.SpO2}${tip}</text>`; lastX = x; }
-                else s += `<circle cx="${x}" cy="${(SY0 + SY1) / 2}" r="2" fill="${c}">${tip}</circle>`;
+                if (x - lastX >= 17) { s += `<text x="${x}" y="${SY0 + 14}" text-anchor="middle" style="fill:${c};font-size:10px;font-weight:${o.SpO2 <= 93 ? 700 : 500}">${o.SpO2}</text>`; lastX = x; }
+                else s += `<circle cx="${x}" cy="${(SY0 + SY1) / 2}" r="2" fill="${c}"/>`;
+                s += vcHit(x, (SY0 + SY1) / 2, 9, vcHm(o.ms), `SpO₂ ${o.SpO2}%${o.onOxygen ? '（' + o2Text(o) + '）' : '（室內空氣）'}`);
             }
         }
         // GCS／Pain／U/O 列：同一個時間軸，每次量測一個值（太擠時只畫小圓點）。UO 沒有日期的列不會進圖
@@ -1384,20 +1394,38 @@ After the admission, the patient was in stable condition, the physical examinati
             let lastX = -1e9;
             for (const o of rows) {
                 const x = X(o.ms), c = color(o);
-                const tip = `<title>${vcEsc(vcHm(o.ms))}  ${tipName} ${vcEsc(text(o))}</title>`;
-                if (x - lastX >= gap) { s += `<text x="${Math.min(VC.X1 - gap / 2, Math.max(VC.X0 + gap / 2, x))}" y="${y0 + 13}" text-anchor="middle" style="fill:${c};font-size:9.5px;font-weight:600">${vcEsc(text(o))}${tip}</text>`; lastX = x; }
-                else s += `<circle cx="${x}" cy="${y0 + 9}" r="2" fill="${c}">${tip}</circle>`;
+                if (x - lastX >= gap) { s += `<text x="${Math.min(VC.X1 - gap / 2, Math.max(VC.X0 + gap / 2, x))}" y="${y0 + 13}" text-anchor="middle" style="fill:${c};font-size:9.5px;font-weight:600">${vcEsc(text(o))}</text>`; lastX = x; }
+                else s += `<circle cx="${x}" cy="${y0 + 9}" r="2" fill="${c}"/>`;
+                s += vcHit(x, y0 + 9, 9, vcHm(o.ms), `${tipName} ${text(o)}`);
             }
             rowBottom = y1 + 8;
         };
         valRow('GCS', series.filter((o) => o.gcs), (o) => o.gcs, (o) => (/^E4M6V[5A]$/i.test(o.gcs) ? '#27500A' : '#a32d2d'), 40, 'GCS');
         valRow('Pain', (pains || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs).map((o) => ({ ms: o.ms, pain: o.v })), (o) => o.pain, (o) => (o.pain >= 4 ? '#a32d2d' : o.pain >= 1 ? '#b4531a' : '#27500A'), 14, 'Pain');
         valRow('U/O', series.filter((o) => Number.isFinite(o.uo) && o.uo > 0), (o) => o.uo, () => '#185FA5', 22, 'U/O mL');
-        return s.replace(/viewBox="0 0 350 \d+"/, `viewBox="0 0 ${VC.W} ${Math.max(VC.Y1 + 20, rowBottom)}"`) + '</svg>';
+        return s.replace(/viewBox="0 0 350 \d+"/, `viewBox="0 0 ${VC.W} ${Math.max(VC.Y1 + 20, rowBottom)}"`) + VC_TIP + '</svg>';
     }
 
-    // 時間窗：最近 48 小時（終點取「現在」與最後一筆量測較晚者）
-    function buildVitalsChart(series, pains) {
+    // 數據表（同 morning-briefing 的欄位，另加 GCS／Pain／U/O——文字卡拿掉後，這些只剩這裡看得到）。
+    // Pain 有自己的時間點，所以和量測組合併成同一條時間序列，沒有的欄位顯示 —
+    function vitalsTable(series, pains, win) {
+        const c = (v) => (Number.isFinite(v) ? v : '—');
+        const rows = series.map((o) => ({ ms: o.ms, o }))
+            .concat((pains || []).filter((x) => x.ms >= win.fromMs && x.ms <= win.toMs).map((x) => ({ ms: x.ms, pain: x.v })))
+            .sort((a, b) => a.ms - b.ms);
+        const cell = (v) => `<td>${v}</td>`;
+        const body = rows.map(({ ms, o, pain }) => {
+            const spo2 = o && Number.isFinite(o.SpO2) ? o.SpO2 + '%' + (o.onOxygen ? ' 給氧' : '') : '—';
+            const bp = o && Number.isFinite(o.SBP) ? o.SBP + '/' + (Number.isFinite(o.DBP) ? o.DBP : '—') : '—';
+            return '<tr>' + cell(vcEsc(vcHm(ms))) + cell(o ? c(o.T) : '—') + cell(o ? c(o.P) : '—') + cell(o ? c(o.R) : '—')
+                + cell(bp) + cell(spo2) + cell(o && o.gcs ? vcEsc(o.gcs) : '—') + cell(o && Number.isFinite(o.uo) ? o.uo : '—')
+                + cell(pain !== undefined ? pain : '—') + '</tr>';
+        }).join('');
+        return `<details class="ntuh-vt"><summary>數據表（${rows.length} 筆）</summary><div class="ntuh-vt-scroll"><table><thead><tr><th>時間</th><th>T</th><th>HR</th><th>RR</th><th>BP</th><th>SpO₂</th><th>GCS</th><th>U/O</th><th>Pain</th></tr></thead><tbody>${body}</tbody></table></div></details>`;
+    }
+
+    // 時間窗：最近 48 小時（終點取「現在」與最後一筆量測較晚者）。uoText＝[UO] 來源的文字（沒有日期的 U/O 只有它看得到）
+    function buildVitalsChart(series, pains, uoText) {
         if (!series || !series.length) return null;
         const last = series[series.length - 1].ms;
         const toMs = Math.max(nowMs(), last);
@@ -1405,8 +1433,10 @@ After the admission, the patient was in stable condition, the physical examinati
         const inWin = series.filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs);
         if (!inWin.length) return null;
         const wrap = document.createElement('div');
-        wrap.innerHTML = vitalsChartSvg(inWin, win, pains);
+        const undatedUo = uoText && !/^（無）/.test(uoText) && uoText.indexOf('@') < 0 ? `<div class="ntuh-vt-note">${vcEsc(uoText)}（院內未標日期）</div>` : '';
+        wrap.innerHTML = vitalsChartSvg(inWin, win, pains) + vitalsTable(inWin, pains, win) + undatedUo;
         wrap.style.cssText = 'padding:4px 6px 6px;background:#fffffd';
+        const svg = wrap.querySelector('svg.ntuh-vc');
         // 點軸切換該項顯示（BP/R/P/T）
         wrap.querySelectorAll('g.ax').forEach((ax) => {
             ax.addEventListener('click', () => {
@@ -1416,6 +1446,28 @@ After the admission, the patient was in stable condition, the physical examinati
                 const ser = wrap.querySelector(`g.ser[data-s="${k}"]`);
                 if (ser) ser.style.visibility = isOff ? 'hidden' : '';
             });
+        });
+        // 滑過感應區 → 黃色提示框（邏輯同 morning-briefing 的 pageScript）
+        const tt = svg.querySelector('.tt');
+        const hideTip = () => tt.setAttribute('display', 'none');
+        svg.addEventListener('pointerleave', hideTip);
+        svg.addEventListener('pointermove', (ev) => {
+            const h = ev.target.closest && ev.target.closest('.hit,.hitl');
+            if (!h) { hideTip(); return; }
+            const box = tt.querySelector('rect'), text = tt.querySelector('text'), vb = svg.viewBox.baseVal;
+            tt.querySelector('.t1').textContent = h.getAttribute('data-t');
+            tt.querySelector('.t2').textContent = h.getAttribute('data-v');
+            const pt = svg.createSVGPoint();
+            pt.x = ev.clientX; pt.y = ev.clientY;
+            const pp = pt.matrixTransform(svg.getScreenCTM().inverse());
+            tt.setAttribute('display', 'inline');
+            const bb = text.getBBox();
+            const w = bb.x + bb.width + 6, hh = bb.y + bb.height + 6;
+            box.setAttribute('width', w); box.setAttribute('height', hh);
+            let x = pp.x + 10, y = pp.y + 10;
+            if (x + w > vb.width) x = vb.width - w;
+            if (y + hh > vb.height) y = pp.y - hh - 6;
+            tt.setAttribute('transform', `translate(${x},${y})`);
         });
         return wrap;
     }
@@ -1463,7 +1515,13 @@ After the admission, the patient was in stable condition, the physical examinati
 
             // 生命徵象群組：先放時序圖（資料來自 tprbp 的 series；舊版 data-helper 沒有 series 就略過）
             const tp = g.title === '生命徵象' ? byKey['tprbp'] : null;
-            const chartEl = tp && tp.ok ? buildVitalsChart(tp.series, tp.pains) : null;
+            let chartEl = tp && tp.ok ? buildVitalsChart(tp.series, tp.pains, (byKey['uo'] && byKey['uo'].ok) ? byKey['uo'].text : '') : null;
+            if (g.title === '生命徵象' && !chartEl) {
+                // 沒有圖可畫時留一行狀態，避免整個區塊無聲消失
+                chartEl = document.createElement('div');
+                chartEl.style.cssText = 'padding:8px 10px;font-size:12px;background:#fff;color:#2b3a2b';
+                chartEl.textContent = !tp ? '尚未抓取' : !tp.ok ? ('抓取失敗：' + tp.error) : (tp.series ? '（近 48 小時沒有量測）' : '（資料來源版本過舊：請更新 progress-note-data-helper）');
+            }
             if (chartEl) {
                 const card = document.createElement('div');
                 card.className = 'ntuh-blk';

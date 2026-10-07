@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.4.0
+// @version      1.5.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -130,12 +130,10 @@
             prepare: prepareNursing,
             extract: extractNursing,
         },
-        // vitalsign 拆成 4 個分項來源，共用同一份 fetch（datatype 快取），各自無值顯示（無）
+        // vitalsign 拆成 2 個來源：tprbp（帶時序給圖與數據表）、uo（只為沒有日期的 U/O），共用同一份 fetch（datatype 快取），各自無值顯示（無）
         // navUrl：點標題跳轉 VitalSign_TPR.aspx（生命徵象圖）
         tprbp: { label: '[TPR+BP]', mode: 'fetch', datatype: 'vitalsign', format: formatTprBp, extra: vitalExtra, navUrl: vitalsNavUrl, match: () => false },
-        gcs:   { label: '[GCS]',    mode: 'fetch', datatype: 'vitalsign', format: formatGcs,   navUrl: vitalsNavUrl, match: () => false },
         uo:    { label: '[UO]',     mode: 'fetch', datatype: 'vitalsign', format: formatUo,    navUrl: vitalsNavUrl, match: () => false },
-        pain:  { label: '[Pain]',   mode: 'fetch', datatype: 'vitalsign', format: formatPain,  navUrl: vitalsNavUrl, match: () => false },
         image: {
             label: '[Image]',
             mode: 'fetch',
@@ -557,19 +555,10 @@
         const { obs } = parseVitals(html);
         return obs.length ? `（${obs.length} 組量測，最新${vWhen(obs[obs.length - 1].ms)}）` : '（無）';
     }
-    // 3 個分項格式器：各取最新，無值一律回「（無）」
-    function formatGcs(html) {
-        const o = [...parseVitals(html).obs].reverse().find((x) => x.gcs);
-        return o ? 'GCS ' + o.gcs + vWhen(o.ms) : '（無）';
-    }
+    // 無值一律回「（無）」
     function formatUo(html) {
         const u = parseVitals(html).uo; // 有日期取最新；無日期原樣呈現；0 視為尚未填寫（news2 的規則，與 morning-briefing 一致）
         return u ? 'U/O ' + u.val + ' mL' + vWhen(u.ms) : '（無）';
-    }
-    function formatPain(html) {
-        const p = parseVitals(html).pains;
-        const last = p[p.length - 1];
-        return last ? 'Pain ' + last.v + vWhen(last.ms) : '（無）';
     }
 
     // 影像報告（pacs）：隱藏 Content 欄用 @@@ 分段 = 日期+檢查名 / findings / impression
@@ -627,7 +616,7 @@
 
     // 對外服務：filler 派 'ntuh-datahelper-grab' → 抓全部 → 寫 localStorage → 派 'ntuh-datahelper-result' ping。
     // （用 localStorage 傳 payload、DOM 事件只當 ping，避開跨 userscript sandbox 傳 detail 的限制）
-    const ALL_SOURCE_KEYS = ['tprbp', 'gcs', 'uo', 'pain', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab'];
+    const ALL_SOURCE_KEYS = ['tprbp', 'uo', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab'];
     let grabServiceBusy = false;
     function registerGrabService() {
         document.addEventListener('ntuh-datahelper-grab', async () => {
@@ -866,7 +855,7 @@
             btn.disabled = true;
             setStatus('🔄 背景開頁抓取中…', 'warn');
             try {
-                const results = await grabSources(['tprbp', 'gcs', 'uo', 'pain', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab']);
+                const results = await grabSources(['tprbp', 'uo', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab']);
                 renderResults(results);
                 const okCount = results.filter((r) => r.ok).length;
                 setStatus(okCount === results.length ? '✓ 抓取完成' : `部分成功（${okCount}/${results.length}）`,
