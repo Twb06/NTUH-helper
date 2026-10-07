@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.6.0
+// @version      1.7.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -249,6 +249,27 @@
     // 與 morning-briefing 的差別：那邊只看近 2 天；這裡要「進行中＋近一個月已停用」（同 chart-medication 的 1M），所以 days 設 ABX_DAYS。
     // ⚠️ 未在實機驗證：days=31 伺服器是否照辦、「處方內容」欄的格式——失敗時 grabSources 會退回開 Chart.aspx 的舊做法。
     const ABX_DAYS = 31;
+
+    // 藥名欄是「學名 (商品名 劑型 strength)」，抗生素要顯示商品名（對齊 chart-medication 的 TradeName）。
+    // 邏輯同 prescription-viewer 的 extractBrand（改動時兩邊要同步；這裡不含 BRAND_OVERRIDES——點滴／Xigduo 與抗生素無關）：
+    // 先清管制藥標記 (管N)、鹽類註記 (as HCl salt)，丟掉第一個 '(' 前的學名，再取第一個「非中文開頭、非數字開頭」的 token。
+    function extractBrand(fullName) {
+        if (!fullName) return '';
+        let src = fullName.replace(/^\s*\[自備藥\]\s*/, '');
+        src = src.replace(/[（(]\s*管\s*\d+\s*[）)]/g, ' ');
+        src = src.replace(/\(\s*as\b[^)]*\)/gi, ' ');
+        const q = src.indexOf('(');
+        if (q >= 0) src = src.slice(q + 1);
+        src = src.replace(/[()（）]/g, ' ');
+        const tokens = src.trim().split(/\s+/);
+        for (const tok of tokens) {
+            if (!tok) continue;
+            if (/^[一-鿿㐀-䶿]/.test(tok)) continue; // 開頭中文（劑型前綴或中文品名）
+            if (/^\d/.test(tok)) continue;            // 數字開頭（劑量／strength）
+            return tok.replace(/[,;]+$/, '');
+        }
+        return tokens.find(Boolean) || src.trim();
+    }
     const dayStartMs = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
     function abxQuery(doc, now) {
@@ -307,7 +328,8 @@
             const stopMs = stopText ? dateMs(stopText) : null;
             const rawName = txt(tr.cells[nameCol]);
             if (!rawName) throw new Error('藥歷藥名缺漏');
-            const name = rawName.split('(')[0].trim().slice(0, 40);
+            const brand = extractBrand(rawName); // 抽不到（或抽出劑量之類數字開頭的東西）就退回學名
+            const name = (brand && !/^\d/.test(brand) ? brand : rawName.split('(')[0].trim()).slice(0, 40);
             if (!groups.has(name)) groups.set(name, []);
             groups.get(name).push({ startMs, stopMs, ongoing: stopMs === null || stopMs >= today, prescription: txt(tr.cells[content]) });
         }

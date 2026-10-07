@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.60
+// @version      1.61
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -1508,13 +1508,15 @@ After the admission, the patient was in stable condition, the physical examinati
 
         BLOCK_GROUPS.forEach((g) => {
             // 永遠畫出全部群組與分項（骨架）；有抓到才展開填入，沒抓到收合顯示「尚未抓取」
+            // 生命徵象群組只有圖卡，抓取前沒有東西可放 → 整組先不畫（連標題都不留），抓完才出現
+            const tp = g.title === '生命徵象' ? byKey['tprbp'] : null;
+            if (g.title === '生命徵象' && !tp) return;
             const grp = document.createElement('div');
             grp.className = 'ntuh-grp';
             grp.textContent = g.title;
             wrap.appendChild(grp);
 
             // 生命徵象群組：先放時序圖（資料來自 tprbp 的 series；舊版 data-helper 沒有 series 就略過）
-            const tp = g.title === '生命徵象' ? byKey['tprbp'] : null;
             let chartEl = tp && tp.ok ? buildVitalsChart(tp.series, tp.pains, (byKey['uo'] && byKey['uo'].ok) ? byKey['uo'].text : '') : null;
             if (g.title === '生命徵象' && !chartEl) {
                 // 沒有圖可畫時留一行狀態，避免整個區塊無聲消失
