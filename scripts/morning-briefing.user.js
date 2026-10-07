@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.6.0
+// @version      1.6.1
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -769,7 +769,9 @@ ${dataTable(series)}</div>`;
     const renderErr = (r) => (r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '');
     const renderAbx = (r) => (r.pending.has('abx') ? PENDING_HTML : r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
     const renderTubes = (r) => (r.pending.has('tubes') ? PENDING_HTML : r.tubes ? (r.tubes.length ? r.tubes.map((x) => dayTag(x, '')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
-    const renderLab = (r) => (r.lab ? `<a class="tag new" href="${esc(labPageUrl(r.p))}" target="_blank" rel="noopener" title="開啟這位病人的檢驗報告頁（近兩週）">新報告 ${esc(fmt(r.lab.ms))} ↗</a>` : '<span class="muted">—</span>');
+    // 新報告提示：只當提示（檢驗標題本身已是連結），藍底沿用「新」的樣式。資料來自病房列表「報」連結的 tooltip，
+    // 是載入列表當下的快照（列表之後才出的報告看不到）。
+    const labHint = (r) => (r.lab ? ` <span class="tag new" title="病房列表顯示的最新檢驗時間（載入列表當下的快照）">新報告 ${esc(fmt(r.lab.ms))}</span>` : '');
     function renderPacs(r) {
         if (r.pending.has('pacs')) return PENDING_HTML;
         if (!r.pacs.length) return '<span class="muted">—</span>';
@@ -897,7 +899,8 @@ ${dataTable(series)}</div>`;
             const d = await fetchLab(r.p, win);
             if (w.closed) return;
             body.innerHTML = renderLabBody(d, win);
-            if (sum) sum.textContent = `檢驗數值（${d.items.length} 項）`;
+            const lbs = sum && sum.querySelector('.lbs');
+            if (lbs) lbs.textContent = `檢驗數值（${d.items.length} 項）`;
             r.labState = 'done';
         } catch (e) {
             r.labState = 'error';
@@ -917,7 +920,7 @@ ${dataTable(series)}</div>`;
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k"><a href="${esc(u.cath)}" target="ntuh-catheter" data-cath="1" title="開啟管路頁（固定開在同一個分頁；簡報載入完成後才能開）">管路 ↗</a></span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
-<div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div><div id="c${i}-lab">${renderLab(r)}</div><details class="lb" data-lab="${i}"><summary>檢驗數值（點開載入）</summary><div id="c${i}-labbody"></div></details></div></div>
+<div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div><details class="lb" data-lab="${i}"><summary><span class="lbs">檢驗數值（點擊載入）</span>${labHint(r)}</summary><div id="c${i}-labbody"></div></details></div></div>
 <div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
 <div id="c${i}-charts">${renderCharts(r, win)}</div></section>`;
