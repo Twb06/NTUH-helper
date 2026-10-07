@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.0
+// @version      1.6.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -145,8 +145,10 @@
         // 藥歷圖（抗生素）：worker 是 chart-medication.user.js（跑在 Chart.aspx，
         // 讀 ntuh_token → 自動抗生素+1M → 寫 localStorage['ntuh_data_'+token]）。
         // data-helper 只負責開頁＋輪詢，故只需 buildUrl。
+        // 優先 direct（直接 fetch 藥歷表，不開分頁、不依賴 chart-medication）；direct 失敗才退回開 Chart.aspx 的舊做法
         meds: {
             label: '[Abx]',
+            direct: fetchAbx,
             match: () => false, // Chart.aspx 由 chart-medication 處理，data-helper 不 @match
             buildUrl: (p, token) =>
                 HIS_ORIGIN + '/WebApplication/OtherIndependentProj/MedicationHistory/Chart.aspx' +
@@ -239,6 +241,129 @@
         const job = tubeChain.then(run, run);
         tubeChain = job.catch(() => {});
         return job;
+    }
+
+    // ─── 抗生素（MedicationHistory/Default.aspx，同 morning-briefing 的做法）───────────────
+    // GET 取得 WebForms 表單，再 POST「抗生素」查詢；以院方分類為準，不自己比對藥名。
+    // 查詢所有病人類別（避免「全選」Changed handler 清掉住院勾選），解析時只留第一欄「住」。
+    // 與 morning-briefing 的差別：那邊只看近 2 天；這裡要「進行中＋近一個月已停用」（同 chart-medication 的 1M），所以 days 設 ABX_DAYS。
+    // ⚠️ 未在實機驗證：days=31 伺服器是否照辦、「處方內容」欄的格式——失敗時 grabSources 會退回開 Chart.aspx 的舊做法。
+    const ABX_DAYS = 31;
+    const dayStartMs = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+
+    function abxQuery(doc, now) {
+        const form = doc.querySelector('form');
+        const query = doc.querySelector('[id$="_btnQuery"]');
+        const antibiotics = doc.querySelector('[id$="_ckbAntibiotics"]');
+        const date = doc.querySelector('[id$="_txbStartDate"]');
+        const days = doc.querySelector('[id$="_txbDays"]');
+        const patientTypes = [...doc.querySelectorAll('input[id*="_cblPatientType_"]')];
+        if (!form || !query || !antibiotics || !date || !days || !patientTypes.length
+            || !form.querySelector('input[name="__VIEWSTATE"]')) throw new Error('藥歷查詢表單讀不到');
+        const body = new URLSearchParams();
+        // 保留隱藏欄位（包含分段 VIEWSTATE）；不帶預設藥物分類、保存選項或其他按鈕。
+        for (const el of form.querySelectorAll('input')) {
+            if (!el.name || el.disabled || ['submit', 'button', 'checkbox', 'radio'].includes(el.type)) continue;
+            body.append(el.name, el.value);
+        }
+        body.set('__EVENTTARGET', '');
+        body.set('__EVENTARGUMENT', '');
+        const d = new Date(now);
+        body.set(date.name, `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())}`);
+        body.set(days.name, String(ABX_DAYS));
+        for (const el of patientTypes) body.set(el.name, el.value);
+        const all = doc.querySelector('[id$="_ckbPatientTypeAll"]');
+        if (all) body.set(all.name, all.value);
+        body.set(antibiotics.name, antibiotics.value);
+        body.set(query.name, query.value);
+        return body;
+    }
+
+    // 結果表 → 依藥名彙整成「進行中／已停用」，輸出格式對齊 chart-medication（進行中 → 分隔線 → 已停用；全部已停用則先標 free）
+    function parseAbx(doc, now) {
+        const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+        const table = doc.querySelector('[id$="_grvData"]');
+        if (!table) {
+            if (txt(doc.querySelector('[id$="_lblMessage"]')).includes('日期範圍查無勾選範圍的處方資料')) return '(no abx)';
+            throw new Error('藥歷結果表讀不到');
+        }
+        const headers = [...table.rows[0].cells].map(txt);
+        const start = headers.indexOf('開始日'), stop = headers.indexOf('停用日');
+        const nameCol = headers.indexOf('藥名'), content = headers.indexOf('處方內容');
+        if ([start, stop, nameCol, content].some((i) => i < 0)) throw new Error('藥歷欄位格式改變');
+        const dateMs = (text) => {
+            const m = text.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+            if (!m) throw new Error('藥歷日期格式無法判讀');
+            return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+        };
+        const today = dayStartMs(now);
+        const groups = new Map();
+        for (const tr of [...table.rows].slice(1)) {
+            if (txt(tr.cells[0]) !== '住') continue;
+            if (tr.cells.length !== headers.length) throw new Error('藥歷資料列格式改變');
+            const startMs = dateMs(txt(tr.cells[start]));
+            const stopText = txt(tr.cells[stop]);
+            if (startMs > today) continue; // 還沒開始的醫令
+            const stopMs = stopText ? dateMs(stopText) : null;
+            const rawName = txt(tr.cells[nameCol]);
+            if (!rawName) throw new Error('藥歷藥名缺漏');
+            const name = rawName.split('(')[0].trim().slice(0, 40);
+            if (!groups.has(name)) groups.set(name, []);
+            groups.get(name).push({ startMs, stopMs, ongoing: stopMs === null || stopMs >= today, prescription: txt(tr.cells[content]) });
+        }
+        const md = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; };
+        const ongoing = [], stopped = [];
+        for (const [name, orders] of groups) {
+            const earliest = Math.min(...orders.map((o) => o.startMs));
+            const live = orders.filter((o) => o.ongoing);
+            const newest = (live.length ? live : orders).slice().sort((a, b) => b.startMs - a.startMs)[0];
+            const row = { name, regimen: newest.prescription.slice(0, 80), startKey: earliest };
+            if (live.length) {
+                ongoing.push({ ...row, range: md(earliest) + '-', day: 'D' + (Math.round((today - earliest) / 86400000) + 1), endKey: Infinity });
+            } else {
+                const last = Math.max(...orders.map((o) => o.stopMs));
+                stopped.push({ ...row, range: md(earliest) + '-' + md(last), day: '', endKey: last });
+            }
+        }
+        ongoing.sort((a, b) => b.startKey - a.startKey);
+        stopped.sort((a, b) => (b.endKey - a.endKey) || (b.startKey - a.startKey));
+        if (!ongoing.length && !stopped.length) return '(no abx)';
+        const all = ongoing.concat(stopped);
+        const wName = Math.max(...all.map((r) => r.name.length)), wReg = Math.max(...all.map((r) => r.regimen.length));
+        const line = (r) => (r.name.padEnd(wName + 2) + r.regimen.padEnd(wReg + 2) + r.range + (r.day ? ' ' + r.day : ''));
+        const blocks = [];
+        if (ongoing.length) blocks.push(ongoing.map(line).join('\n'));
+        if (ongoing.length && stopped.length) blocks.push('-----------');
+        if (!ongoing.length && stopped.length) { blocks.push('free'); blocks.push('-----------'); }
+        if (stopped.length) blocks.push(stopped.map(line).join('\n'));
+        return blocks.join('\n');
+    }
+
+    async function fetchAbx(p) {
+        if (!p.SESSION || !p.PersonID) throw new Error('缺少 SESSION/PersonID');
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 45000);
+        try {
+            const url = HIS_ORIGIN + '/WebApplication/OtherIndependentProj/MedicationHistory/Default.aspx'
+                + `?SESSION=${encodeURIComponent(p.SESSION)}&PersonID=${encodeURIComponent(p.PersonID)}`;
+            const initial = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
+            if (!initial.ok) throw new Error('HTTP ' + initial.status);
+            let doc = new DOMParser().parseFromString(await initial.text(), 'text/html');
+            const now = nowMs();
+            // 已保存的「全部藥物」選項若觸發 Changed handler，可能清掉抗生素勾選：
+            // 用回傳的新表單再送一次；仍未套用抗生素分類就報錯，不能把其他藥當抗生素。
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const res = await fetch(url, { method: 'POST', body: abxQuery(doc, now), credentials: 'same-origin', signal: ctrl.signal });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+                const selected = [...doc.querySelectorAll('input[type="checkbox"]:checked')]
+                    .filter((el) => /_ckb/.test(el.id) && !/_ckbPatientTypeAll$/.test(el.id));
+                if (selected.length === 1 && selected[0].id.endsWith('_ckbAntibiotics')) return { text: parseAbx(doc, now) };
+            }
+            throw new Error('藥歷未套用抗生素分類');
+        } catch (e) {
+            throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+        } finally { clearTimeout(timer); }
     }
 
     function extractConsult() {
@@ -736,8 +861,20 @@
 
         // ── tab 模式：背景開權威專頁 → localStorage 回傳 ──
         // 先擋掉缺參數的來源：開了也只會拿到空白頁或登入頁，還會白等到逾時
+        // direct 來源（目前只有 meds）：先直接 fetch，失敗才退回開分頁（fallbackKeys，由下方輪詢區補開）
+        const directKeys = keys.filter((k) => SOURCES[k].direct);
+        const fallbackKeys = [];
+        const directPromises = directKeys.map(async (key) => {
+            const src = SOURCES[key];
+            try {
+                results[key] = { label: src.label, ok: true, ...(await src.direct(params)) };
+            } catch (e) {
+                console.warn(LOG, key, '直接抓取失敗，退回開分頁：', e.message || e);
+                fallbackKeys.push(key);
+            }
+        });
         const tabKeys = [];
-        keys.filter((k) => SOURCES[k].mode !== 'fetch').forEach((key) => {
+        keys.filter((k) => SOURCES[k].mode !== 'fetch' && !SOURCES[k].direct).forEach((key) => {
             const miss = missingParams(key, params);
             if (miss.length) {
                 results[key] = { label: SOURCES[key].label, ok: false, error: '缺少 ' + miss.join('/') };
@@ -749,16 +886,28 @@
         // 清掉先前殘留（token 不符而未被刪除的）鍵
         Object.keys(localStorage).filter((k) => k.startsWith('ntuh_data_'))
             .forEach((k) => localStorage.removeItem(k));
-        const tasks = tabKeys.map((key) => {
+        const openTask = (key) => {
             const src = SOURCES[key];
             const token = makeToken(key);
             const url = src.buildUrl(params, token);
             console.log(LOG, '開背景頁', key, token, url);
             openTab(url);
             return { key, src, token };
-        });
+        };
+        const tasks = tabKeys.map(openTask);
 
         const pollPromise = new Promise((resolve) => {
+            (async () => {
+                // direct 先跑完；失敗的來源這時才補開分頁（沒有 direct 來源時等於立刻往下）
+                await Promise.all(directPromises);
+                for (const key of fallbackKeys) {
+                    const miss = missingParams(key, params);
+                    if (miss.length) { results[key] = { label: SOURCES[key].label, ok: false, error: '缺少 ' + miss.join('/') }; continue; }
+                    tasks.push(openTask(key));
+                }
+                startPoll();
+            })();
+            function startPoll() {
             if (!tasks.length) return resolve();
             const startTime = nowMs();
             const TIMEOUT = 30000; // 由最慢的來源決定：藥歷圖 worker 需 postback reload、lab 重頁（360KB）背景會被節流
@@ -782,6 +931,7 @@
                     resolve();
                 }
             }, 800);
+            }
         });
 
         await Promise.all([...fetchPromises, pollPromise]);
