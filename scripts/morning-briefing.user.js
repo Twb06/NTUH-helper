@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.7.0
+// @version      1.7.1
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -882,7 +882,6 @@ ${dataTable(series)}</div>`;
             bucket.get(key).push(it);
         }
         // DC：正常範圍內不列（有任何一個值超出範圍才列整個項目）；罕見細胞沒有範圍，有就列
-        let dcHidden = 0;
         if (groups.has('DC')) {
             const byItem = new Map();
             for (const it of groups.get('DC')) { if (!byItem.has(it.item)) byItem.set(it.item, []); byItem.get(it.item).push(it); }
@@ -890,7 +889,7 @@ ${dataTable(series)}</div>`;
             for (const [name, list] of byItem) {
                 const r = LAB_DC_RANGE[name];
                 const abnormal = !r || list.some((it) => { const v = parseFloat(it.value); return Number.isNaN(v) || v < r[0] || v > r[1]; });
-                if (abnormal) keep.push(...list); else dcHidden += list.length;
+                if (abnormal) keep.push(...list);
             }
             if (keep.length) groups.set('DC', keep); else groups.delete('DC');
         }
@@ -899,9 +898,8 @@ ${dataTable(series)}</div>`;
         for (const [cat, list] of rest) blocks.push(`<div class="lbh">${esc(cat)}</div>${labTableHtml(list, [...new Set(list.map((it) => it.item))], md)}`);
         const textHtml = texts.length
             ? `<div class="lbh">文字結果</div>${texts.sort((x, y) => x.dateMs - y.dateMs).map((it) => `<div class="lbl"><span class="muted">${md(it.dateMs)}</span> <b>${esc(it.item)}</b> ${esc(it.value)}</div>`).join('')}` : '';
-        const hiddenN = (d.hidden || 0) + dcHidden;
-        const note = `資料來源未提供異常標記與參考範圍，僅顯示數值（欄名的 tooltip 是單位）。${hiddenN ? `已依 lab-summary 規則略過 ${hiddenN} 筆（HCT／MCH／MCHC／RBC 等血液不看的項目、非檢驗值的列、正常範圍內的差別計數）。` : ''}${range}。`;
-        return `${warn}${blocks.join('')}${textHtml}<div class="muted nov">${note}</div>`;
+        // 不再附說明文字（無異常標記／略過筆數／資料窗口）：使用者要求移除；格式不符的警告（warn）仍保留
+        return `${warn}${blocks.join('')}${textHtml}`;
     }
 
     // 第一次展開才為該病人載入；失敗可收合再展開重試
