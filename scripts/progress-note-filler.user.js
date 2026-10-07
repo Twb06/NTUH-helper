@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.62
+// @version      1.64
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -1381,7 +1381,7 @@ After the admission, the patient was in stable condition, the physical examinati
             for (const o of pts) {
                 const x = X(o.ms), c = color(o.SpO2);
                 if (x - lastX >= 17) { s += `<text x="${x}" y="${SY0 + 14}" text-anchor="middle" style="fill:${c};font-size:10px;font-weight:${o.SpO2 <= 93 ? 700 : 500}">${o.SpO2}</text>`; lastX = x; }
-                else s += `<circle cx="${x}" cy="${(SY0 + SY1) / 2}" r="2" fill="${c}"/>`;
+                // 太擠時不畫字也不畫小圓點（圓點會壓在鄰近的數字上）；滑過感應區與數據表仍看得到
                 s += vcHit(x, (SY0 + SY1) / 2, 9, vcHm(o.ms), `SpO₂ ${o.SpO2}%${o.onOxygen ? '（' + o2Text(o) + '）' : '（室內空氣）'}`);
             }
         }
@@ -1395,13 +1395,13 @@ After the admission, the patient was in stable condition, the physical examinati
             for (const o of rows) {
                 const x = X(o.ms), c = color(o);
                 if (x - lastX >= gap) { s += `<text x="${Math.min(VC.X1 - gap / 2, Math.max(VC.X0 + gap / 2, x))}" y="${y0 + 13}" text-anchor="middle" style="fill:${c};font-size:9.5px;font-weight:600">${vcEsc(text(o))}</text>`; lastX = x; }
-                else s += `<circle cx="${x}" cy="${y0 + 9}" r="2" fill="${c}"/>`;
+                // 太擠時不畫字也不畫小圓點（圓點會壓在鄰近的數字上）；滑過感應區與數據表仍看得到
                 s += vcHit(x, y0 + 9, 9, vcHm(o.ms), `${tipName} ${text(o)}`);
             }
             rowBottom = y1 + 8;
         };
         valRow('GCS', series.filter((o) => o.gcs), (o) => o.gcs, (o) => (/^E4M6V[5A]$/i.test(o.gcs) ? '#27500A' : '#a32d2d'), 40, 'GCS');
-        valRow('Pain', (pains || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs).map((o) => ({ ms: o.ms, pain: o.v })), (o) => o.pain, (o) => (o.pain >= 4 ? '#a32d2d' : o.pain >= 1 ? '#b4531a' : '#27500A'), 14, 'Pain');
+        valRow('Pain', (pains || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs).map((o) => ({ ms: o.ms, pain: o.v })), (o) => o.pain, (o) => (o.pain >= 4 ? '#a32d2d' : o.pain >= 1 ? '#b4531a' : '#27500A'), 9, 'Pain');
         valRow('U/O', series.filter((o) => Number.isFinite(o.uo) && o.uo > 0), (o) => o.uo, () => '#185FA5', 22, 'U/O mL');
         return s.replace(/viewBox="0 0 350 \d+"/, `viewBox="0 0 ${VC.W} ${Math.max(VC.Y1 + 20, rowBottom)}"`) + VC_TIP + '</svg>';
     }
