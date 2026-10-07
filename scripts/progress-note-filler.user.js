@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.57
+// @version      1.59
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -1249,13 +1249,14 @@ After the admission, the patient was in stable condition, the physical examinati
 
     // 區塊分組：key → 群組（顏色對應面板卡標題）
     const BLOCK_GROUPS = [
-        { title: '生命徵象',   keys: ['tprbp', 'resp', 'gcs', 'uo', 'pain'], color: '#6fd0e0' },
+        // tprbp／resp 的文字卡已移除（內容都在生命徵象圖裡）；資料仍由 data-helper 抓取，圖要用
+        { title: '生命徵象',   keys: ['gcs', 'uo', 'pain'], color: '#6fd0e0' },
         { title: '管路 · 照護', keys: ['catheter', 'consult', 'diet'], color: '#7adba0' },
         { title: '藥物 · 報告', keys: ['rx', 'meds', 'lab', 'image'],  color: '#f0a860' },
     ];
     // key → 標題（供抓取前先畫骨架用；抓取後結果自帶 label 亦同）
     const KEY_LABELS = {
-        tprbp: '[TPR+BP]', resp: '[Resp]', gcs: '[GCS]', uo: '[UO]', pain: '[Pain]',
+        tprbp: '[TPR+BP]', gcs: '[GCS]', uo: '[UO]', pain: '[Pain]',
         catheter: '[Tubes]', consult: '[Consult]', diet: '[Diet]',
         rx: '[Rx]', meds: '[Abx]', lab: '[Lab]', image: '[Image]',
     };
@@ -1276,7 +1277,7 @@ After the admission, the patient was in stable condition, the physical examinati
     const vcTwo = (n) => String(n).padStart(2, '0');
     const vcHm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${vcTwo(d.getHours())}:${vcTwo(d.getMinutes())}`; };
 
-    function vitalsChartSvg(series, win) {
+    function vitalsChartSvg(series, win, pains) {
         const span = win.toMs - win.fromMs;
         const X = (ms) => +(VC.X0 + ((ms - win.fromMs) / span) * (VC.X1 - VC.X0)).toFixed(2);
         const Y = (a, v) => {
@@ -1347,10 +1348,12 @@ After the admission, the patient was in stable condition, the physical examinati
         }
         // SpO2 列：每次量測一個數字（顏色依高低 ≥96／94–95／92–93／≤91），給氧期間整段藍底並標裝置與流量
         const pts = series.filter((o) => Number.isFinite(o.SpO2));
+        let rowBottom = VC.Y1 + 18;
         if (pts.length) {
             const SY0 = VC.Y1 + 18, SY1 = SY0 + 20;
+            rowBottom = SY1 + 12;
             const color = (v) => (v >= 96 ? '#27500A' : v >= 94 ? '#854F0B' : v >= 92 ? '#b4531a' : '#a32d2d');
-            const o2Text = (o) => { const x = window.NTUHNews2 ? window.NTUHNews2.oxygenInfo(o.inside) : {}; return [x.device, x.flow != null ? x.flow + 'L' : ''].filter(Boolean).join(' ') || '給氧'; };
+            const o2Text = (o) => { const x = window.NTUHNews2 ? window.NTUHNews2.oxygenInfo(o.inside) : {}; return [x.device, x.flow !== null && x.flow !== undefined ? x.flow + 'L' : ''].filter(Boolean).join(' ') || '給氧'; };
             s += `<text x="4" y="${SY0 + 14}" style="fill:#444;font-size:9px">SpO₂ %</text>`
                 + `<rect x="${VC.X0}" y="${SY0}" width="${VC.X1 - VC.X0}" height="${SY1 - SY0}" rx="3" fill="#fffffd" stroke="#c3c2b7"/>`;
             const half = 18;
@@ -1372,11 +1375,29 @@ After the admission, the patient was in stable condition, the physical examinati
                 else s += `<circle cx="${x}" cy="${(SY0 + SY1) / 2}" r="2" fill="${c}">${tip}</circle>`;
             }
         }
-        return s + '</svg>';
+        // GCS／Pain／U/O 列：同一個時間軸，每次量測一個值（太擠時只畫小圓點）。UO 沒有日期的列不會進圖
+        const valRow = (label, rows, text, color, gap, tipName) => {
+            if (!rows.length) return;
+            const y0 = rowBottom, y1 = y0 + 18;
+            s += `<text x="4" y="${y0 + 13}" style="fill:#444;font-size:9px">${label}</text>`
+                + `<rect x="${VC.X0}" y="${y0}" width="${VC.X1 - VC.X0}" height="18" rx="3" fill="#fffffd" stroke="#c3c2b7"/>`;
+            let lastX = -1e9;
+            for (const o of rows) {
+                const x = X(o.ms), c = color(o);
+                const tip = `<title>${vcEsc(vcHm(o.ms))}  ${tipName} ${vcEsc(text(o))}</title>`;
+                if (x - lastX >= gap) { s += `<text x="${Math.min(VC.X1 - gap / 2, Math.max(VC.X0 + gap / 2, x))}" y="${y0 + 13}" text-anchor="middle" style="fill:${c};font-size:9.5px;font-weight:600">${vcEsc(text(o))}${tip}</text>`; lastX = x; }
+                else s += `<circle cx="${x}" cy="${y0 + 9}" r="2" fill="${c}">${tip}</circle>`;
+            }
+            rowBottom = y1 + 8;
+        };
+        valRow('GCS', series.filter((o) => o.gcs), (o) => o.gcs, (o) => (/^E4M6V[5A]$/i.test(o.gcs) ? '#27500A' : '#a32d2d'), 40, 'GCS');
+        valRow('Pain', (pains || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs).map((o) => ({ ms: o.ms, pain: o.v })), (o) => o.pain, (o) => (o.pain >= 4 ? '#a32d2d' : o.pain >= 1 ? '#b4531a' : '#27500A'), 14, 'Pain');
+        valRow('U/O', series.filter((o) => Number.isFinite(o.uo) && o.uo > 0), (o) => o.uo, () => '#185FA5', 22, 'U/O mL');
+        return s.replace(/viewBox="0 0 350 \d+"/, `viewBox="0 0 ${VC.W} ${Math.max(VC.Y1 + 20, rowBottom)}"`) + '</svg>';
     }
 
     // 時間窗：最近 48 小時（終點取「現在」與最後一筆量測較晚者）
-    function buildVitalsChart(series) {
+    function buildVitalsChart(series, pains) {
         if (!series || !series.length) return null;
         const last = series[series.length - 1].ms;
         const toMs = Math.max(nowMs(), last);
@@ -1384,7 +1405,7 @@ After the admission, the patient was in stable condition, the physical examinati
         const inWin = series.filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs);
         if (!inWin.length) return null;
         const wrap = document.createElement('div');
-        wrap.innerHTML = vitalsChartSvg(inWin, win);
+        wrap.innerHTML = vitalsChartSvg(inWin, win, pains);
         wrap.style.cssText = 'padding:4px 6px 6px;background:#fffffd';
         // 點軸切換該項顯示（BP/R/P/T）
         wrap.querySelectorAll('g.ax').forEach((ax) => {
@@ -1441,8 +1462,8 @@ After the admission, the patient was in stable condition, the physical examinati
             wrap.appendChild(grp);
 
             // 生命徵象群組：先放時序圖（資料來自 tprbp 的 series；舊版 data-helper 沒有 series 就略過）
-            const tp = g.keys[0] === 'tprbp' ? byKey['tprbp'] : null;
-            const chartEl = tp && tp.ok ? buildVitalsChart(tp.series) : null;
+            const tp = g.title === '生命徵象' ? byKey['tprbp'] : null;
+            const chartEl = tp && tp.ok ? buildVitalsChart(tp.series, tp.pains) : null;
             if (chartEl) {
                 const card = document.createElement('div');
                 card.className = 'ntuh-blk';

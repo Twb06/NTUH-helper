@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.2.0
+// @version      1.4.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
-// @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
-// @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/CatheterCare.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/NotifyOtherDoctor.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/DoctorDietMain.aspx*
@@ -16,6 +14,7 @@
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-asmx.js
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
@@ -68,6 +67,10 @@
         return HIS_ORIGIN + '/WebApplication/InPatient/Nursing/VitalSign_TPR.aspx'
             + `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}`;
     }
+    function catheterNavUrl(p) {
+        return HIS_ORIGIN + '/WebApplication/InPatient/Nursing/CatheterCare.aspx'
+            + `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}&PatClass=${p.PatClass || 'I'}`;
+    }
     function pacsNavUrl(p) {
         return HIS_ORIGIN + '/WebApplication/ElectronicMedicalReportViewer/PACSImageShowList.aspx'
             + `?PersonID=${p.PersonID}&Seed=${p.Seed || ''}`;
@@ -86,15 +89,8 @@
     //   label                  → 預覽面板標題
     // ═════════════════════════════════════════════
     const SOURCES = {
-        catheter: {
-            label: '[Tubes]',
-            match: (u) => /\/Nursing\/CatheterCare\.aspx/i.test(u),
-            buildUrl: (p, token) =>
-                HIS_ORIGIN + '/WebApplication/InPatient/Nursing/CatheterCare.aspx' +
-                `?session=${p.SESSION}&AccountIDSE=${p.AccountIDSE}&PatClass=${p.PatClass || 'I'}` +
-                `&ntuh_token=${encodeURIComponent(token)}`,
-            extract: extractCatheter,
-        },
+        // 管路：不再開分頁，直接打 CatheterCare_Handler（同 morning-briefing），並逐條驗證病人（見 fetchTubes）
+        catheter: { label: '[Tubes]', mode: 'fetch', run: fetchTubes, navUrl: catheterNavUrl, match: () => false },
         consult: {
             label: '[Consult]',
             match: (u) => /\/Ward\/NotifyOtherDoctor\.aspx/i.test(u),
@@ -134,10 +130,9 @@
             prepare: prepareNursing,
             extract: extractNursing,
         },
-        // vitalsign 拆成 5 個分項來源，共用同一份 fetch（datatype 快取），各自無值顯示（無）
+        // vitalsign 拆成 4 個分項來源，共用同一份 fetch（datatype 快取），各自無值顯示（無）
         // navUrl：點標題跳轉 VitalSign_TPR.aspx（生命徵象圖）
-        tprbp: { label: '[TPR+BP]', mode: 'fetch', datatype: 'vitalsign', format: formatTprBp, extra: (html) => ({ series: vitalSeries(html) }), navUrl: vitalsNavUrl, match: () => false },
-        resp:  { label: '[Resp]',   mode: 'fetch', datatype: 'vitalsign', format: formatResp,  navUrl: vitalsNavUrl, match: () => false },
+        tprbp: { label: '[TPR+BP]', mode: 'fetch', datatype: 'vitalsign', format: formatTprBp, extra: vitalExtra, navUrl: vitalsNavUrl, match: () => false },
         gcs:   { label: '[GCS]',    mode: 'fetch', datatype: 'vitalsign', format: formatGcs,   navUrl: vitalsNavUrl, match: () => false },
         uo:    { label: '[UO]',     mode: 'fetch', datatype: 'vitalsign', format: formatUo,    navUrl: vitalsNavUrl, match: () => false },
         pain:  { label: '[Pain]',   mode: 'fetch', datatype: 'vitalsign', format: formatPain,  navUrl: vitalsNavUrl, match: () => false },
@@ -193,36 +188,59 @@
     // ═════════════════════════════════════════════
     // 背景端擷取邏輯（STUB：先抓最可能的資料表全文，DOM 確認後精修）
     // ═════════════════════════════════════════════
-    // 導管觀察紀錄（非導管本體）判定，需濾掉
-    const CATH_OBS_RE = /^(正常|異常|外移|移位|脫落|滑脫|阻塞|滲液|滲血|紅腫|鬆脫|自拔|更換|[\s,，]|\+)+$/;
     // 周邊留置針不列入（但 CVC/PICC/Port-A 等中央導管要留）
     const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;
 
-    function extractCatheter() {
-        // catheterTimeLine 是頁面全域，須從 unsafeWindow 取（沙箱 window 沒有）
-        const pw = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
-        // SIMILE Timeline 尚未就緒 → 回 null（worker 會繼續輪詢）
-        const tl = pw.catheterTimeLine;
-        if (!tl || typeof tl.getBand !== 'function') return null;
-        let src;
-        try { src = tl.getBand(0).getEventSource(); } catch (e) { return null; }
-        if (!src || typeof src.getAllEventIterator !== 'function') return null;
-
-        const md = (d) => d && d.getMonth ? `${d.getMonth() + 1}/${d.getDate()}` : '';
-        const lines = [];
-        const it = src.getAllEventIterator();
-        while (it.hasNext()) {
-            const e = it.next();
-            const t = (e.getText() || '').trim();
-            if (!t || CATH_OBS_RE.test(t)) continue;          // 濾掉觀察紀錄
-            if (CATH_PERIPHERAL_RE.test(t)) continue;         // 濾掉周邊留置針
-
-            const removed = String(e._RemovedCatheter) === 'true'
-                || (e.getProperty && e.getProperty('RemovedCatheter') === true);
-            if (removed) continue;                             // 只留現存
-            lines.push(t + '  ' + md(e.getStart()));
-        }
-        return lines.length ? lines.join('\n') : '（無現存導管）';
+    // ─── 管路（CatheterCare_Handler.aspx）───────────────────────
+    // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
+    // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
+    // 額外參數一律被忽略（新竹實測 2026-09-30，見 morning-briefing）。所以：
+    //   1. 一次一位（tubeChain 串行），先載入該病人的頁面 HTML（不跑頁面 JS）再立刻打 handler。
+    //   2. 每條管路的 <decorate> 都帶 <caseno>（＝AccountIDSE），逐條驗證，對不上就整批丟棄。
+    // 已知盲點：這位病人若一條管路都沒有，就沒有 caseno 可驗證；此時若有人在別的分頁操作 CatheterCare，
+    // 理論上可能拿到別人的空結果。抓取期間不要同時操作 CatheterCare。
+    const tubeText = (node, tag) => { const e = node.getElementsByTagName(tag)[0]; return e ? e.textContent.trim() : ''; };
+    const tubeInsertMs = (t) => {
+        const m = t.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
+        return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN;
+    };
+    let tubeChain = Promise.resolve();
+    function fetchTubes(p) {
+        const run = async () => {
+            if (!p.SESSION || !p.AccountIDSE) throw new Error('缺少 SESSION/AccountIDSE');
+            const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            try {
+                const opt = { credentials: 'same-origin', signal: ctrl.signal };
+                const page = await fetch(`${dir}CatheterCare.aspx?session=${encodeURIComponent(p.SESSION)}&AccountIDSE=${encodeURIComponent(p.AccountIDSE)}&PatClass=${encodeURIComponent(p.PatClass || 'I')}`, opt);
+                if (!page.ok) throw new Error('管路頁 HTTP ' + page.status);
+                await page.text();
+                const res = await fetch(`${dir}CatheterCare_Handler.aspx?aa=${nowMs()}&mode=getCatheterRecord&catherStatus=UnRemovedOnly`, opt);
+                if (!res.ok) throw new Error('管路資料 HTTP ' + res.status);
+                const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
+                if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('UnRemovedCatheter').length) throw new Error('管路資料格式不符');
+                const decs = [...doc.getElementsByTagName('decorate')];
+                const total = parseInt(tubeText(doc.getElementsByTagName('UnRemovedCatheter')[0], 'TotalCount'), 10);
+                if (Number.isFinite(total) && total !== decs.length) throw new Error(`管路數量不符（${total}／${decs.length}）`);
+                if (decs.some((d) => tubeText(d, 'caseno') !== String(p.AccountIDSE))) throw new Error('管路資料與病人不符，已丟棄');
+                const today = new Date(nowMs()); today.setHours(0, 0, 0, 0);
+                const lines = decs.map((d) => ({ full: tubeText(d, 'CatheterName'), startMs: tubeInsertMs(tubeText(d, 'CatheterInsertDateTime')) }))
+                    .filter((x) => x.full && !CATH_PERIPHERAL_RE.test(x.full) && Number.isFinite(x.startMs))
+                    .sort((a, b) => a.startMs - b.startMs)
+                    .map((x) => {
+                        const d0 = new Date(x.startMs);
+                        const day = Math.round((today.getTime() - new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime()) / 86400000) + 1;
+                        return `${x.full}  ${d0.getMonth() + 1}/${d0.getDate()}（Day ${day}）`;
+                    });
+                return { text: lines.length ? lines.join('\n') : '（無現存導管）' };
+            } catch (e) {
+                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+            } finally { clearTimeout(timer); }
+        };
+        const job = tubeChain.then(run, run);
+        tubeChain = job.catch(() => {});
+        return job;
     }
 
     function extractConsult() {
@@ -486,118 +504,72 @@
         };
     }
 
-    // 同一次抓取內共用（多個 fetch 來源可能用同一 datatype，如 vitalsign）
+    // 同一次抓取內共用（多個 fetch 來源可能用同一 datatype，如 vitalsign）。
+    // 請求本身走共用 lib NTUHAsmx（同 morning-briefing）：併發上限、進行中去重、逾時 30 秒
+    // （計時含排隊時間，所以比單發請求寬鬆；原本自己寫的 fetch 是 12 秒、沒有排隊）。
+    const OUTER_TIMEOUT_MS = 30000;
     let outerCache = {};
     function fetchOuterData(datatype) {
-        if (outerCache[datatype]) return outerCache[datatype];
-        const p = (async () => {
-            const url = window.location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '')
-                + 'ProgressNoteControl/Service/OuterData.asmx/GetOuterDataTable';
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 12000);
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json; charset=utf-8' },
-                    body: JSON.stringify({ jsonstring: JSON.stringify(getOuterParams()), datatype }),
-                    signal: ctrl.signal,
-                    credentials: 'same-origin',
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const j = await res.json();
-                return JSON.parse(j.d).Html || '';
-            } finally {
-                clearTimeout(timer);
-            }
-        })();
-        outerCache[datatype] = p;
-        return p;
+        if (!outerCache[datatype]) {
+            outerCache[datatype] = window.NTUHAsmx.outerData(datatype, { context: getOuterParams(), timeoutMs: OUTER_TIMEOUT_MS });
+        }
+        return outerCache[datatype];
     }
 
-    // SpO2 值＋給氧裝置字串。inside 格式 "28%,5L,Mask"（FiO2,流量,裝置），空=room air
-    function spo2Str(pct, inside) {
-        const parts = (inside || '').split(',').map((s) => s.trim());
-        let fio2 = '', flow = '', deviceRaw = '';
-        if (parts.length >= 3) { [fio2, flow, deviceRaw] = parts; }
-        else if (parts.length === 1) { deviceRaw = parts[0]; }
-        let device;
-        if (/cannula/i.test(deviceRaw)) device = 'NC';
-        else if (/mask/i.test(deviceRaw)) device = 'Mask';
-        else if (!deviceRaw || /room\s*air/i.test(deviceRaw)) device = 'Room air';
-        else device = deviceRaw;
-        const bits = [pct + '%'];
-        const dev = device === 'Room air'
-            ? 'Room air'
-            : [device, (flow && flow.trim() ? flow : '')].filter(Boolean).join(' ');
-        if (dev) bits.push(dev);
-        if (fio2 && fio2 !== '' && fio2 !== '%') bits.push('FiO2 ' + fio2);
-        return bits.join(' ');
-    }
-
-    // vitalsign 每列一項，各取最新一筆 → 供 5 個分項來源共用。
+    // vitalsign 解析一律走 lib/news2.js（與 morning-briefing 同一份）。
+    // 之前自己寫的 scanVitals 要求 "R:" 後面一定有數字，但實測 R 常是空的（"T:37.1 P:84 R:"），
+    // 那一整列 T/P 會被丟掉；也沒排除 0001/01/01 的佔位列。
     //   TPR "T:36.4 P:103 R:20"、BP "BP:111/71"、SpO2 "SpO2:97%(...)"、Pain "Pain score:0"、
-    //   GCS "GCS:E4M5V1"(V 可為 A)、U/O "U/O:250"（可能無日期，退回首見值）
-    function scanVitals(html) {
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        const dtRe = /(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2})/;
-        const latest = {}; // key → { dt, val }
-        let uoFallback = null;
-        const consider = (key, dt, val) => {
-            if (!dt) return;
-            if (!latest[key] || dt > latest[key].dt) latest[key] = { dt, val };
-        };
-        doc.querySelectorAll('tr').forEach((tr) => {
-            const t = tr.innerText.replace(/\s+/g, ' ').trim();
-            const dt = t.match(dtRe)?.[1] || '';
-            let m;
-            if ((m = t.match(/T:\s*([\d.]+)\s*P:\s*(\d+)\s*R:\s*(\d+)/i))) consider('tpr', dt, { T: m[1], P: m[2], R: m[3] });
-            else if ((m = t.match(/BP:\s*(\d+\/\d+)/i))) consider('bp', dt, m[1]);
-            else if ((m = t.match(/SpO2:\s*(\d+)%\(([^)]*)\)/i))) consider('spo2', dt, { pct: m[1], inside: m[2] });
-            else if ((m = t.match(/Pain(?:\s*score)?:\s*(\d+)/i))) consider('pain', dt, m[1]);
-            else if ((m = t.match(/GCS:\s*(E\d+M\d+V\w+)/i))) consider('gcs', dt, m[1]);
-            else if ((m = t.match(/U\/?O:\s*(\d+)/i))) { if (dt) consider('uo', dt, m[1]); else if (uoFallback === null) uoFallback = m[1]; }
-        });
-        if (!latest.uo && uoFallback !== null) latest.uo = { dt: '', val: uoFallback };
-        return latest;
-    }
-    // 生命徵象時序（給 filler 畫圖）：沿用 morning-briefing 的解析（lib/news2.js），只留近 72 小時避免撐大 localStorage
-    function vitalSeries(html) {
-        if (!window.NTUHNews2) return [];
+    //   GCS "GCS:E4M5V1"(V 可為 A)、U/O "U/O:250"（可能無日期）
+    let vitalParsed = null; // 單筆快取：5 個分項來源共用同一份 html，只解析一次
+    function parseVitals(html) {
+        if (vitalParsed && vitalParsed.html === html) return vitalParsed;
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const txt = (el) => el.textContent.replace(/\s+/g, ' ').trim();
         let texts = [...doc.querySelectorAll('[id$="_Content"]')].map(txt);
         if (!texts.length) texts = [...doc.querySelectorAll('tr')].map(txt);
         const obs = window.NTUHNews2.parseVitalRows(texts);
+        // Pain 在 news2 不算觀察值（會多出一組全空的列），所以單獨抓：[{ ms, v }]
+        const pains = [];
+        for (const t of texts) {
+            const m = t.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}).*?Pain(?:\s*score)?:\s*(\d+)/i);
+            if (m && +m[1] >= 2000) pains.push({ ms: new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime(), v: +m[6] });
+        }
+        pains.sort((a, b) => a.ms - b.ms);
+        vitalParsed = { html, obs, pains, uo: window.NTUHNews2.parseUo(texts) };
+        return vitalParsed;
+    }
+    // 圖用的時序：只留近 72 小時避免撐大 localStorage
+    function vitalExtra(html) {
+        const { obs, pains } = parseVitals(html);
         const last = obs.length ? obs[obs.length - 1].ms : 0;
-        return obs.filter((o) => o.ms >= last - 72 * 3600000);
+        return { series: obs.filter((o) => o.ms >= last - 72 * 3600000), pains: pains.filter((o) => o.ms >= last - 72 * 3600000) };
     }
-    const vWhen = (dt) => (dt ? '  @' + dt.slice(5).replace(/^0/, '') : '');
+    const two = (n) => String(n).padStart(2, '0');
+    const vWhen = (ms) => {
+        if (!Number.isFinite(ms)) return '';
+        const d = new Date(ms);
+        return `  @${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`;
+    };
 
-    // 5 個分項格式器：各取最新，無值一律回「（無）」
+    // tprbp 的文字不顯示（卡片已由生命徵象圖取代），只留一行摘要；真正的內容是 extra 帶出的 series
     function formatTprBp(html) {
-        const L = scanVitals(html);
-        const parts = [];
-        if (L.tpr) { const v = L.tpr.val; parts.push(`T ${v.T} P ${v.P} R ${v.R}`); }
-        if (L.bp) parts.push('BP ' + L.bp.val);
-        if (!parts.length) return '（無）';
-        return parts.join('   ') + vWhen((L.tpr || L.bp).dt);
+        const { obs } = parseVitals(html);
+        return obs.length ? `（${obs.length} 組量測，最新${vWhen(obs[obs.length - 1].ms)}）` : '（無）';
     }
-    function formatResp(html) {
-        const L = scanVitals(html);
-        if (!L.spo2) return '（無）';
-        return 'SpO2 ' + spo2Str(L.spo2.val.pct, L.spo2.val.inside) + vWhen(L.spo2.dt);
-    }
+    // 3 個分項格式器：各取最新，無值一律回「（無）」
     function formatGcs(html) {
-        const L = scanVitals(html);
-        return L.gcs ? 'GCS ' + L.gcs.val + vWhen(L.gcs.dt) : '（無）';
+        const o = [...parseVitals(html).obs].reverse().find((x) => x.gcs);
+        return o ? 'GCS ' + o.gcs + vWhen(o.ms) : '（無）';
     }
     function formatUo(html) {
-        const L = scanVitals(html);
-        return L.uo ? 'U/O ' + L.uo.val + ' mL' + vWhen(L.uo.dt) : '（無）';
+        const u = parseVitals(html).uo; // 有日期取最新；無日期原樣呈現；0 視為尚未填寫（news2 的規則，與 morning-briefing 一致）
+        return u ? 'U/O ' + u.val + ' mL' + vWhen(u.ms) : '（無）';
     }
     function formatPain(html) {
-        const L = scanVitals(html);
-        return L.pain ? 'Pain ' + L.pain.val + vWhen(L.pain.dt) : '（無）';
+        const p = parseVitals(html).pains;
+        const last = p[p.length - 1];
+        return last ? 'Pain ' + last.v + vWhen(last.ms) : '（無）';
     }
 
     // 影像報告（pacs）：隱藏 Content 欄用 @@@ 分段 = 日期+檢查名 / findings / impression
@@ -655,7 +627,7 @@
 
     // 對外服務：filler 派 'ntuh-datahelper-grab' → 抓全部 → 寫 localStorage → 派 'ntuh-datahelper-result' ping。
     // （用 localStorage 傳 payload、DOM 事件只當 ping，避開跨 userscript sandbox 傳 detail 的限制）
-    const ALL_SOURCE_KEYS = ['tprbp', 'resp', 'gcs', 'uo', 'pain', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab'];
+    const ALL_SOURCE_KEYS = ['tprbp', 'gcs', 'uo', 'pain', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab'];
     let grabServiceBusy = false;
     function registerGrabService() {
         document.addEventListener('ntuh-datahelper-grab', async () => {
@@ -725,7 +697,6 @@
 
     // 各來源開頁前的必要參數；缺就別開（開了也是空白頁或被導回登入，白等 30 秒再重試）
     const SOURCE_REQUIRES = {
-        catheter: ['SESSION', 'AccountIDSE'],
         consult:  ['SESSION', 'AccountIDSE', 'PersonID'],
         diet:     ['SESSION', 'AccountIDSE', 'PersonID'],
         handover: ['SESSION', 'AccountIDSE'],
@@ -763,8 +734,12 @@
         const fetchPromises = fetchKeys.map(async (key) => {
             const src = SOURCES[key];
             try {
-                const html = await fetchOuterData(src.datatype);
-                results[key] = { label: src.label, ok: true, text: src.format(html), ...(src.extra ? src.extra(html) : {}) };
+                if (src.run) { // 自帶抓取邏輯（不經 OuterData）
+                    results[key] = { label: src.label, ok: true, ...(await src.run(params)) };
+                } else {
+                    const html = await fetchOuterData(src.datatype);
+                    results[key] = { label: src.label, ok: true, text: src.format(html), ...(src.extra ? src.extra(html) : {}) };
+                }
             } catch (e) {
                 results[key] = { label: src.label, ok: false, error: e.message || String(e) };
             }
@@ -891,7 +866,7 @@
             btn.disabled = true;
             setStatus('🔄 背景開頁抓取中…', 'warn');
             try {
-                const results = await grabSources(['tprbp', 'resp', 'gcs', 'uo', 'pain', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab']);
+                const results = await grabSources(['tprbp', 'gcs', 'uo', 'pain', 'catheter', 'consult', 'diet', 'handover', 'nursing', 'image', 'meds', 'rx', 'lab']);
                 renderResults(results);
                 const okCount = results.filter((r) => r.ok).length;
                 setStatus(okCount === results.length ? '✓ 抓取完成' : `部分成功（${okCount}/${results.length}）`,
