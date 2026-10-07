@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.6.1
+// @version      1.7.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -523,7 +523,6 @@
                 res.vitals.total = obs.length;
                 res.chartSeries = obs.filter((o) => o.ms >= win.refFromMs && o.ms <= win.toMs);
                 res.uo = NTUHNews2.parseUo(texts);
-                res.o2 = NTUHNews2.o2Change(res.vitals.series);
             }),
             job('pacs', '影像', async () => {
                 res.pacs = parsePacs(await NTUHAsmx.outerData('pacs', { context: ctx, timeoutMs: OUTER_TIMEOUT_MS }), win.refFromMs);
@@ -759,12 +758,10 @@ ${dataTable(series)}</div>`;
 
     function renderVit(r, win) {
         if (r.pending.has('vitals')) return '';
-        const o2Cls = r.o2 && (r.o2.kind === 'new' || r.o2.kind === 'up') ? ' warn' : '';
-        const o2 = r.o2 ? `<div><span class="tag${o2Cls}">${esc(r.o2.text)}${r.o2.ms ? '（' + esc(fmt(r.o2.ms)) + '）' : ''}</span></div>` : '';
         const uo = r.uo ? `<div class="muted nov">尿量 ${r.uo.val} mL${r.uo.ms ? '（' + esc(fmt(r.uo.ms)) + '）' : '（院內未標日期）'}</div>` : '';
         const noVitals = r.vitals && r.vitals.noData
             ? `<div class="muted nov">${r.chartSeries && r.chartSeries.length ? '昨夜（' + esc(fmt(win.fromMs)) + ' 起）沒有 vitals 量測，圖上為前一日的參考資料' : '時間窗內沒有 vitals 量測（沒量不等於正常）'}</div>` : '';
-        return o2 + uo + noVitals;
+        return uo + noVitals;   // 氧氣提示已由 SpO2 列取代（給氧底色與流量標示）
     }
     const renderErr = (r) => (r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '');
     const renderAbx = (r) => (r.pending.has('abx') ? PENDING_HTML : r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
@@ -798,11 +795,29 @@ ${dataTable(series)}</div>`;
             cath: `${base}Nursing/CatheterCare.aspx?session=${ses}&AccountIDSE=${acct}&PatClass=I`,
         };
     }
-    // 標題列只放護理紀錄、交班；檢驗、生命徵象圖、處方的連結分別放在各自區塊的標題裡（見 cardShell）
-    function renderLinks(r) {
+    // 標題列放病程、護理紀錄、交班；檢驗、生命徵象圖、處方的連結分別放在各自區塊的標題裡（見 cardShell）
+    // 病程要 PersonID，所以和影像一樣在「點擊時」才組網址（data-prog 由 run() 裡的委派處理）。
+    function renderLinks(r, i) {
         const u = pageUrls(r.p);
-        return [['護理紀錄', u.nursing], ['交班', u.handover]]
+        const prog = `<a class="tag" href="#" data-prog="${i}" title="開啟病程頁（新分頁；點擊時才取得這位病人的識別）">病程 ↗</a>`;
+        return prog + [['護理紀錄', u.nursing], ['交班', u.handover]]
             .map(([t, url]) => `<a class="tag" href="${esc(url)}" target="_blank" rel="noopener">${t} ↗</a>`).join('');
+    }
+    // 病程頁（Ward/InsertProgressNoteContent.aspx）：網址參數 SESSION、PatClass=I、AccountIDSE、PersonID、Hosp=T0、Seed、EMRPop=Y
+    // （使用者提供的樣本，2026-10）。PersonID 從病房 Cookie 取（只在記憶體內）。Seed 樣本有值、這裡留空（未實測，
+    // 其他頁面 Seed 留空皆可）。這頁網址本身就帶了病人識別（SESSION／AccountIDSE／PersonID），不像管路頁靠伺服器端
+    // 「目前病人」，且 HIS 從列表按「程」也是每位病人開一個新視窗，所以每次開新分頁，不用具名分頁。
+    function openProgressNote(w, p) {
+        try {
+            const pid = personIdFromPatientList(document.cookie, p.caseno);
+            const url = location.origin + '/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx'
+                + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}`
+                + `&PersonID=${encodeURIComponent(pid)}&Hosp=T0&Seed=&EMRPop=Y`;
+            const tab = w.open(url, '_blank');
+            if (!tab) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
+        } catch (e) {
+            alert('無法開啟病程頁：' + e.message + '。請改從病房列表按「程」進入。');
+        }
     }
     // 影像標題連結：點擊時從病房 Cookie 取得 PersonID，再開影像列表。
     function openPacsList(w, p) {
@@ -915,7 +930,7 @@ ${dataTable(series)}</div>`;
         const p = r.p;
         const u = pageUrls(p);
         return `<section class="card">
-<div class="hd"><b>${esc(p.bed)}</b> ${esc(p.name)} <small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small> <span class="lk">${renderLinks(r)}</span></div>
+<div class="hd"><b>${esc(p.bed)}</b> ${esc(p.name)} <small class="muted">${esc(p.chartNo)} · ${esc(p.sex)} ${esc(p.age)}${p.hospDay ? ' · 住院 ' + esc(p.hospDay) + ' 天' : ''}</small> <span class="lk">${renderLinks(r, i)}</span></div>
 <div id="c${i}-vit">${renderVit(r, win)}</div>
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
@@ -1008,6 +1023,8 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.addEventListener('click', (ev) => {
             const c = ev.target.closest && ev.target.closest('a[data-cath]');
             if (c && loading) { ev.preventDefault(); alert('簡報還在載入管路，請等頁首顯示「完成」後再開管路頁（避免兩邊互相干擾）。'); return; }
+            const g = ev.target.closest && ev.target.closest('a[data-prog]');
+            if (g) { ev.preventDefault(); const rg = states[+g.getAttribute('data-prog')]; if (rg) openProgressNote(w, rg.p); return; }
             const a = ev.target.closest && ev.target.closest('a[data-pacs]');
             if (!a) return;
             ev.preventDefault();
