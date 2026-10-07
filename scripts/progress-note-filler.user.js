@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.56
+// @version      1.57
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
 // @grant        none
@@ -1259,6 +1260,145 @@ After the admission, the patient was in stable condition, the physical examinati
         rx: '[Rx]', meds: '[Abx]', lab: '[Lab]', image: '[Image]',
     };
 
+
+    // ── 生命徵象圖（窄版，沿用 morning-briefing 的院內樣式）──────────────
+    // 四條軸由左至右 BP/R/P/T、各自同色；正常帶 = 中間 2/5（T 36–38、P 60–100、R 10–22、BP 50–150），其餘為異常區；
+    // 未量測（NA）不連線。配色取自院內圖：異常 #ffd4d3、正常 #d3e7d0。點軸可切換該項顯示。
+    // 面板只有 380px，所以幾何重排（不是縮放 morning-briefing 的 990px 版，那樣字會小到看不清）。
+    const VC = { X0: 112, X1: 340, Y0: 22, Y1: 150, W: 350, H: 202 };
+    const VC_AXES = [
+        { k: 'BP', x: 24, color: 'green', lo: 0, hi: 250, step: 50 },
+        { k: 'R', x: 51, color: 'black', lo: 4, hi: 34, step: 6, naY: 128 },
+        { k: 'P', x: 78, color: 'red', lo: 40, hi: 140, step: 20, naY: 114 },
+        { k: 'T', x: 105, color: 'blue', lo: 35, hi: 40, step: 1, naY: 144 },
+    ];
+    const vcEsc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const vcTwo = (n) => String(n).padStart(2, '0');
+    const vcHm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${vcTwo(d.getHours())}:${vcTwo(d.getMinutes())}`; };
+
+    function vitalsChartSvg(series, win) {
+        const span = win.toMs - win.fromMs;
+        const X = (ms) => +(VC.X0 + ((ms - win.fromMs) / span) * (VC.X1 - VC.X0)).toFixed(2);
+        const Y = (a, v) => {
+            const c = Math.min(a.hi, Math.max(a.lo, v));
+            return +(VC.Y1 - ((c - a.lo) / (a.hi - a.lo)) * (VC.Y1 - VC.Y0)).toFixed(2);
+        };
+        const band = (VC.Y1 - VC.Y0) / 5;                 // 五等分，正常帶 = 中間 2/5
+        const yTop = +(VC.Y0 + band).toFixed(2), yBot = +(VC.Y0 + band * 4).toFixed(2);
+        const st = (a) => `fill:${a.color};stroke:${a.color}`;
+        let s = `<svg class="ntuh-vc" viewBox="0 0 ${VC.W} ${VC.H}" width="100%" role="img" aria-label="生命徵象圖">`;
+        s += `<rect width="${VC.W}" height="${VC.H}" fill="#fffffd"/>`
+            + `<rect x="${VC.X0}" y="${VC.Y0}" width="${VC.X1 - VC.X0}" height="${yTop - VC.Y0}" fill="#ffd4d3"/>`
+            + `<rect x="${VC.X0}" y="${yTop}" width="${VC.X1 - VC.X0}" height="${yBot - yTop}" fill="#d3e7d0"/>`
+            + `<rect x="${VC.X0}" y="${yBot}" width="${VC.X1 - VC.X0}" height="${VC.Y1 - yBot}" fill="#ffd4d3"/>`
+            + `<line x1="${VC.X0}" x2="${VC.X1}" y1="${yTop}" y2="${yTop}" stroke="#000" stroke-opacity=".2"/><line x1="${VC.X0}" x2="${VC.X1}" y1="${yBot}" y2="${yBot}" stroke="#000" stroke-opacity=".2"/>`;
+        // 日期標在上方；每個午夜一條深色垂直線；下方每 12 小時一個時間刻度
+        const dlbl = (ms, x, anchor) => { const d = new Date(ms); return `<text x="${x}" y="12" text-anchor="${anchor}" style="fill:#000;font-size:10px">${d.getMonth() + 1}/${d.getDate()}</text>`; };
+        s += dlbl(win.fromMs, VC.X0 + 2, 'start');
+        const d0 = new Date(win.fromMs); d0.setHours(24, 0, 0, 0);
+        for (let m = d0.getTime(); m < win.toMs; m += 86400000) {
+            const x = X(m);
+            s += `<line x1="${x}" x2="${x}" y1="${VC.Y0}" y2="${VC.Y1 + 4}" stroke="#000" stroke-opacity=".25" stroke-width="1.3"/>${dlbl(m, x + 2, 'start')}`;
+        }
+        const t0 = new Date(win.fromMs); t0.setMinutes(0, 0, 0);
+        for (let t = t0.getTime(); t <= win.toMs; t += 3600000) {
+            const h = new Date(t).getHours();
+            if (t < win.fromMs || h % 12 !== 0 || h === 0) continue;
+            s += `<text x="${X(t)}" y="${VC.Y1 + 13}" text-anchor="middle" style="fill:#898781;font-size:9px">${vcTwo(h)}:00</text>`;
+        }
+        // 軸
+        for (const a of VC_AXES) {
+            s += `<g class="ax" data-s="${a.k}" style="${st(a)};stroke-width:.3;cursor:pointer"><text x="${a.x - 12}" y="12" style="font-size:10px;font-weight:700">${a.k}</text>`
+                + `<line x1="${a.x}" y1="${VC.Y1}" x2="${a.x}" y2="${VC.Y0}" style="stroke-width:1"/>`;
+            for (let v = a.lo; v <= a.hi + 1e-9; v += a.step) {
+                const y = Y(a, v);
+                s += `<text x="${a.x - 3}" y="${y + 3}" text-anchor="end" style="font-size:8px">${v}</text><line x1="${a.x - 3}" y1="${y}" x2="${a.x}" y2="${y}" style="stroke-width:1"/>`;
+            }
+            s += '</g>';
+        }
+        // 資料：T/P/R 點與線（NA 斷線）；BP 為收縮/舒張壓誤差線。<title> 供滑過顯示時間與數值
+        for (const a of VC_AXES) {
+            s += `<g class="ser" data-s="${a.k}" style="${st(a)}">`;
+            if (a.k === 'BP') {
+                for (const o of series) {
+                    if (!Number.isFinite(o.SBP) || !Number.isFinite(o.DBP)) continue;
+                    const x = X(o.ms), y1 = Y(a, o.SBP), y2 = Y(a, o.DBP);
+                    s += `<g><title>${vcEsc(vcHm(o.ms))}  BP ${o.SBP}/${o.DBP}</title><line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" style="stroke-width:1"/>`
+                        + `<line x1="${x - 3}" y1="${y1}" x2="${x + 3}" y2="${y1}" style="stroke-width:1"/><line x1="${x - 3}" y1="${y2}" x2="${x + 3}" y2="${y2}" style="stroke-width:1"/>`
+                        + `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="transparent" stroke-width="9"/></g>`;
+                }
+            } else {
+                let prev = null;
+                for (const o of series) {
+                    const v = o[a.k], x = X(o.ms);
+                    if (Number.isFinite(v)) {
+                        const y = Y(a, v);
+                        if (prev) s += `<line x1="${prev.x}" y1="${prev.y}" x2="${x}" y2="${y}" style="stroke-width:1"/>`;
+                        s += `<circle cx="${x}" cy="${y}" r="2.3" style="stroke:none"><title>${vcEsc(vcHm(o.ms))}  ${a.k} ${v}</title></circle>`
+                            + `<circle cx="${x}" cy="${y}" r="7" fill="transparent" style="stroke:none"><title>${vcEsc(vcHm(o.ms))}  ${a.k} ${v}</title></circle>`;
+                        prev = { x, y };
+                    } else if (o['na' + a.k]) {
+                        s += `<text x="${x}" y="${a.naY}" text-anchor="middle" style="font-size:8px;stroke:none"><title>${vcEsc(vcHm(o.ms))}  ${a.k} 未量測</title>NA</text>`;
+                        prev = null;
+                    }
+                }
+            }
+            s += '</g>';
+        }
+        // SpO2 列：每次量測一個數字（顏色依高低 ≥96／94–95／92–93／≤91），給氧期間整段藍底並標裝置與流量
+        const pts = series.filter((o) => Number.isFinite(o.SpO2));
+        if (pts.length) {
+            const SY0 = VC.Y1 + 18, SY1 = SY0 + 20;
+            const color = (v) => (v >= 96 ? '#27500A' : v >= 94 ? '#854F0B' : v >= 92 ? '#b4531a' : '#a32d2d');
+            const o2Text = (o) => { const x = window.NTUHNews2 ? window.NTUHNews2.oxygenInfo(o.inside) : {}; return [x.device, x.flow != null ? x.flow + 'L' : ''].filter(Boolean).join(' ') || '給氧'; };
+            s += `<text x="4" y="${SY0 + 14}" style="fill:#444;font-size:9px">SpO₂ %</text>`
+                + `<rect x="${VC.X0}" y="${SY0}" width="${VC.X1 - VC.X0}" height="${SY1 - SY0}" rx="3" fill="#fffffd" stroke="#c3c2b7"/>`;
+            const half = 18;
+            for (let i = 0; i < pts.length; i++) {
+                if (!pts[i].onOxygen) continue;
+                let j = i;
+                while (j + 1 < pts.length && pts[j + 1].onOxygen) j++;
+                const left = Math.max(VC.X0, i > 0 ? Math.max((X(pts[i - 1].ms) + X(pts[i].ms)) / 2, X(pts[i].ms) - half) : X(pts[i].ms) - half);
+                const right = Math.min(VC.X1, j + 1 < pts.length ? Math.min((X(pts[j].ms) + X(pts[j + 1].ms)) / 2, X(pts[j].ms) + half) : X(pts[j].ms) + half);
+                s += `<rect x="${left.toFixed(1)}" y="${SY0}" width="${Math.max(2, right - left).toFixed(1)}" height="${SY1 - SY0}" fill="#b5d4f4" opacity=".65"/>`
+                    + `<text x="${(left + 2).toFixed(1)}" y="${SY1 + 9}" style="fill:#185FA5;font-size:8px">${vcEsc(o2Text(pts[i]))}</text>`;
+                i = j;
+            }
+            let lastX = -1e9;
+            for (const o of pts) {
+                const x = X(o.ms), c = color(o.SpO2);
+                const tip = `<title>${vcEsc(vcHm(o.ms))}  SpO₂ ${o.SpO2}%${o.onOxygen ? '（' + vcEsc(o2Text(o)) + '）' : '（室內空氣）'}</title>`;
+                if (x - lastX >= 17) { s += `<text x="${x}" y="${SY0 + 14}" text-anchor="middle" style="fill:${c};font-size:10px;font-weight:${o.SpO2 <= 93 ? 700 : 500}">${o.SpO2}${tip}</text>`; lastX = x; }
+                else s += `<circle cx="${x}" cy="${(SY0 + SY1) / 2}" r="2" fill="${c}">${tip}</circle>`;
+            }
+        }
+        return s + '</svg>';
+    }
+
+    // 時間窗：最近 48 小時（終點取「現在」與最後一筆量測較晚者）
+    function buildVitalsChart(series) {
+        if (!series || !series.length) return null;
+        const last = series[series.length - 1].ms;
+        const toMs = Math.max(nowMs(), last);
+        const win = { fromMs: toMs - 48 * 3600000, toMs };
+        const inWin = series.filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs);
+        if (!inWin.length) return null;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = vitalsChartSvg(inWin, win);
+        wrap.style.cssText = 'padding:4px 6px 6px;background:#fffffd';
+        // 點軸切換該項顯示（BP/R/P/T）
+        wrap.querySelectorAll('g.ax').forEach((ax) => {
+            ax.addEventListener('click', () => {
+                const k = ax.getAttribute('data-s');
+                const isOff = ax.classList.toggle('off');
+                ax.style.opacity = isOff ? '.25' : '';
+                const ser = wrap.querySelector(`g.ser[data-s="${k}"]`);
+                if (ser) ser.style.visibility = isOff ? 'hidden' : '';
+            });
+        });
+        return wrap;
+    }
+
     function renderBlocks(results) {
         const wrap = document.getElementById('ntuh-filler-outer');
         if (!wrap) return;
@@ -1299,6 +1439,29 @@ After the admission, the patient was in stable condition, the physical examinati
             grp.className = 'ntuh-grp';
             grp.textContent = g.title;
             wrap.appendChild(grp);
+
+            // 生命徵象群組：先放時序圖（資料來自 tprbp 的 series；舊版 data-helper 沒有 series 就略過）
+            const tp = g.keys[0] === 'tprbp' ? byKey['tprbp'] : null;
+            const chartEl = tp && tp.ok ? buildVitalsChart(tp.series) : null;
+            if (chartEl) {
+                const card = document.createElement('div');
+                card.className = 'ntuh-blk';
+                const head = document.createElement('div');
+                head.className = 'ntuh-blk-head';
+                const title = document.createElement('span');
+                title.textContent = '[生命徵象圖 48h]' + (tp.url ? ' ↗' : '');
+                title.style.color = g.color;
+                if (tp.url) {
+                    title.classList.add('ntuh-linkable');
+                    title.title = '開啟對應頁面';
+                    title.onclick = (ev) => { ev.stopPropagation(); window.open(tp.url, '_blank'); };
+                }
+                head.appendChild(title);
+                head.onclick = () => { chartEl.style.display = chartEl.style.display === 'none' ? 'block' : 'none'; };
+                card.appendChild(head);
+                card.appendChild(chartEl);
+                wrap.appendChild(card);
+            }
 
             g.keys.forEach((k) => {
                 const r = byKey[k];

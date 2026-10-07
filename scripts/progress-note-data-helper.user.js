@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.1.0
+// @version      1.2.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -16,6 +16,7 @@
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OffDutyNurV2.aspx*
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @grant        GM_openInTab
@@ -135,7 +136,7 @@
         },
         // vitalsign 拆成 5 個分項來源，共用同一份 fetch（datatype 快取），各自無值顯示（無）
         // navUrl：點標題跳轉 VitalSign_TPR.aspx（生命徵象圖）
-        tprbp: { label: '[TPR+BP]', mode: 'fetch', datatype: 'vitalsign', format: formatTprBp, navUrl: vitalsNavUrl, match: () => false },
+        tprbp: { label: '[TPR+BP]', mode: 'fetch', datatype: 'vitalsign', format: formatTprBp, extra: (html) => ({ series: vitalSeries(html) }), navUrl: vitalsNavUrl, match: () => false },
         resp:  { label: '[Resp]',   mode: 'fetch', datatype: 'vitalsign', format: formatResp,  navUrl: vitalsNavUrl, match: () => false },
         gcs:   { label: '[GCS]',    mode: 'fetch', datatype: 'vitalsign', format: formatGcs,   navUrl: vitalsNavUrl, match: () => false },
         uo:    { label: '[UO]',     mode: 'fetch', datatype: 'vitalsign', format: formatUo,    navUrl: vitalsNavUrl, match: () => false },
@@ -559,6 +560,17 @@
         if (!latest.uo && uoFallback !== null) latest.uo = { dt: '', val: uoFallback };
         return latest;
     }
+    // 生命徵象時序（給 filler 畫圖）：沿用 morning-briefing 的解析（lib/news2.js），只留近 72 小時避免撐大 localStorage
+    function vitalSeries(html) {
+        if (!window.NTUHNews2) return [];
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const txt = (el) => el.textContent.replace(/\s+/g, ' ').trim();
+        let texts = [...doc.querySelectorAll('[id$="_Content"]')].map(txt);
+        if (!texts.length) texts = [...doc.querySelectorAll('tr')].map(txt);
+        const obs = window.NTUHNews2.parseVitalRows(texts);
+        const last = obs.length ? obs[obs.length - 1].ms : 0;
+        return obs.filter((o) => o.ms >= last - 72 * 3600000);
+    }
     const vWhen = (dt) => (dt ? '  @' + dt.slice(5).replace(/^0/, '') : '');
 
     // 5 個分項格式器：各取最新，無值一律回「（無）」
@@ -752,7 +764,7 @@
             const src = SOURCES[key];
             try {
                 const html = await fetchOuterData(src.datatype);
-                results[key] = { label: src.label, ok: true, text: src.format(html) };
+                results[key] = { label: src.label, ok: true, text: src.format(html), ...(src.extra ? src.extra(html) : {}) };
             } catch (e) {
                 results[key] = { label: src.label, ok: false, error: e.message || String(e) };
             }
