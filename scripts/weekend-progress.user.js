@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.7.0
+// @version      1.7.1
 // @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS，可由主治班表自動帶入員編）／當日確認草稿（帶入 TPR 與導管）／複製最新 Progress Note 填 stable 後送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -1193,20 +1193,6 @@
         return null;
     }
 
-    // 全部建完後再看清單（清單不一定即時刷新，所以只當提示、不當失敗）
-    async function verifyDrafts(offsets) {
-        const want = offsets.map(o => dateKey(addDays(o)).slice(5));
-        for (let i = 0; i < 15; i++) {
-            const notes = scanNotes();
-            if (!notes.length) return '清單讀不到，未驗證';
-            const have = new Set(notes.filter(n => n.type === 'progress').map(n => n.mmdd));
-            const missing = want.filter(m => !have.has(m));
-            if (!missing.length) return '';
-            await sleep(400);
-        }
-        return `清單暫未見 ${want.filter(m => !new Set(scanNotes().map(n => n.mmdd)).has(m)).join('、')}（可能只是尚未刷新，請抽查）`;
-    }
-
     async function prewriteProcess() {
         try {
             const opts = getBatchOptions();
@@ -1223,10 +1209,8 @@
                 made.push(`+${offset}`);
             }
 
-            const vmsg = made.length ? await verifyDrafts(made.map(x => +x.slice(1))) : '';
             const parts = [];
             if (made.length) parts.push(`✓ 已建草稿 ${made.join(' ')}`);
-            if (vmsg) parts.push(`⚠ ${vmsg}`);
             if (skipped.length) parts.push(`已存在略過 ${skipped.join(' ')}`);
             if (problems.length) parts.push(`⚠ ${problems.join('；')}`);
             notifyOpener((parts.join('；') || '無需建立'));
