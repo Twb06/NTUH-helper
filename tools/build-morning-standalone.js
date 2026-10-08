@@ -1,6 +1,6 @@
 /* eslint-env node */
 // node tools/build-morning-standalone.js
-// 把 morning-briefing.user.js 連同 lib/news2.js 與簡化版 OuterData 呼叫合併成免 @require 的單檔，
+// 把 morning-briefing.user.js 連同 lib/news2.js、lib/weight.js 與簡化版 OuterData 呼叫合併成免 @require 的單檔，
 // 輸出到 scripts/standalone/。標頭刻意移除 @require/@updateURL/@downloadURL。
 const fs = require('fs');
 const path = require('path');
@@ -9,6 +9,7 @@ const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 
 const main = read('scripts/morning-briefing.user.js');
 const news = read('scripts/lib/news2.js');
+const weight = read('scripts/lib/weight.js');
 const end = main.indexOf('// ==/UserScript==') + '// ==/UserScript=='.length;
 const head = main.slice(0, end).split('\n')
     .filter((l) => !/^\/\/ @(require|updateURL|downloadURL)\s/.test(l))
@@ -53,7 +54,7 @@ const shim = `// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個
 })();
 `;
 
-const out = `${head}\n\n// ── 內嵌：NEWS2 核心 ──\n${news}\n\n${shim}\n// ── 主程式 ──${main.slice(end)}`;
+const out = `${head}\n\n// ── 內嵌：NEWS2 核心 ──\n${news}\n\n// ── 內嵌：體重請求與解析 ──\n${weight}\n\n${shim}\n// ── 主程式 ──${main.slice(end)}`;
 const dest = path.join(root, 'scripts/standalone/morning-briefing.standalone.user.js');
 fs.mkdirSync(path.dirname(dest), { recursive: true });
 fs.writeFileSync(dest, out);

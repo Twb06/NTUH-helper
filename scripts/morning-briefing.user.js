@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.7.1
+// @version      1.8.0
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-asmx.js
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/weight.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js
 // @run-at       document-idle
@@ -16,7 +17,7 @@
 (function () {
     'use strict';
 
-    /* global NTUHAsmx, NTUHNews2 */
+    /* global NTUHAsmx, NTUHNews2, NTUHWeight */
 
     const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
     // 為什麼分兩階段（新竹實測 2026-09-30，11 位病人）：處方頁＋管路單獨測時加起來約 28 秒，剛好等於不論同時數怎麼調
@@ -490,9 +491,36 @@
         });
     }
 
+    // ─── 體重（護理生命徵象頁的 VitalSign_getPopupWindowData.aspx，解析在 lib/weight.js）────────────
+    // 體重不在 OuterData vitalsign。這個請求跟管路一樣「不帶病人識別」：伺服器靠「最後載入 VitalSign_TPR.aspx 的病人」
+    // 決定回誰（A→B→A 交替實測，新竹 2026-10-08），回傳裡也沒有可驗證病人的欄位。
+    // 所以：先 GET 該病人的 TPR 頁（只取內容、不跑 JS）再立刻取體重，而且走 **tubeGate（一次一位）與管路共用同一道閘**——
+    // 「CatheterCare 與 TPR 的『目前病人』是不是同一個伺服器狀態」沒驗證過，共用閘門就不必賭這件事。
+    // 已知盲點同管路：抓取的那一瞬間若有人在別的分頁載入另一位病人的 TPR 頁，理論上可能拿到別人的體重。簡報執行期間請不要同時操作。
+    // 查詢範圍＝圖表起點（前一日 08:00）當天 00:00 起到今天；只用來畫圖與數據表，所以不需要更早的。
+    async function fetchWeight(p, win) {
+        return tubeGate(async () => {
+            const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            try {
+                const opt = { credentials: 'same-origin', signal: ctrl.signal };
+                const page = await fetch(`${dir}VitalSign_TPR.aspx?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}`, opt);
+                if (!page.ok) throw new Error('生命徵象頁 HTTP ' + page.status);
+                await page.arrayBuffer(); // 只要讓伺服器記住「目前病人」；內容是 Big5，不需要解碼
+                const now = new Date(nowMs());
+                const res = await fetch(`${dir}VitalSign_getPopupWindowData.aspx?${NTUHWeight.popupQuery(new Date(dayStart(win.refFromMs)), now, now)}`, opt);
+                if (!res.ok) throw new Error('體重資料 HTTP ' + res.status);
+                return NTUHWeight.parsePopup(await res.text());
+            } catch (e) {
+                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+            } finally { clearTimeout(timer); }
+        });
+    }
+
     // 每位病人的結果容器。pending＝還沒回來的來源；頁面會依 pending 顯示「抓取中…」
     function newResult(p, win, now) {
-        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes']) };
+        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, weights: [], weightSkipped: 0, pending: new Set(['vitals', 'pacs', 'abx', 'tubes', 'weight']) };
         const labMs = labTimeMs(p.labTitle, now);
         // 檢驗、影像的納入起點與圖表／TPR 一致：前一日 REF_HOUR（08:00）起，避免漏掉白天的新報告
         if (labMs !== null && labMs >= win.refFromMs) res.lab = { ms: labMs };
@@ -531,12 +559,13 @@
     }
 
     // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）
-    async function assessHeavy(res, now, onUpdate) {
+    async function assessHeavy(res, now, onUpdate, win) {
         const p = res.p;
         const job = jobRunner(res, onUpdate);
         await Promise.all([
             job('abx', '抗生素', async () => { res.abx = await fetchAbx(p, now); }),
             job('tubes', '管路', async () => { res.tubes = await fetchTubes(p, now); }),
+            job('weight', '體重', async () => { const w = await fetchWeight(p, win); res.weights = w.rows; res.weightSkipped = w.skipped; }),
         ]);
     }
 
@@ -563,10 +592,14 @@
         return out;
     }
 
-    function dataTable(series) {
+    function dataTable(series, weights, axis) {
         const c = (v) => (Number.isFinite(v) ? v : '—');
-        return `<details class="tv"><summary>數據表（${series.length} 組）</summary><table><thead><tr><th>時間</th><th>T</th><th>HR</th><th>RR</th><th>SBP</th><th>SpO₂</th></tr></thead><tbody>${
-            series.map((o) => `<tr><td>${esc(fmt(o.ms))}</td><td>${c(o.T)}</td><td>${c(o.P)}</td><td>${c(o.R)}</td><td>${c(o.SBP)}</td><td>${Number.isFinite(o.SpO2) ? o.SpO2 + '%' + (o.onOxygen ? ' 給氧' : '') : '—'}</td></tr>`).join('')
+        const wts = (weights || []).filter((x) => x.ms >= axis.fromMs && x.ms <= axis.toMs);
+        const rows = series.map((o) => ({ ms: o.ms, o })).concat(wts.map((x) => ({ ms: x.ms, wt: x }))).sort((a, b) => a.ms - b.ms);
+        return `<details class="tv"><summary>數據表（${rows.length} 筆）</summary><table><thead><tr><th>時間</th><th>T</th><th>HR</th><th>RR</th><th>SBP</th><th>SpO₂</th><th>體重</th></tr></thead><tbody>${
+            rows.map(({ ms, o, wt }) => (o
+                ? `<tr><td>${esc(fmt(ms))}</td><td>${c(o.T)}</td><td>${c(o.P)}</td><td>${c(o.R)}</td><td>${c(o.SBP)}</td><td>${Number.isFinite(o.SpO2) ? o.SpO2 + '%' + (o.onOxygen ? ' 給氧' : '') : '—'}</td><td>—</td></tr>`
+                : `<tr><td>${esc(fmt(ms))}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td${wt.note ? ` title="${esc(wt.note)}"` : ''}>${esc(wt.kg)}</td></tr>`)).join('')
         }</tbody></table></details>`;
     }
 
@@ -700,6 +733,26 @@
         return s + TIP_G + '</svg>';
     }
 
+    // ─── 體重一行（SpO2 列之後，時間軸對齊）：只畫落在圖時間窗內的；備註（如「坐秤」）放在提示框。太擠就不畫字（滑過仍看得到）──
+    function weightRow(weights, win) {
+        const pts = (weights || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs);
+        if (!pts.length) return '';
+        const span = win.toMs - win.fromMs;
+        const X = (ms) => +(HV.X0 + ((ms - win.fromMs) / span) * (HV.X1 - HV.X0)).toFixed(2);
+        const W = HV.W, H = 32, Y0 = 3, Y1 = 29;
+        let s = `<svg class="hsvg sp" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="體重">`;
+        s += `<rect width="${W}" height="${H}" fill="#fffffd"/>`
+            + `<text x="4" y="21" style="fill:#444;font-size:13px">體重 kg</text>`
+            + `<rect x="${HV.X0}" y="${Y0}" width="${HV.X1 - HV.X0}" height="${Y1 - Y0}" rx="3" fill="#fffffd" stroke="#c3c2b7" stroke-width="1"/>`;
+        let lastX = -1e9;
+        for (const o of pts) {
+            const x = X(o.ms);
+            if (x - lastX >= 44) { s += `<text x="${Math.min(HV.X1 - 22, Math.max(HV.X0 + 22, x))}" y="21" text-anchor="middle" style="fill:#444;font-size:14px;font-weight:500">${esc(o.kg)}</text>`; lastX = x; }
+            s += `<circle class="hit" cx="${x}" cy="${(Y0 + Y1) / 2}" r="10" data-t="${esc(hm(o.ms))}" data-v="${esc(o.kg)} kg${o.note ? '（' + esc(o.note) + '）' : ''}"/>`;
+        }
+        return s + TIP_G + '</svg>';
+    }
+
     function chartsHtml(r, win) {
         const series = r.chartSeries;
         if (!series || !series.length) return '';
@@ -707,7 +760,8 @@
         const axis = { fromMs: win.refFromMs, toMs: win.toMs };
         return `<div class="charts">${hospVitals(series, axis)}
 ${spo2Row(series, axis)}
-${dataTable(series)}</div>`;
+${weightRow(r.weights, axis)}
+${dataTable(series, r.weights, axis)}</div>`;
     }
 
     // 頁面內互動（序列化後放進新分頁執行，不可引用外部變數）。
@@ -761,7 +815,8 @@ ${dataTable(series)}</div>`;
         const uo = r.uo ? `<div class="muted nov">尿量 ${r.uo.val} mL${r.uo.ms ? '（' + esc(fmt(r.uo.ms)) + '）' : '（院內未標日期）'}</div>` : '';
         const noVitals = r.vitals && r.vitals.noData
             ? `<div class="muted nov">${r.chartSeries && r.chartSeries.length ? '昨夜（' + esc(fmt(win.fromMs)) + ' 起）沒有 vitals 量測，圖上為前一日的參考資料' : '時間窗內沒有 vitals 量測（沒量不等於正常）'}</div>` : '';
-        return uo + noVitals;   // 氧氣提示已由 SpO2 列取代（給氧底色與流量標示）
+        const wSkip = r.weightSkipped ? `<div class="muted nov">體重另有 ${r.weightSkipped} 筆非正常狀態已略過</div>` : '';
+        return uo + noVitals + wSkip;   // 氧氣提示已由 SpO2 列取代（給氧底色與流量標示）
     }
     const renderErr = (r) => (r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '');
     const renderAbx = (r) => (r.pending.has('abx') ? PENDING_HTML : r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
@@ -947,6 +1002,20 @@ ${dataTable(series)}</div>`;
         if (src === 'pacs') set('pacs', renderPacs(r));
         if (src === 'abx') set('abx', renderAbx(r));
         if (src === 'tubes') set('tubes', renderTubes(r));
+        if (src === 'weight') {
+            // 體重在階段二才回來（要一次一位）；圖卡區塊會重畫，所以先記下使用者展開的數據表與關掉的軸，畫完還原
+            const box = w.document.getElementById(`c${i}-charts`);
+            const tv = box && box.querySelector('details.tv');
+            const wasOpen = !!(tv && tv.open);
+            const offs = box ? [...box.querySelectorAll('.ax.off')].map((a) => a.getAttribute('data-s')) : [];
+            set('vit', renderVit(r, win));
+            set('charts', renderCharts(r, win));
+            if (box) {
+                const tv2 = box.querySelector('details.tv');
+                if (tv2 && wasOpen) tv2.open = true;
+                for (const k of offs) box.querySelectorAll(`[data-s="${k}"]`).forEach((n) => n.classList.add('off'));
+            }
+        }
         set('err', renderErr(r));
     }
     const setText = (w, id, text) => { if (w && !w.closed) { const el = w.document.getElementById(id); if (el) el.textContent = text; } };
@@ -1045,7 +1114,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         const markFailed = (r, i, e) => {
             r.errors.push('判讀失敗：' + (e && e.message || e));
             r.pending.clear();
-            for (const src of ['vitals', 'pacs', 'abx', 'tubes']) applyUpdate(w, i, src, r, win);
+            for (const src of ['vitals', 'pacs', 'abx', 'tubes', 'weight']) applyUpdate(w, i, src, r, win);
         };
         const wall0 = nowMs();
         try {
@@ -1059,13 +1128,13 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 
             // 階段二（重）：抗生素＋管路，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
             let d2 = 0, next = 0;
-            setProg('抗生素與管路', 0);
+            setProg('抗生素、管路與體重', 0);
             const worker = async () => {
                 while (next < states.length) {
                     const i = next++;
                     const r = states[i];
-                    try { await assessHeavy(r, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
-                    setProg('抗生素與管路', ++d2);
+                    try { await assessHeavy(r, now, (src, rr) => applyUpdate(w, i, src, rr, win), win); } catch (e) { markFailed(r, i, e); }
+                    setProg('抗生素、管路與體重', ++d2);
                 }
             };
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));

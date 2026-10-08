@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.10.0
+// @version      1.11.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -16,6 +16,7 @@
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Nursing/NursingProgressNote.aspx*
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-asmx.js
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/weight.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-data-helper.user.js
 // @grant        GM_openInTab
@@ -270,35 +271,10 @@
                 await page.arrayBuffer(); // 只要讓伺服器記住「目前病人」；內容是 Big5，不需要解碼
                 const today = new Date(nowMs());
                 const from = new Date(today); from.setDate(from.getDate() - WEIGHT_DAYS);
-                const dstr = (d, hms) => `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}-${hms}`; // 同頁面：月日不補零
-                const start = dstr(from, '00:00:00'), end = dstr(today, '23:59:59');
-                const cur = `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()} ${today.getHours()}:${today.getMinutes()}:${today.getSeconds()}`;
-                const qs = `check=${encodeURIComponent(new Date(nowMs()).toString())}&SerialNo=undefined`
-                    + `&RecordAreaID=${encodeURIComponent(`VitalSign_PhysicalWeight_${start}_${end}`)}&Kind=VitalSign&Group=PhysicalWeight`
-                    + `&StartDateTime=${encodeURIComponent(start)}&EndDateTime=${encodeURIComponent(end)}&CurrentDateTime=${encodeURIComponent(cur)}&Type=init`;
-                const res = await fetch(`${dir}VitalSign_getPopupWindowData.aspx?${qs}`, opt);
+                // 組參數與解析在 lib/weight.js（與晨間簡報共用；去重、只採用 attStatus=N、回報略過筆數都在裡面）
+                const res = await fetch(`${dir}VitalSign_getPopupWindowData.aspx?${window.NTUHWeight.popupQuery(from, today, today)}`, opt);
                 if (!res.ok) throw new Error('體重資料 HTTP ' + res.status);
-                const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('MainInfo').length) throw new Error('體重資料格式不符');
-                const main = doc.getElementsByTagName('MainInfo')[0];
-                if (main.getAttribute('FieldGroup') !== 'PhysicalWeight') throw new Error('體重資料欄位不符');
-                const g = (rc, k) => { const e = rc.getElementsByTagName(k)[0]; return e ? e.textContent.trim() : ''; };
-                const all = [...doc.getElementsByTagName('TableRecordContent')];
-                const seen = new Set(), rows = [];
-                let skipped = 0;
-                for (const rc of all) {
-                    if (g(rc, 'attStatus') !== 'N') { skipped += 1; continue; } // 只看到過 N；其他狀態碼的意義未知（可能是刪除／更改過），不採用但要回報
-                    const m = g(rc, 'attTime').match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
-                    const v = g(rc, 'attValue').match(/^([\d.]+)\s*kg$/i);
-                    if (!m || !v) { skipped += 1; continue; }
-                    const ms = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
-                    const key = ms + '|' + v[1];
-                    if (seen.has(key)) continue; // 實測同一筆會重複出現（同時間同數值）
-                    seen.add(key);
-                    const note = g(rc, 'attNote');
-                    rows.push({ ms, kg: v[1], note: /^none$/i.test(note) ? '' : note });
-                }
-                rows.sort((a, b) => a.ms - b.ms);
+                const { rows, skipped } = window.NTUHWeight.parsePopup(await res.text());
                 const when = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
                 const fmt = (r) => `${r.kg} kg  @${when(r.ms)}${r.note ? '（' + r.note + '）' : ''}`;
                 if (!rows.length) return { text: `（近 ${WEIGHT_DAYS} 天無體重紀錄）` + (skipped ? `（另有 ${skipped} 筆非正常狀態已略過）` : ''), weights: [] };
