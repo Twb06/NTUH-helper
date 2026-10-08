@@ -41,7 +41,12 @@
      */
     function parsePopup(xmlText) {
         const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-        if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('MainInfo').length) throw new Error('體重資料格式不符');
+        if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('MainInfo').length) {
+            // 附上診斷：回的是什麼（長度、解析錯誤、開頭片段；數字換成 9，避免帶出識別碼）。看到「格式不符」時才知道是登入頁、錯誤頁還是別的 XML
+            const pe = doc.getElementsByTagName('parsererror')[0];
+            const shape = (t) => String(t).replace(/\s+/g, ' ').trim().replace(/\d/g, '9').slice(0, 70);
+            throw new Error(`體重資料格式不符（長度 ${xmlText.length}；${pe ? '解析錯誤：' + shape(pe.textContent) : '根元素 ' + (doc.documentElement ? doc.documentElement.tagName : '無')}；開頭「${shape(xmlText.slice(0, 70))}」）`);
+        }
         if (doc.getElementsByTagName('MainInfo')[0].getAttribute('FieldGroup') !== 'PhysicalWeight') throw new Error('體重資料欄位不符');
         const g = (rc, k) => { const e = rc.getElementsByTagName(k)[0]; return e ? e.textContent.trim() : ''; };
         const seen = new Set(), rows = [];
