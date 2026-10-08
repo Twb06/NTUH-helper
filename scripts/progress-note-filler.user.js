@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.64
+// @version      1.65
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -1270,7 +1270,7 @@ After the admission, the patient was in stable condition, the physical examinati
 
 
     // ── 生命徵象圖（窄版，沿用 morning-briefing 的院內樣式）──────────────
-    // 四條軸由左至右 BP/R/P/T、各自同色；正常帶 = 中間 2/5（T 36–38、P 60–100、R 10–22、BP 50–150），其餘為異常區；
+    // 四條軸由左至右 BP/R/P/T、各自同色；正常帶 = T 36–38、P 60–100、R 10–22、BP 50–150（由上往下 2/5 處到 4/5 處），其餘為異常區；
     // 未量測（NA）不連線。配色取自院內圖：異常 #ffd4d3、正常 #d3e7d0。點軸可切換該項顯示。
     // 面板只有 380px，所以幾何重排（不是縮放 morning-briefing 的 990px 版，那樣字會小到看不清）。
     const VC = { X0: 112, X1: 340, Y0: 22, Y1: 150, W: 350, H: 202 };
@@ -1295,8 +1295,9 @@ After the admission, the patient was in stable condition, the physical examinati
             const c = Math.min(a.hi, Math.max(a.lo, v));
             return +(VC.Y1 - ((c - a.lo) / (a.hi - a.lo)) * (VC.Y1 - VC.Y0)).toFixed(2);
         };
-        const band = (VC.Y1 - VC.Y0) / 5;                 // 五等分，正常帶 = 中間 2/5
-        const yTop = +(VC.Y0 + band).toFixed(2), yBot = +(VC.Y0 + band * 4).toFixed(2);
+        // 五等分，由上往下：異常 2／正常 2／異常 1（同院內圖與 morning-briefing 的 109／193）→ 正常上限 T 38／P 100／R 22／BP 150，下限 36／60／10／50
+        const band = (VC.Y1 - VC.Y0) / 5;
+        const yTop = +(VC.Y0 + band * 2).toFixed(2), yBot = +(VC.Y0 + band * 4).toFixed(2);
         const st = (a) => `fill:${a.color};stroke:${a.color}`;
         let s = `<svg class="ntuh-vc" viewBox="0 0 ${VC.W} ${VC.H}" width="100%" role="img" aria-label="生命徵象圖">`;
         s += `<rect width="${VC.W}" height="${VC.H}" fill="#fffffd"/>`
