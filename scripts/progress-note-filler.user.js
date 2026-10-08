@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.65
+// @version      1.66
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -781,6 +781,7 @@ After the admission, the patient was in stable condition, the physical examinati
             .ntuh-vt table { border-collapse: collapse; width: 100%; font-size: 10px; }  /* quirks mode 下 table 不繼承字級，要明講 */
             .ntuh-vt th, .ntuh-vt td { border-bottom: 1px solid #e3ecd9; padding: 2px 5px 2px 0; text-align: left; white-space: nowrap; }
             .ntuh-vt th { position: sticky; top: 0; background: #fffffd; }
+            .ntuh-vt-weight { white-space: pre-line; font-size: 11px; line-height: 1.5; color: #2b3a2b; margin: 0 0 4px; padding-bottom: 4px; border-bottom: 1px solid #e3ecd9; }
             .ntuh-vt-note { margin-top: 3px; font-size: 10px; color: #5f6f57; }
             .ntuh-divider {
                 border: none;
@@ -1523,6 +1524,15 @@ After the admission, the patient was in stable condition, the physical examinati
                 chartEl = document.createElement('div');
                 chartEl.style.cssText = 'padding:8px 10px;font-size:12px;background:#fff;color:#2b3a2b';
                 chartEl.textContent = !tp ? '尚未抓取' : !tp.ok ? ('抓取失敗：' + tp.error) : (tp.series ? '（近 48 小時沒有量測）' : '（資料來源版本過舊：請更新 progress-note-data-helper）');
+            }
+            // 體重（data-helper 的 [Weight]）：放在圖卡最上面一行。舊版 data-helper 沒有這個來源就不顯示
+            const wr = g.title === '生命徵象' ? byKey['weight'] : null;
+            if (chartEl && wr) {
+                const wl = document.createElement('div');
+                wl.className = 'ntuh-vt-weight';
+                wl.textContent = wr.ok ? wr.text : '體重：抓取失敗（' + wr.error + '）';
+                if (!wr.ok) wl.style.color = '#b02a2a';
+                chartEl.insertBefore(wl, chartEl.firstChild);
             }
             if (chartEl) {
                 const card = document.createElement('div');
