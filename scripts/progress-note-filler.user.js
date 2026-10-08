@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.66
+// @version      1.67
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -781,7 +781,6 @@ After the admission, the patient was in stable condition, the physical examinati
             .ntuh-vt table { border-collapse: collapse; width: 100%; font-size: 10px; }  /* quirks mode 下 table 不繼承字級，要明講 */
             .ntuh-vt th, .ntuh-vt td { border-bottom: 1px solid #e3ecd9; padding: 2px 5px 2px 0; text-align: left; white-space: nowrap; }
             .ntuh-vt th { position: sticky; top: 0; background: #fffffd; }
-            .ntuh-vt-weight { white-space: pre-line; font-size: 11px; line-height: 1.5; color: #2b3a2b; margin: 0 0 4px; padding-bottom: 4px; border-bottom: 1px solid #e3ecd9; }
             .ntuh-vt-note { margin-top: 3px; font-size: 10px; color: #5f6f57; }
             .ntuh-divider {
                 border: none;
@@ -1289,7 +1288,7 @@ After the admission, the patient was in stable condition, the physical examinati
     const VC_TIP = '<g class="tt" display="none" pointer-events="none"><rect fill="yellow" stroke="black" rx="2" ry="2"/><text x="5" y="13"><tspan class="t1" x="5" font-family="Arial" font-weight="bold" font-size="10"> </tspan><tspan class="t2" x="5" dy="1.2em" font-weight="bold" font-size="11" fill="blue"> </tspan></text></g>';
     const vcHit = (x, y, r, t, v) => `<circle class="hit" cx="${x}" cy="${y}" r="${r}" fill="transparent" style="stroke:none" data-t="${vcEsc(t)}" data-v="${vcEsc(v)}"/>`;
 
-    function vitalsChartSvg(series, win, pains) {
+    function vitalsChartSvg(series, win, pains, weights) {
         const span = win.toMs - win.fromMs;
         const X = (ms) => +(VC.X0 + ((ms - win.fromMs) / span) * (VC.X1 - VC.X0)).toFixed(2);
         const Y = (a, v) => {
@@ -1388,7 +1387,7 @@ After the admission, the patient was in stable condition, the physical examinati
             }
         }
         // GCS／Pain／U/O 列：同一個時間軸，每次量測一個值（太擠時只畫小圓點）。UO 沒有日期的列不會進圖
-        const valRow = (label, rows, text, color, gap, tipName) => {
+        const valRow = (label, rows, text, color, gap, tipName, unit) => {
             if (!rows.length) return;
             const y0 = rowBottom, y1 = y0 + 18;
             s += `<text x="4" y="${y0 + 13}" style="fill:#444;font-size:9px">${label}</text>`
@@ -1398,36 +1397,40 @@ After the admission, the patient was in stable condition, the physical examinati
                 const x = X(o.ms), c = color(o);
                 if (x - lastX >= gap) { s += `<text x="${Math.min(VC.X1 - gap / 2, Math.max(VC.X0 + gap / 2, x))}" y="${y0 + 13}" text-anchor="middle" style="fill:${c};font-size:9.5px;font-weight:600">${vcEsc(text(o))}</text>`; lastX = x; }
                 // 太擠時不畫字也不畫小圓點（圓點會壓在鄰近的數字上）；滑過感應區與數據表仍看得到
-                s += vcHit(x, y0 + 9, 9, vcHm(o.ms), `${tipName} ${text(o)}`);
+                s += vcHit(x, y0 + 9, 9, vcHm(o.ms), `${tipName} ${text(o)}${unit ? ' ' + unit : ''}${o.note ? '（' + o.note + '）' : ''}`);
             }
             rowBottom = y1 + 8;
         };
         valRow('GCS', series.filter((o) => o.gcs), (o) => o.gcs, (o) => (/^E4M6V[5A]$/i.test(o.gcs) ? '#27500A' : '#a32d2d'), 40, 'GCS');
         valRow('Pain', (pains || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs).map((o) => ({ ms: o.ms, pain: o.v })), (o) => o.pain, (o) => (o.pain >= 4 ? '#a32d2d' : o.pain >= 1 ? '#b4531a' : '#27500A'), 9, 'Pain');
-        valRow('U/O', series.filter((o) => Number.isFinite(o.uo) && o.uo > 0), (o) => o.uo, () => '#185FA5', 22, 'U/O mL');
+        valRow('U/O', series.filter((o) => Number.isFinite(o.uo) && o.uo > 0), (o) => o.uo, () => '#185FA5', 22, 'U/O', 'mL');
+        // 體重：只畫落在圖時間窗內的（data-helper 給近 14 天全部）；備註（如「坐秤」）放在提示框
+        valRow('體重', (weights || []).filter((o) => o.ms >= win.fromMs && o.ms <= win.toMs).map((o) => ({ ms: o.ms, kg: o.kg, note: o.note })), (o) => o.kg, () => '#444', 30, '體重', 'kg');
         return s.replace(/viewBox="0 0 350 \d+"/, `viewBox="0 0 ${VC.W} ${Math.max(VC.Y1 + 20, rowBottom)}"`) + VC_TIP + '</svg>';
     }
 
     // 數據表（同 morning-briefing 的欄位，另加 GCS／Pain／U/O——文字卡拿掉後，這些只剩這裡看得到）。
     // Pain 有自己的時間點，所以和量測組合併成同一條時間序列，沒有的欄位顯示 —
-    function vitalsTable(series, pains, win) {
+    function vitalsTable(series, pains, win, weights) {
         const c = (v) => (Number.isFinite(v) ? v : '—');
         const rows = series.map((o) => ({ ms: o.ms, o }))
             .concat((pains || []).filter((x) => x.ms >= win.fromMs && x.ms <= win.toMs).map((x) => ({ ms: x.ms, pain: x.v })))
+            .concat((weights || []).filter((x) => x.ms >= win.fromMs && x.ms <= win.toMs).map((x) => ({ ms: x.ms, wt: x })))
             .sort((a, b) => a.ms - b.ms);
         const cell = (v) => `<td>${v}</td>`;
-        const body = rows.map(({ ms, o, pain }) => {
+        const body = rows.map(({ ms, o, pain, wt }) => {
             const spo2 = o && Number.isFinite(o.SpO2) ? o.SpO2 + '%' + (o.onOxygen ? ' 給氧' : '') : '—';
             const bp = o && Number.isFinite(o.SBP) ? o.SBP + '/' + (Number.isFinite(o.DBP) ? o.DBP : '—') : '—';
             return '<tr>' + cell(vcEsc(vcHm(ms))) + cell(o ? c(o.T) : '—') + cell(o ? c(o.P) : '—') + cell(o ? c(o.R) : '—')
                 + cell(bp) + cell(spo2) + cell(o && o.gcs ? vcEsc(o.gcs) : '—') + cell(o && Number.isFinite(o.uo) ? o.uo : '—')
-                + cell(pain !== undefined ? pain : '—') + '</tr>';
+                + cell(pain !== undefined ? pain : '—')
+                + (wt ? `<td title="${vcEsc(wt.note)}">${vcEsc(wt.kg)}</td>` : cell('—')) + '</tr>';
         }).join('');
-        return `<details class="ntuh-vt"><summary>數據表（${rows.length} 筆）</summary><div class="ntuh-vt-scroll"><table><thead><tr><th>時間</th><th>T</th><th>HR</th><th>RR</th><th>BP</th><th>SpO₂</th><th>GCS</th><th>U/O</th><th>Pain</th></tr></thead><tbody>${body}</tbody></table></div></details>`;
+        return `<details class="ntuh-vt"><summary>數據表（${rows.length} 筆）</summary><div class="ntuh-vt-scroll"><table><thead><tr><th>時間</th><th>T</th><th>HR</th><th>RR</th><th>BP</th><th>SpO₂</th><th>GCS</th><th>U/O</th><th>Pain</th><th>體重</th></tr></thead><tbody>${body}</tbody></table></div></details>`;
     }
 
     // 時間窗：最近 48 小時（終點取「現在」與最後一筆量測較晚者）。uoText＝[UO] 來源的文字（沒有日期的 U/O 只有它看得到）
-    function buildVitalsChart(series, pains, uoText) {
+    function buildVitalsChart(series, pains, uoText, weights, weightErr) {
         if (!series || !series.length) return null;
         const last = series[series.length - 1].ms;
         const toMs = Math.max(nowMs(), last);
@@ -1436,7 +1439,8 @@ After the admission, the patient was in stable condition, the physical examinati
         if (!inWin.length) return null;
         const wrap = document.createElement('div');
         const undatedUo = uoText && !/^（無）/.test(uoText) && uoText.indexOf('@') < 0 ? `<div class="ntuh-vt-note">${vcEsc(uoText)}（院內未標日期）</div>` : '';
-        wrap.innerHTML = vitalsChartSvg(inWin, win, pains) + vitalsTable(inWin, pains, win) + undatedUo;
+        const wtErr = weightErr ? `<div class="ntuh-vt-note" style="color:#b02a2a">體重抓取失敗：${vcEsc(weightErr)}</div>` : '';
+        wrap.innerHTML = vitalsChartSvg(inWin, win, pains, weights) + vitalsTable(inWin, pains, win, weights) + undatedUo + wtErr;
         wrap.style.cssText = 'padding:4px 6px 6px;background:#fffffd';
         const svg = wrap.querySelector('svg.ntuh-vc');
         // 點軸切換該項顯示（BP/R/P/T）
@@ -1518,21 +1522,12 @@ After the admission, the patient was in stable condition, the physical examinati
             // 生命徵象群組：先放時序圖（資料來自 tprbp 的 series；舊版 data-helper 沒有 series 就略過）。
             // 抓取前也要留標題＋一張「尚未抓取」的卡片（曾整組隱藏，結果展開前圖卡不見，已還原）
             const tp = g.title === '生命徵象' ? byKey['tprbp'] : null;
-            let chartEl = tp && tp.ok ? buildVitalsChart(tp.series, tp.pains, (byKey['uo'] && byKey['uo'].ok) ? byKey['uo'].text : '') : null;
+            let chartEl = tp && tp.ok ? buildVitalsChart(tp.series, tp.pains, (byKey['uo'] && byKey['uo'].ok) ? byKey['uo'].text : '', byKey['weight'] && byKey['weight'].ok ? byKey['weight'].weights : [], byKey['weight'] && !byKey['weight'].ok ? byKey['weight'].error : '') : null;
             if (g.title === '生命徵象' && !chartEl) {
                 // 沒有圖可畫時留一行狀態，避免整個區塊無聲消失
                 chartEl = document.createElement('div');
                 chartEl.style.cssText = 'padding:8px 10px;font-size:12px;background:#fff;color:#2b3a2b';
                 chartEl.textContent = !tp ? '尚未抓取' : !tp.ok ? ('抓取失敗：' + tp.error) : (tp.series ? '（近 48 小時沒有量測）' : '（資料來源版本過舊：請更新 progress-note-data-helper）');
-            }
-            // 體重（data-helper 的 [Weight]）：放在圖卡最上面一行。舊版 data-helper 沒有這個來源就不顯示
-            const wr = g.title === '生命徵象' ? byKey['weight'] : null;
-            if (chartEl && wr) {
-                const wl = document.createElement('div');
-                wl.className = 'ntuh-vt-weight';
-                wl.textContent = wr.ok ? wr.text : '體重：抓取失敗（' + wr.error + '）';
-                if (!wr.ok) wl.style.color = '#b02a2a';
-                chartEl.insertBefore(wl, chartEl.firstChild);
             }
             if (chartEl) {
                 const card = document.createElement('div');

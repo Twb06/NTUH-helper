@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Data Helper
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.9.0
+// @version      1.10.0
 // @description  在 Progress Note 頁一鍵從各權威專頁背景抓取即時資料：導管（CatheterCare，僅現存）、照會（NotifyOtherDoctor）、飲食（DoctorDietMain，現行供餐醫令）、護理交班筆記（OffDutyNurV2 筆記欄）、今日護理過程紀錄（NursingProgressNote，自動點顯示紀錄）、生命徵象/SpO2/GCS/UO/影像（OuterData 直抓）、抗生素藥歷（chart-medication worker 抗生素+1M）。整理進暫存預覽面板。與 progress-note-filler 分離，專責跨頁資料擷取。v1.0.0：病人識別（ChartNo/AccountIDSE/PersonID/SESSION/WardCode）改用多來源解析＋id 尾綴選取器，修正 Progress 頁抓不到 ChartNo 導致檢驗報告([Lab])開空白頁的問題；缺參數的來源不再空開分頁等逾時；檢驗報告呈現2週。v1.1.0：移除 [Lab] 的專屬提早收尾（12s）與失敗重開一次（retryTab）——「開空白頁」的根因是抓不到 ChartNo，v1.0.0/v1.0.1 已修，該鷹架已無作用；lab 改與其他背景來源同步，共用同一輪 30s 輪詢。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -307,7 +307,7 @@
                 const lines = ['體重 ' + fmt(latest)];
                 if (prev.length) lines.push('前次 ' + prev.map(fmt).join(' ‧ '));
                 if (skipped) lines.push(`（另有 ${skipped} 筆非正常狀態已略過）`);
-                return { text: lines.join('\n'), weights: rows.slice(-1 - WEIGHT_RECENT).map((r) => ({ ms: r.ms, kg: r.kg, note: r.note })) };
+                return { text: lines.join('\n'), weights: rows.map((r) => ({ ms: r.ms, kg: r.kg, note: r.note })) }; // 全部給 filler：圖與數據表只取落在 48 小時內的
             } catch (e) {
                 throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
             } finally { clearTimeout(timer); }
