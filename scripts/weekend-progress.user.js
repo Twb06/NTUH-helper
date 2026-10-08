@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.6.0
+// @version      1.7.0
 // @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS，可由主治班表自動帶入員編）／當日確認草稿（帶入 TPR 與導管）／複製最新 Progress Note 填 stable 後送出
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -17,7 +17,6 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @connect      cdn.jsdelivr.net
 // @connect      ehisaw.ntuh.gov.tw
 // ==/UserScript==
 
@@ -175,12 +174,7 @@
             clearState();
         }
 
-        // 強制顯示：在 console 輸入 sessionStorage.setItem('forceWeekend','1') 後重新整理
-        if (sessionStorage.getItem('forceWeekend') === '1') {
-            createFAB();
-        } else {
-            checkHolidayAndShowFAB();
-        }
+        createFAB();
     }
 
     function listenForChildMessage(state) {
@@ -277,79 +271,6 @@
         __doPostBack(state.patients[state.currentIndex].postbackArg, '');
     }
 
-    // --- 假日判斷 ---
-
-    function getTodayYYYYMMDD() {
-        const d = new Date();
-        return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    }
-
-    function isWeekend() {
-        const day = new Date().getDay();
-        return day === 0 || day === 6;
-    }
-
-    // 內建 fallback：固定國定假日（月-日）
-    const FIXED_HOLIDAYS = [
-        '01-01', // 元旦
-        '02-28', // 和平紀念日
-        '10-10', // 國慶日
-    ];
-
-    function isFixedHoliday() {
-        const today = getTodayMMDD();
-        return FIXED_HOLIDAYS.includes(today);
-    }
-
-    // 行事曆資訊：今天是否假日、之後連續幾天假日（給 FAB 與對話框預設用）
-    let calendarInfo = null;
-
-    function weekendRun() {
-        // fallback：只看週末。週五 → 2；週六 → 1；其餘 0
-        const day = new Date().getDay();
-        return day === 5 ? 2 : day === 6 ? 1 : 0;
-    }
-
-    function checkHolidayAndShowFAB() {
-        const now = new Date();
-        const year = now.getFullYear();
-        const url = `https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${year}.json`;
-        const todayStr = getTodayYYYYMMDD();
-
-        const fallback = () => {
-            calendarInfo = { isHoliday: isWeekend() || isFixedHoliday(), run: weekendRun(), label: '例假日' };
-            if (calendarInfo.isHoliday || calendarInfo.run > 0) createFAB();
-        };
-
-        try {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url,
-                onload(res) {
-                    try {
-                        const data = JSON.parse(res.responseText);
-                        const byDate = new Map(data.map(d => [d.date, d]));
-                        const today = byDate.get(todayStr);
-                        let run = 0;
-                        const d = new Date(now);
-                        for (let i = 0; i < MAX_DAYS; i++) {
-                            d.setDate(d.getDate() + 1);
-                            if (d.getFullYear() !== year) break;  // 跨年不查
-                            const key = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-                            if (!byDate.get(key)?.isHoliday) break;
-                            run++;
-                        }
-                        calendarInfo = { isHoliday: !!today?.isHoliday, run, label: today?.description || '例假日' };
-                        if (calendarInfo.isHoliday || run > 0) createFAB();
-                    } catch { fallback(); }
-                },
-                onerror: fallback,
-                ontimeout: fallback,
-                timeout: 5000,
-            });
-        } catch { fallback(); }
-    }
-
     // --- Orchestrator UI ---
 
     // 共用右下角 dock：同頁多支腳本的浮動按鈕排進同一個容器，避免互相覆蓋（誰先載入誰建立）
@@ -401,10 +322,10 @@
         if (patients.length === 0) { alert('找不到病人清單'); return; }
 
         const saved = loadOptions();
-        const cal = calendarInfo || { isHoliday: false, run: 0 };
-        // 預設模式依日期：假日當天 → 確認草稿；假日前 → 預寫；其他 → 複製
-        const defaultMode = cal.isHoliday ? 'confirm' : cal.run > 0 ? 'prewrite' : 'copy';
-        const defaultDays = Math.min(Math.max(cal.run || saved.days || 2, 1), MAX_DAYS);
+        // 預設模式依星期：週五 → 預寫；週六日 → 確認草稿；其他 → 上次用的（沒有就複製）
+        const dow = new Date().getDay();
+        const defaultMode = dow === 5 ? 'prewrite' : (dow === 6 || dow === 0) ? 'confirm' : (saved.mode || 'copy');
+        const defaultDays = Math.min(Math.max(saved.days || 2, 1), MAX_DAYS);
 
         const overlay = document.createElement('div');
         Object.assign(overlay.style, {
