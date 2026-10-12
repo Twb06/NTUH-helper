@@ -179,7 +179,7 @@
 
     function checkPendingConsultation() {
         const now = Date.now();
-        const notifi edItems = readNotifiedItems(now);
+        const notifiedItems = readNotifiedItems(now);
         const activeItems = findActiveConsultations();
         const newItems = activeItems.filter((item) => !notifiedItems[item.id]);
 
