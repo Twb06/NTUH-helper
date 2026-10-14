@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.8.2
-// @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告；依列表順序列出所有病人，一行並排兩人
+// @version      1.9.0
+// @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-asmx.js
@@ -192,8 +192,9 @@
         };
     }
     const rxGate = makeGate(3);   // 藥歷表單查詢
-    // 管路一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰）
-    const tubeGate = makeGate(1);
+    // 管路與醫囑簽收頁共用、一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰；
+    // 醫囑簽收頁也是帶 AccountIDSE 的病人頁面，可能同樣改到伺服器端的「目前病人」，不能插進管路的頁面→handler 之間）
+    const pageGate = makeGate(1);
 
     const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
     const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
@@ -449,7 +450,7 @@
     // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
     // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
     // 額外參數一律被忽略（新竹實測 2026-09-30）。所以：
-    //   1. 一律一次一位（tubeGate=1），先載入該病人的頁面 HTML（不跑頁面 JS，約 0.5 秒）再立刻打 handler（約 0.1 秒）。
+    //   1. 一律一次一位（pageGate=1），先載入該病人的頁面 HTML（不跑頁面 JS，約 0.5 秒）再立刻打 handler（約 0.1 秒）。
     //   2. 每條管路的 <decorate> 都帶 <caseno>（＝病房列表的 AccountIDSE），逐條驗證，對不上就整批丟棄。
     // 已知盲點：這位病人若一條管路都沒有，就沒有 caseno 可驗證；此時若有人在別的分頁操作 CatheterCare，
     // 理論上可能拿到別人的空結果。簡報執行期間不要同時操作 CatheterCare。
@@ -461,7 +462,7 @@
     };
 
     async function fetchTubes(p, now) {
-        return tubeGate(async () => {
+        return pageGate(async () => {
             const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), 20000);
@@ -490,9 +491,123 @@
         });
     }
 
+    // ─── 醫囑變更（Nursing/WorkList_OrderCheck.aspx，醫囑簽收頁）──────────
+    // 網址參數 SESSION、PatClass=I、AccountIDSE、PersonID、Hosp=T0、Seed、EMRPop=Y（使用者提供的樣本，2026-10-14）；
+    // Seed 樣本有值、這裡留空（其他頁面留空皆可，此頁未實測）。PersonID 從病房 Cookie 取（只在記憶體內）。
+    // 頁面上方有「未簽收／已簽收／全部」三選一（rbl_SignStatus = N／Y／A），預設不是「全部」：
+    // 只讀預設畫面會漏掉另一種狀態的醫囑（例如護理師還沒簽收的夜間醫囑）。所以 GET 後若不是「全部」，
+    // 就照頁面點選項的方式送一次 postback（__EVENTTARGET = 該選項），切到「全部」（僅含一個月內資料）再解析。
+    // 表格 gv_OrderList：每列 <tr title="開立日：MM/DD HH:MM\n簽收日：yyyy/M/d 下午 hh:mm:ss\n紀錄日：…">，
+    // 欄位依表頭文字對應（類別、狀態、起日、迄日、醫令名稱…），不寫死欄序：未簽收的列可能多一欄勾選框。
+    // 只列「開立日」落在昨夜時間窗（前一日 START_HOUR 起）的醫囑。ReNew（定期續開）沿用原醫囑的開立日，自然不會列入。
+    const orderCheckUrl = (p, personId) => location.origin + '/WebApplication/InPatient/Nursing/WorkList_OrderCheck.aspx'
+        + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}`
+        + `&PersonID=${encodeURIComponent(personId)}&Hosp=T0&Seed=&EMRPop=Y`;
+    const ORDER_OPEN_MAX = 10;   // 醫囑筆數在這以內就預設展開，超過先收合（一張檢驗套餐就可能十幾列）
+
+    const orderStatusChecked = (doc) => {
+        const el = doc.querySelector('input[type="radio"][name$="rbl_SignStatus"]:checked');
+        return el ? el.value : '';
+    };
+
+    // 切到「全部」的 postback 內容：保留隱藏欄位與文字欄（含 VIEWSTATE），不帶任何按鈕（尤其「確認簽收時間」）與勾選框
+    function orderCheckAllBody(doc, pageUrl) {
+        const form = doc.querySelector('form');
+        const all = doc.querySelector('input[type="radio"][name$="rbl_SignStatus"][value="A"]');
+        if (!form || !all || !form.querySelector('input[name="__VIEWSTATE"]')) throw new Error('醫囑簽收頁讀不到「全部」選項');
+        const body = new URLSearchParams();
+        for (const el of form.querySelectorAll('input')) {
+            if (!el.name || el.disabled || ['submit', 'button', 'image', 'checkbox', 'radio'].includes(el.type)) continue;
+            body.append(el.name, el.value);
+        }
+        // 頁面上的 onclick：__doPostBack('NTUHWeb1$rbl_SignStatus$2','')＝選項的 name 加上 $序號（序號取 id 結尾數字）。
+        // 不能把 id 的底線全換成 $：控制項名稱 rbl_SignStatus 本身就有底線
+        const idx = (all.id.match(/_(\d+)$/) || [])[1];
+        if (idx === undefined) throw new Error('醫囑簽收頁「全部」選項格式改變');
+        body.set('__EVENTTARGET', `${all.name}$${idx}`);
+        body.set('__EVENTARGUMENT', '');
+        body.set(all.name, all.value);
+        // form action 是相對路徑（./WorkList_OrderCheck.aspx?…），以回應網址為基準
+        return { body, action: new URL(form.getAttribute('action') || '', pageUrl).href };
+    }
+
+    function parseOrderCheck(html, fromMs, now) {
+        const doc = NTUHAsmx.parseHtml(html);
+        const table = doc.querySelector('[id$="gv_OrderList"]');
+        if (!table) {
+            if (!doc.querySelector('input[name="__VIEWSTATE"]')) throw new Error('醫囑簽收頁讀不到（可能需要重新登入）');
+            // 沒有醫囑的病人可能整張表不輸出；風險：若院方改版導致表格不見，每位病人都會顯示「—」，在 Console 留紀錄
+            console.warn('[晨間簡報] 醫囑簽收頁沒有 gv_OrderList，視為沒有醫囑（HTML 長度 ' + html.length + '）');
+            return { items: [], skipped: 0, paged: false };
+        }
+        const headRow = table.querySelector('thead tr') || table.rows[0];
+        const heads = [...headRow.cells].map((c) => txt(c).replace(/\s+/g, ''));
+        const col = (name) => heads.indexOf(name);
+        const iType = col('類別'), iAct = col('狀態'), iStart = col('起日'), iEnd = col('迄日'), iName = col('醫令名稱');
+        if ([iAct, iStart, iName].some((i) => i < 0)) throw new Error('醫囑簽收頁欄位格式改變');
+        const items = [];
+        let skipped = 0;
+        for (const tr of table.querySelectorAll('tbody tr')) {
+            if (tr === headRow || tr.querySelector('th')) continue;
+            const c = tr.cells;
+            const title = tr.getAttribute('title') || '';
+            const om = title.match(/開立日\s*[:：]\s*(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+            if (!om || c.length !== heads.length) { skipped += 1; continue; }   // 不能靜默丟掉：回報有幾列沒顯示
+            // 開立日沒有年份：用簽收日的年份；開立月份比簽收月份大＝跨年（12 月開、1 月簽）。沒有簽收日就用今年，不能落在未來
+            const sm = title.match(/簽收日\s*[:：]\s*(\d{4})\/(\d{1,2})/);
+            let year = sm ? +sm[1] - (+om[1] > +sm[2] ? 1 : 0) : new Date(now).getFullYear();
+            const at = (y) => new Date(y, +om[1] - 1, +om[2], +om[3], +om[4]).getTime();
+            if (!sm && at(year) > now) year -= 1;
+            const ms = at(year);
+            if (ms < fromMs) continue;
+            // <b>(Specimen:BLO)</b> 前面補空白；「計價別」之後不顯示
+            const cell = c[iName].cloneNode(true);
+            for (const b of cell.querySelectorAll('b')) b.before(' ');
+            const content = txt(cell).replace(/\s*計價別\s*[:：].*$/, '');
+            // 迄日：「長期」或空白不顯示；有日期時間（刪除列＝刪除時間）就接在起日後面，寫成「起～迄」
+            const start = txt(c[iStart]);
+            const em = iEnd >= 0 ? txt(c[iEnd]).match(/^(?:\d{4}\/)?(\d{1,2})\/(\d{1,2})\s+(\d{1,2}:\d{2})$/) : null;
+            const when = em ? `${start}～${two(+em[1])}/${two(+em[2])} ${em[3]}` : start;
+            items.push({ ms, type: iType >= 0 ? txt(c[iType]) : '', action: txt(c[iAct]), detail: [when, content].filter(Boolean).join(' ') });
+        }
+        // WebForms 表格若有分頁，只讀得到第一頁
+        const paged = !!doc.querySelector('a[href*="Page$"]');
+        return { items: items.sort((a, b) => a.ms - b.ms), skipped, paged };
+    }
+
+    async function fetchOrders(p, win, now) {
+        const pid = personIdFromPatientList(document.cookie, p.caseno);
+        return pageGate(async () => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 30000);
+            try {
+                const opt = { credentials: 'same-origin', signal: ctrl.signal };
+                const res = await fetch(orderCheckUrl(p, pid), opt);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                if (/login/i.test(new URL(res.url).pathname)) throw new Error('被導向登入頁');
+                let html = await res.text();
+                let doc = NTUHAsmx.parseHtml(html);
+                if (orderStatusChecked(doc) !== 'A') {
+                    const { body, action } = orderCheckAllBody(doc, res.url);
+                    const post = await fetch(action, { ...opt, method: 'POST', body });
+                    if (!post.ok) throw new Error('切換「全部」HTTP ' + post.status);
+                    html = await post.text();
+                    doc = NTUHAsmx.parseHtml(html);
+                    if (orderStatusChecked(doc) !== 'A') throw new Error('醫囑簽收頁沒有切到「全部」');
+                }
+                // 防呆：頁面上的住院帳號要是這位病人
+                const acct = txt(doc.querySelector('[id$="lbl_CaseNo"]')) || txt(doc.querySelector('[id$="lblCaseNo"]'));
+                if (acct && acct !== p.caseno) throw new Error('醫囑簽收頁與病人不符，已丟棄');
+                return parseOrderCheck(html, win.fromMs, now);
+            } catch (e) {
+                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+            } finally { clearTimeout(timer); }
+        });
+    }
+
     // 每位病人的結果容器。pending＝還沒回來的來源；頁面會依 pending 顯示「抓取中…」
     function newResult(p, win, now) {
-        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes']) };
+        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, orders: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes', 'orders']) };
         const labMs = labTimeMs(p.labTitle, now);
         // 檢驗、影像的納入起點與圖表／TPR 一致：前一日 REF_HOUR（08:00）起，避免漏掉白天的新報告
         if (labMs !== null && labMs >= win.refFromMs) res.lab = { ms: labMs };
@@ -530,13 +645,14 @@
         ]);
     }
 
-    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）
-    async function assessHeavy(res, now, onUpdate) {
+    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）、醫囑簽收頁（與管路共用 pageGate）
+    async function assessHeavy(res, win, now, onUpdate) {
         const p = res.p;
         const job = jobRunner(res, onUpdate);
         await Promise.all([
             job('abx', '抗生素', async () => { res.abx = await fetchAbx(p, now); }),
             job('tubes', '管路', async () => { res.tubes = await fetchTubes(p, now); }),
+            job('orders', '醫囑', async () => { res.orders = await fetchOrders(p, win, now); }),
         ]);
     }
 
@@ -766,6 +882,22 @@ ${dataTable(series)}</div>`;
     const renderErr = (r) => (r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '');
     const renderAbx = (r) => (r.pending.has('abx') ? PENDING_HTML : r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
     const renderTubes = (r) => (r.pending.has('tubes') ? PENDING_HTML : r.tubes ? (r.tubes.length ? r.tubes.map((x) => dayTag(x, '')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
+    // 醫囑變更：類型｜動作｜開立時間。「新增」不寫動作，其他動作（刪除…）寫在最前面，刪除用紅字
+    function renderOrders(r) {
+        if (r.pending.has('orders')) return PENDING_HTML;
+        const d = r.orders;
+        if (!d) return '<span class="muted">未取得</span>';
+        const warn = (d.skipped ? `<div class="err">⚠ 有 ${d.skipped} 列格式不符、沒有顯示（請手動確認）</div>` : '')
+            + (d.paged ? '<div class="err">⚠ 醫囑簽收頁有分頁，只讀到第一頁（請手動確認）</div>' : '');
+        if (!d.items.length) return `${warn}<span class="muted">—</span>`;
+        const del = d.items.filter((x) => x.action === '刪除').length;
+        const rows = d.items.map((x) => {
+            const act = x.action === '新增' ? '' : `<b${x.action === '刪除' ? ' class="odel"' : ''}>${esc(x.action)}</b> `;
+            return `<tr><td>${esc(x.type || '一般')}</td><td>${act}${esc(x.detail)}</td><td>${esc(fmt(x.ms))}</td></tr>`;
+        }).join('');
+        return `${warn}<details class="od"${d.items.length <= ORDER_OPEN_MAX ? ' open' : ''}><summary>${d.items.length} 筆${del ? `（刪除 ${del}）` : ''}</summary>`
+            + `<table class="ot"><thead><tr><th>類型</th><th>動作</th><th>開立時間</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+    }
     // 新報告提示：只當提示（檢驗標題本身已是連結），藍底沿用「新」的樣式。資料來自病房列表「報」連結的 tooltip，
     // 是載入列表當下的快照（列表之後才出的報告看不到）。
     const labHint = (r) => (r.lab ? ` <span class="tag new" title="病房列表顯示的最新檢驗時間（載入列表當下的快照）">新報告 ${esc(fmt(r.lab.ms))}</span>` : '');
@@ -820,6 +952,15 @@ ${dataTable(series)}</div>`;
         }
     }
     // 影像標題連結：點擊時從病房 Cookie 取得 PersonID，再開影像列表。
+    // 醫囑簽收頁：和病程一樣需要 PersonID，點擊時才組網址；網址本身帶病人識別，每次開新分頁
+    function openOrderCheck(w, p) {
+        try {
+            const tab = w.open(orderCheckUrl(p, personIdFromPatientList(document.cookie, p.caseno)), '_blank');
+            if (!tab) alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。');
+        } catch (e) {
+            alert('無法開啟醫囑簽收頁：' + e.message + '。請改從病人頁面進入。');
+        }
+    }
     function openPacsList(w, p) {
         try {
             const pid = personIdFromPatientList(document.cookie, p.caseno);
@@ -933,6 +1074,7 @@ ${dataTable(series)}</div>`;
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k"><a href="${esc(u.cath)}" target="ntuh-catheter" data-cath="1" title="開啟管路頁（固定開在同一個分頁；簡報載入完成後才能開）">管路 ↗</a></span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
+<div class="kv"><span class="k"><a href="#" data-ord="${i}" title="開啟醫囑簽收頁（新分頁）">醫囑 ↗</a></span><div id="c${i}-orders">${renderOrders(r)}</div></div>
 <div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div><details class="lb" data-lab="${i}"><summary><span class="lbs">檢驗數值（點擊載入）</span>${labHint(r)}</summary><div id="c${i}-labbody"></div></details></div></div>
 <div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
@@ -947,6 +1089,7 @@ ${dataTable(series)}</div>`;
         if (src === 'pacs') set('pacs', renderPacs(r));
         if (src === 'abx') set('abx', renderAbx(r));
         if (src === 'tubes') set('tubes', renderTubes(r));
+        if (src === 'orders') set('orders', renderOrders(r));
         set('err', renderErr(r));
     }
     const setText = (w, id, text) => { if (w && !w.closed) { const el = w.document.getElementById(id); if (el) el.textContent = text; } };
@@ -974,6 +1117,7 @@ th{font-size:12px;color:var(--mut)}
 .k a,.mt a{color:inherit;text-decoration:none}.k a:hover,.mt a:hover{text-decoration:underline}
 .lb{margin-top:2px}.lb>summary{cursor:pointer;font-size:12px;color:var(--mut)}.lbh{margin:4px 0 1px;font-size:12px;color:var(--mut)}.lbl{margin:1px 0;font-size:12px}
 .lt{border-collapse:collapse;width:auto;margin:0 0 4px 8px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}.lt th,.lt td{border:0;padding:0 14px 0 0;text-align:left;white-space:nowrap;font-weight:400}.lt thead th{color:var(--mut)}.lt tbody th{color:var(--mut)}
+.od>summary{cursor:pointer;font-size:12px;color:var(--mut)}.ot{width:auto;font-size:12px}.ot th,.ot td{border:0;padding:0 10px 1px 0}.ot td:first-child,.ot td:last-child{white-space:nowrap}.odel{color:#b91c1c}
 .pc>summary{cursor:pointer;list-style:none}.pc>summary::-webkit-details-marker{display:none}.pc>summary::before{content:'▸ ';color:var(--mut)}.pc[open]>summary::before{content:'▾ '}.pc .rep{margin:2px 0 4px 14px;white-space:pre-wrap}
 .charts{margin-top:2px}
 .mt{font-size:12px;color:var(--mut);margin:2px 0}.tv{margin-top:6px;font-size:12px}.tv table{width:auto}.tv th,.tv td{padding:2px 10px 2px 0}.tv summary{cursor:pointer;color:var(--mut)}
@@ -1021,6 +1165,8 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.addEventListener('click', (ev) => {
             const c = ev.target.closest && ev.target.closest('a[data-cath]');
             if (c && loading) { ev.preventDefault(); alert('簡報還在載入管路，請等頁首顯示「完成」後再開管路頁（避免兩邊互相干擾）。'); return; }
+            const o = ev.target.closest && ev.target.closest('a[data-ord]');
+            if (o) { ev.preventDefault(); const ro = states[+o.getAttribute('data-ord')]; if (ro) openOrderCheck(w, ro.p); return; }
             const g = ev.target.closest && ev.target.closest('a[data-prog]');
             if (g) { ev.preventDefault(); const rg = states[+g.getAttribute('data-prog')]; if (rg) openProgressNote(w, rg.p); return; }
             const a = ev.target.closest && ev.target.closest('a[data-pacs]');
@@ -1045,7 +1191,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         const markFailed = (r, i, e) => {
             r.errors.push('判讀失敗：' + (e && e.message || e));
             r.pending.clear();
-            for (const src of ['vitals', 'pacs', 'abx', 'tubes']) applyUpdate(w, i, src, r, win);
+            for (const src of ['vitals', 'pacs', 'abx', 'tubes', 'orders']) applyUpdate(w, i, src, r, win);
         };
         const wall0 = nowMs();
         try {
@@ -1057,15 +1203,15 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
                 setProg('生命徵象與影像', ++d1);
             }));
 
-            // 階段二（重）：抗生素＋管路，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
+            // 階段二（重）：抗生素＋管路＋醫囑，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
             let d2 = 0, next = 0;
-            setProg('抗生素與管路', 0);
+            setProg('抗生素、管路與醫囑', 0);
             const worker = async () => {
                 while (next < states.length) {
                     const i = next++;
                     const r = states[i];
-                    try { await assessHeavy(r, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
-                    setProg('抗生素與管路', ++d2);
+                    try { await assessHeavy(r, win, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
+                    setProg('抗生素、管路與醫囑', ++d2);
                 }
             };
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));
