@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.2.1
+// @version      1.3.0
 // @description  病房列表一鍵在新分頁產生可編輯的 A4 查房單（一頁 11 位）：自動帶入床號／姓名／病歷號／入院日／主治／住院醫師，頁首 VS 自動帶入主治姓名，cc、#.、標籤與待辦可直接填寫並自動暫存，可直接列印
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -24,6 +24,7 @@ const RATIO = [2, 1, 1];                      // 三欄寬度比例預設（內�
 const TODO_PRESETS = ['Weekly', '診斷書', '病摘', '入摘', '出摘', 'Off-service', 'On-service'];  // 每行第一組待辦的快速填入選項
 // 選到（或輸入）這些標籤時，同一行的填寫欄若是空的就自動帶入範本
 const LABEL_TEMPLATES = { GCS: 'E.  V.  M.  ', MP: 'RU/LU/RL/LL:   /   /   /   ' };
+const NEW_MAX_DAY = 2;   // 住院第幾天以內算「新入院」（入院當天＝Day 1）
 const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'Image', 'MP'];  // 點標籤彈出的選項（兩排各 5 個），也可自行輸入
     const STORE_KEY = 'ntuh-rounds-sheet:v1';
     const KEEP_DAYS = 30;                         // 超過幾天沒再出現在列表的病人，暫存內容自動清掉
@@ -106,6 +107,15 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
     }
     const bedLabel = (p) => [p.ward, p.bed].filter(Boolean).join(' ');   // 病房＋床號
 
+    // 病人資訊行左邊留白處的小圖示（NEW／抗生素藥瓶／管路／吹氣）：由資料自動亮起，也可以點一下手動開關；列印只印亮的
+    const ICONS = {
+        new: ['NEW', '新入院（入院第 1–' + NEW_MAX_DAY + ' 天）', '<span class="nw">NEW</span>'],
+        abx: ['藥瓶', '使用中抗生素', '<svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M7 6h10v2l1 2v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V10l1-2z"/><path d="M9 13h6M9 16h6"/></svg>'],
+        tube: ['管路', '有留置管路', '<svg viewBox="0 0 24 24"><path d="M5 19c0-7 7-3 8-9s4-6 6-6"/><circle cx="5" cy="19" r="2"/><path d="M17 2l4 4"/></svg>'],
+        o2: ['吹氣', '給氧中（有給氧裝置）', '<svg viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 12h16a3 3 0 1 1-3 3"/><path d="M3 16h8"/></svg>'],
+    };
+    const iconsHtml = (isNew) => `<div class="ics">${Object.entries(ICONS).map(([k, [, tip, svg]]) => `<span class="ic" data-ic="${k}"${k === 'new' && isNew ? ' data-auto="1"' : ''} title="${esc(tip)}（點一下手動開關）">${svg}</span>`).join('')}</div>`;
+
     function blockHtml(p) {
         const id = p.chartNo || p.caseno;
         const k = (n) => `p:${id}:${n}`;
@@ -120,7 +130,8 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
             p.attending && `VS ${esc(p.attending)}`,
             p.resident && `R ${esc(p.resident)}`,
         ].filter(Boolean).join('<span class="sep"></span>');
-        return `<section class="pt" data-id="${esc(id)}">
+        const dn = parseInt(dayOf(p), 10);
+        return `<section class="pt" data-id="${esc(id)}">${iconsHtml(dn >= 1 && dn <= NEW_MAX_DAY)}
 <div class="ln info"><div class="il">${info}</div></div>
 ${row(0, 'cc')}
 ${row(1, '#.')}
@@ -182,7 +193,12 @@ input,textarea{font:inherit;color:inherit;background:transparent;border:0;outlin
 textarea{display:block;resize:none;overflow:hidden;line-height:1.05;overflow-wrap:anywhere;align-self:center}
 input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 .w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
-.pt{height:24mm;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
+.pt{position:relative;height:24mm;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
+.ics{position:absolute;left:-8.2mm;top:.4mm;width:7.4mm;display:flex;flex-direction:column;gap:.7mm;align-items:center}
+.ic{width:4.8mm;height:4.8mm;display:flex;align-items:center;justify-content:center;visibility:hidden;color:#111}
+.ic.on{visibility:visible}
+.ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.ic .nw{font:700 5.4pt/1 system-ui,sans-serif;border:.25mm solid #111;border-radius:1mm;padding:.35mm .5mm;letter-spacing:-.02em}
 .ln{display:flex;align-items:center;height:6mm;padding-right:1mm}
 .info .il{flex:1;white-space:nowrap;overflow:hidden;font-size:10.5pt}
 .il b{font-weight:700}.sep{display:inline-block;width:3.5mm}
@@ -205,6 +221,7 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 #rs-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#b91c1c;color:#fff;padding:8px 16px;border-radius:8px;font:13px system-ui,sans-serif;opacity:0;pointer-events:none;transition:opacity .15s;z-index:20}
 #rs-toast.show{opacity:1}
 @media screen{
+ .ic{visibility:visible;opacity:.18;cursor:pointer}.ic.on{opacity:1}
  .pt.viewing,.sp.viewing{outline:2px solid #d97706;outline-offset:-1px;background:#fffbeb}
  body.dragging .pt{opacity:.35}body.dragging .pt.mine{opacity:1;outline:2px solid #0f766e;outline-offset:-1px;background:#f0fdfa}
  .wrap{display:flex;align-items:stretch}
@@ -380,13 +397,43 @@ ${sideHtml(patients)}
             return text ? 'applied' : 'none';
         };
         const autoAll = () => { document.querySelectorAll('textarea[data-k]').forEach((f) => { if (/:f\d$/.test(f.getAttribute('data-k'))) applyAuto(f); }); save(); };
+        // ─── 病人圖示：NEW（住院天數）、藥瓶（有抗生素）、管路（有管路）、吹氣（SpO2 有給氧裝置）；點一下手動開關（存在 p:<id>:ic:<名> ）
+        const panelHas = (pid, key, sel) => {
+            const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
+            return !!(sp && sp.querySelector('.sc[id$="-' + key + '"] ' + sel));
+        };
+        const autoIcon = (pt, name) => {
+            const pid = pt.getAttribute('data-id');
+            if (name === 'new') return !!pt.querySelector('.ic[data-ic="new"][data-auto]');
+            if (name === 'abx') return panelHas(pid, 'abx', '.chip');
+            if (name === 'tube') return panelHas(pid, 'tubes', '.chip');
+            return panelHas(pid, 'o2', '.chip[data-on="1"]');
+        };
+        const updateIcons = () => {
+            document.querySelectorAll('.pt').forEach((pt) => {
+                pt.querySelectorAll('.ic').forEach((ic) => {
+                    const name = ic.getAttribute('data-ic');
+                    const o = store[`p:${pt.getAttribute('data-id')}:ic:${name}`];
+                    ic.classList.toggle('on', o === undefined ? autoIcon(pt, name) : o === '1');
+                });
+            });
+        };
+        document.addEventListener('click', (ev) => {
+            const ic = ev.target.closest && ev.target.closest('.ic');
+            if (!ic) return;
+            const pt = ic.closest('.pt');
+            store[`p:${pt.getAttribute('data-id')}:ic:${ic.getAttribute('data-ic')}`] = ic.classList.contains('on') ? '0' : '1';
+            updateIcons();
+            save();
+        });
         let autoQueued = false;
         const side = document.querySelector('.side');
         if (side) {
-            new MutationObserver(() => { if (autoQueued) return; autoQueued = true; requestAnimationFrame(() => { autoQueued = false; autoAll(); }); })
+            new MutationObserver(() => { if (autoQueued) return; autoQueued = true; requestAnimationFrame(() => { autoQueued = false; autoAll(); updateIcons(); }); })
                 .observe(side, { childList: true, subtree: true });
         }
         autoAll();
+        updateIcons();
 
         document.addEventListener('input', (ev) => {
             const el = ev.target;
@@ -653,6 +700,7 @@ ${sideHtml(patients)}
             for (const k of Object.keys(store)) if (k.indexOf('p:') === 0 || k.indexOf('h:') === 0) delete store[k];
             all.forEach(fill);
             fitAll();
+            updateIcons();
             save();
         };
     }
@@ -879,7 +927,7 @@ ${sideHtml(patients)}
         if (sp) {
             const x = NTUHNews2.oxygenInfo(sp.inside);
             const how = sp.onOxygen ? [x.device, x.flow !== null ? x.flow + 'L' : ''].filter(Boolean).join(' ') || '給氧' : 'RA';
-            out.o2.push(mk(`SpO2 ${sp.SpO2}% ${how}`, sp.ms));
+            out.o2.push({ ...mk(`SpO2 ${sp.SpO2}% ${how}`, sp.ms), on: !!sp.onOxygen });
         }
 
         if (v.uo) out.io.push({ t: `U/O ${v.uo.val}${v.uo.ms ? ` (${md(v.uo.ms)})` : ''}`, tip: v.uo.ms ? '尿量，時間 ' + mdhm(v.uo.ms) : '院內未標日期的尿量' });
@@ -1243,8 +1291,8 @@ ${sideHtml(patients)}
     const abxText = (x) => `${x.name}${x.route ? ' ' + x.route : ''} D${x.day}`;
     const tubeTextOf = (x) => `${x.name} D${x.day}`;
     // cat＝資料塊的類別（對應標籤名稱），放進欄位時會把該行標籤自動換成它
-    const chip = (t, cls, label, tip, cat) => `<span class="chip${cls || ''}" draggable="true" data-t="${esc(t)}" data-c="${esc(cat)}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(label || t)}</span>`;
-    const tipChips = (list, cat) => (list.length ? list.map((x) => chip(x.t, '', '', x.tip, cat)).join('') : '<span class="mu">—</span>');
+    const chip = (t, cls, label, tip, cat, on) => `<span class="chip${cls || ''}" draggable="true" data-t="${esc(t)}" data-c="${esc(cat)}"${tip ? ` title="${esc(tip)}"` : ''}${on ? ' data-on="1"' : ''}>${esc(label || t)}</span>`;
+    const tipChips = (list, cat) => (list.length ? list.map((x) => chip(x.t, '', '', x.tip, cat, x.on)).join('') : '<span class="mu">—</span>');
     function chipsHtml(items, fmt, allLabel, cat) {
         if (!items.length) return '<span class="mu">—</span>';
         const texts = items.map(fmt);
