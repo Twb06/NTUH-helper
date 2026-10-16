@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.9.0-standalone
+// @version      1.9.1-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -766,8 +766,7 @@ function isOnOxygen(inside) {
     const orderCheckUrl = (p, personId) => location.origin + '/WebApplication/InPatient/Nursing/WorkList_OrderCheck.aspx'
         + `?SESSION=${encodeURIComponent(pageSession())}&PatClass=I&AccountIDSE=${encodeURIComponent(p.caseno)}`
         + `&PersonID=${encodeURIComponent(personId)}&Hosp=T0&Seed=&EMRPop=Y`;
-    const ORDER_OPEN_MAX = 10;   // 醫囑筆數在這以內就預設展開，超過先收合（一張檢驗套餐就可能十幾列）
-
+    
     const orderStatusChecked = (doc) => {
         const el = doc.querySelector('input[type="radio"][name$="rbl_SignStatus"]:checked');
         return el ? el.value : '';
@@ -870,7 +869,7 @@ function isOnOxygen(inside) {
 
     // 每位病人的結果容器。pending＝還沒回來的來源；頁面會依 pending 顯示「抓取中…」
     function newResult(p, win, now) {
-        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, orders: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes', 'orders']) };
+        const res = { p, errors: [], vitals: null, pacs: [], lab: null, abx: null, tubes: null, orders: null, pending: new Set(['vitals', 'pacs', 'abx', 'tubes']) };
         const labMs = labTimeMs(p.labTitle, now);
         // 檢驗、影像的納入起點與圖表／TPR 一致：前一日 REF_HOUR（08:00）起，避免漏掉白天的新報告
         if (labMs !== null && labMs >= win.refFromMs) res.lab = { ms: labMs };
@@ -908,14 +907,13 @@ function isOnOxygen(inside) {
         ]);
     }
 
-    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）、醫囑簽收頁（與管路共用 pageGate）
-    async function assessHeavy(res, win, now, onUpdate) {
+    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）。醫囑簽收頁改成點擊才載入（見 loadOrders），不在這裡
+    async function assessHeavy(res, now, onUpdate) {
         const p = res.p;
         const job = jobRunner(res, onUpdate);
         await Promise.all([
             job('abx', '抗生素', async () => { res.abx = await fetchAbx(p, now); }),
             job('tubes', '管路', async () => { res.tubes = await fetchTubes(p, now); }),
-            job('orders', '醫囑', async () => { res.orders = await fetchOrders(p, win, now); }),
         ]);
     }
 
@@ -1145,21 +1143,16 @@ ${dataTable(series)}</div>`;
     const renderErr = (r) => (r.errors.length ? `<div class="err">⚠ ${esc(r.errors.join('；'))}（此病人結果不完整，請手動確認）</div>` : '');
     const renderAbx = (r) => (r.pending.has('abx') ? PENDING_HTML : r.abx ? (r.abx.length ? r.abx.map((x) => dayTag(x, ' new')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
     const renderTubes = (r) => (r.pending.has('tubes') ? PENDING_HTML : r.tubes ? (r.tubes.length ? r.tubes.map((x) => dayTag(x, '')).join('') : '<span class="muted">—</span>') : '<span class="muted">未取得</span>');
-    // 醫囑變更：類型｜動作｜開立時間。「新增」不寫動作，其他動作（刪除…）寫在最前面，刪除用紅字
-    function renderOrders(r) {
-        if (r.pending.has('orders')) return PENDING_HTML;
-        const d = r.orders;
-        if (!d) return '<span class="muted">未取得</span>';
+    // 醫囑變更（展開後才載入）：類型｜動作｜開立時間。「新增」不寫動作，其他動作（刪除…）寫在最前面，刪除用紅字
+    function renderOrdersBody(d) {
         const warn = (d.skipped ? `<div class="err">⚠ 有 ${d.skipped} 列格式不符、沒有顯示（請手動確認）</div>` : '')
             + (d.paged ? '<div class="err">⚠ 醫囑簽收頁有分頁，只讀到第一頁（請手動確認）</div>' : '');
         if (!d.items.length) return `${warn}<span class="muted">—</span>`;
-        const del = d.items.filter((x) => x.action === '刪除').length;
         const rows = d.items.map((x) => {
             const act = x.action === '新增' ? '' : `<b${x.action === '刪除' ? ' class="odel"' : ''}>${esc(x.action)}</b> `;
             return `<tr><td>${esc(x.type || '一般')}</td><td>${act}${esc(x.detail)}</td><td>${esc(fmt(x.ms))}</td></tr>`;
         }).join('');
-        return `${warn}<details class="od"${d.items.length <= ORDER_OPEN_MAX ? ' open' : ''}><summary>${d.items.length} 筆${del ? `（刪除 ${del}）` : ''}</summary>`
-            + `<table class="ot"><thead><tr><th>類型</th><th>動作</th><th>開立時間</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+        return `${warn}<table class="ot"><thead><tr><th>類型</th><th>動作</th><th>開立時間</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
     // 新報告提示：只當提示（檢驗標題本身已是連結），藍底沿用「新」的樣式。資料來自病房列表「報」連結的 tooltip，
     // 是載入列表當下的快照（列表之後才出的報告看不到）。
@@ -1325,6 +1318,28 @@ ${dataTable(series)}</div>`;
         }
     }
 
+    // 醫囑：第一次展開才為該病人載入（醫囑簽收頁很重：頁面＋切「全部」postback，且要與管路共用 pageGate 一次一位，
+    // 所以不放進簡報載入流程）；失敗可收合再展開重試。簡報還在載入時點開，會排在管路後面。
+    async function loadOrders(w, i, r, win) {
+        const body = w.document.getElementById(`c${i}-ordbody`);
+        const sum = body && body.parentNode.querySelector('summary');
+        r.ordState = 'loading';
+        if (body) body.innerHTML = '<span class="muted">載入中…</span>';
+        try {
+            const d = await fetchOrders(r.p, win, nowMs());
+            if (w.closed) return;
+            r.orders = d;
+            body.innerHTML = renderOrdersBody(d);
+            const lbs = sum && sum.querySelector('.lbs');
+            const del = d.items.filter((x) => x.action === '刪除').length;
+            if (lbs) lbs.textContent = d.items.length ? `昨夜醫囑變更（${d.items.length} 筆${del ? `，刪除 ${del}` : ''}）` : '昨夜醫囑變更（沒有）';
+            r.ordState = 'done';
+        } catch (e) {
+            r.ordState = 'error';
+            if (!w.closed && body) body.innerHTML = `<div class="err">⚠ 醫囑抓取失敗：${esc(e.name === 'AbortError' ? '逾時' : e.message)}（收合再展開可重試）</div>`;
+        }
+    }
+
     const titleLink = (text, url) => `<a href="${esc(url)}" target="_blank" rel="noopener" title="開啟${esc(text)}頁（新分頁）">${esc(text)} ↗</a>`;
     const renderCharts = (r, win) => (r.pending.has('vitals') ? '<div class="muted nov">生命徵象圖：抓取中…</div>' : chartsHtml(r, win));
 
@@ -1337,7 +1352,7 @@ ${dataTable(series)}</div>`;
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k"><a href="${esc(u.cath)}" target="ntuh-catheter" data-cath="1" title="開啟管路頁（固定開在同一個分頁；簡報載入完成後才能開）">管路 ↗</a></span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
-<div class="kv"><span class="k"><a href="#" data-ord="${i}" title="開啟醫囑簽收頁（新分頁）">醫囑 ↗</a></span><div id="c${i}-orders">${renderOrders(r)}</div></div>
+<div class="kv"><span class="k"><a href="#" data-ord="${i}" title="開啟醫囑簽收頁（新分頁）">醫囑 ↗</a></span><div><details class="lb" data-ord-load="${i}"><summary><span class="lbs">昨夜醫囑變更（點擊載入）</span></summary><div id="c${i}-ordbody"></div></details></div></div>
 <div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div><details class="lb" data-lab="${i}"><summary><span class="lbs">檢驗數值（點擊載入）</span>${labHint(r)}</summary><div id="c${i}-labbody"></div></details></div></div>
 <div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
@@ -1352,7 +1367,6 @@ ${dataTable(series)}</div>`;
         if (src === 'pacs') set('pacs', renderPacs(r));
         if (src === 'abx') set('abx', renderAbx(r));
         if (src === 'tubes') set('tubes', renderTubes(r));
-        if (src === 'orders') set('orders', renderOrders(r));
         set('err', renderErr(r));
     }
     const setText = (w, id, text) => { if (w && !w.closed) { const el = w.document.getElementById(id); if (el) el.textContent = text; } };
@@ -1416,12 +1430,17 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         w.document.open();
         w.document.write(pageShell(states, win));
         w.document.close();
-        // 檢驗數值：第一次展開才為該病人載入（toggle 不會冒泡，要用 capture）
+        // 檢驗數值、醫囑：第一次展開才為該病人載入（toggle 不會冒泡，要用 capture）
         w.document.addEventListener('toggle', (ev) => {
             const dt = ev.target;
-            if (!dt.matches || !dt.matches('details.lb[data-lab]') || !dt.open) return;
-            const i = +dt.getAttribute('data-lab'), r = states[i];
-            if (r && r.labState !== 'loading' && r.labState !== 'done') loadLab(w, i, r, win);
+            if (!dt.matches || !dt.open) return;
+            if (dt.matches('details.lb[data-lab]')) {
+                const i = +dt.getAttribute('data-lab'), r = states[i];
+                if (r && r.labState !== 'loading' && r.labState !== 'done') loadLab(w, i, r, win);
+            } else if (dt.matches('details.lb[data-ord-load]')) {
+                const i = +dt.getAttribute('data-ord-load'), r = states[i];
+                if (r && r.ordState !== 'loading' && r.ordState !== 'done') loadOrders(w, i, r, win);
+            }
         }, true);
         let loading = true;   // 簡報載入中（finally 之後才會變 false）
         // 影像：點擊時為該病人開啟來源頁（邏輯在原頁）。管路：載入中先擋下，避免互相干擾。
@@ -1454,7 +1473,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
         const markFailed = (r, i, e) => {
             r.errors.push('判讀失敗：' + (e && e.message || e));
             r.pending.clear();
-            for (const src of ['vitals', 'pacs', 'abx', 'tubes', 'orders']) applyUpdate(w, i, src, r, win);
+            for (const src of ['vitals', 'pacs', 'abx', 'tubes']) applyUpdate(w, i, src, r, win);
         };
         const wall0 = nowMs();
         try {
@@ -1468,13 +1487,13 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
 
             // 階段二（重）：抗生素＋管路＋醫囑，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
             let d2 = 0, next = 0;
-            setProg('抗生素、管路與醫囑', 0);
+            setProg('抗生素與管路', 0);
             const worker = async () => {
                 while (next < states.length) {
                     const i = next++;
                     const r = states[i];
-                    try { await assessHeavy(r, win, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
-                    setProg('抗生素、管路與醫囑', ++d2);
+                    try { await assessHeavy(r, now, (src, rr) => applyUpdate(w, i, src, rr, win)); } catch (e) { markFailed(r, i, e); }
+                    setProg('抗生素與管路', ++d2);
                 }
             };
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));
