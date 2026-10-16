@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.1.0
+// @version      1.2.0
 // @description  病房列表一鍵在新分頁產生可編輯的 A4 查房單（一頁 11 位）：自動帶入床號／姓名／病歷號／入院日／主治／住院醫師，頁首 VS 自動帶入主治姓名，cc、#.、標籤與待辦可直接填寫並自動暫存，可直接列印
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -24,7 +24,7 @@ const RATIO = [2, 1, 1];                      // 三欄寬度比例預設（內�
 const TODO_PRESETS = ['Weekly', '診斷書', '病摘', '入摘', '出摘', 'Off-service', 'On-service'];  // 每行第一組待辦的快速填入選項
 // 選到（或輸入）這些標籤時，同一行的填寫欄若是空的就自動帶入範本
 const LABEL_TEMPLATES = { GCS: 'E.  V.  M.  ', MP: 'RU/LU/RL/LL:   /   /   /   ' };
-const LABEL_OPTIONS = ['Abx', 'Lab', 'Tubes', 'GCS', 'MP', 'TPR', 'O2', 'IO', 'BW', 'Image'];  // 點標籤彈出的選項，也可自行輸入
+const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'Image', 'MP'];  // 點標籤彈出的選項（兩排各 5 個），也可自行輸入
     const STORE_KEY = 'ntuh-rounds-sheet:v1';
     const KEEP_DAYS = 30;                         // 超過幾天沒再出現在列表的病人，暫存內容自動清掉
 
@@ -96,6 +96,14 @@ const LABEL_OPTIONS = ['Abx', 'Lab', 'Tubes', 'GCS', 'MP', 'TPR', 'O2', 'IO', 'B
         return diff > 0 ? String(diff) : '';
     }
 
+    // 性別年齡：「F, 63y0m」「M, 41y3m」。性別男／女（或 M／F）→ M／F；年齡取「幾歲幾個月」，沒有月份就補 0m；認不得的格式原樣顯示
+    function sexAge(p) {
+        const sx = /^(男|m|male)/i.test(p.sex) ? 'M' : /^(女|f|female)/i.test(p.sex) ? 'F' : p.sex;
+        const m = String(p.age).match(/(\d+)\s*(?:y|歲|岁)\s*(?:(\d+)\s*(?:m|月|個月|个月)?)?/i);
+        const mo = !m && String(p.age).match(/^\s*(\d+)\s*(?:m|月|個月|个月)\s*$/i);   // 嬰兒只有月份
+        const age = m ? `${m[1]}y${m[2] || 0}m` : mo ? `0y${mo[1]}m` : (/^\d+$/.test(p.age) ? `${p.age}y0m` : p.age);
+        return [sx, age].filter(Boolean).join(', ');
+    }
     const bedLabel = (p) => [p.ward, p.bed].filter(Boolean).join(' ');   // 病房＋床號
 
     function blockHtml(p) {
@@ -105,7 +113,7 @@ const LABEL_OPTIONS = ['Abx', 'Lab', 'Tubes', 'GCS', 'MP', 'TPR', 'O2', 'IO', 'B
         const info = [
             bedLabel(p) && `<b>${esc(bedLabel(p))}</b>`,
             `<b>${esc(p.name)}</b>`,
-            (p.sex || p.age) && esc([p.sex, p.age].filter(Boolean).join('/')),
+            sexAge(p) && esc(sexAge(p)),
             esc(p.chartNo),
             p.adm && `入 ${esc(p.adm)}${dayOf(p) ? `(Day ${esc(dayOf(p))})` : ''}`,
             `預出院${input(k('dc'), 'u w9')}`,
@@ -136,7 +144,7 @@ ${row(2, '#.')}
         const rows = [['Abx', 'abx'], ['TPR', 'tpr'], ['Tubes', 'tubes'], ['O2', 'o2'], ['GCS', 'gcs'], ['IO', 'io']];
         return `<aside class="side"><div class="rz" id="rz" title="拖曳調整面板寬度"></div>
 <div class="sdt"><div class="sdh"><b>資料</b><span id="sd-prog" class="mu"></span><button id="sd-re" type="button">重新抓取</button></div>
-<div class="sdn">資料塊可拖進左邊同一位病人的欄位（需保持病房列表分頁開著）</div></div>
+<div class="sdn">資料塊可拖進左邊同一位病人的欄位（需保持病房列表分頁開著）</div><div id="sd-warn" class="er" hidden>⚠ 病房列表分頁已重新整理、關閉或登入逾時，這裡無法再抓資料。請回病房列表重新按「查房單」。</div></div>
 ${patients.map((p, i) => `<div class="sp" data-id="${esc(p.chartNo || p.caseno)}"><div class="sh"><span class="shn" title="點一下捲到左邊這位病人">${esc([bedLabel(p), p.name].filter(Boolean).join(' '))}</span><span class="bt" data-kind="lab" data-i="${i}">Lab</span><span class="bt" data-kind="img" data-i="${i}">影像</span><span class="bt" data-kind="pn" data-i="${i}">病程</span></div>
 <div class="sg">${rows.map(([l, k]) => `<div class="sr"><span class="sk">${l}</span><div class="sc" id="sd-${i}-${k}"><span class="mu">等待中…</span></div></div>`).join('')}</div>
 </div>`).join('')}
@@ -190,7 +198,7 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 .lab{flex:none;width:19mm;margin-right:1.5mm;text-align:center;font-size:8pt;font-weight:700;height:5mm;border:.25mm solid #111;border-radius:1mm}
 .bx{-webkit-appearance:none;appearance:none;flex:none;width:3.4mm;height:3.4mm;margin:0 0 0 2mm;border:.3mm solid #111;border-radius:0;position:relative;cursor:pointer;background:#fff}
 .bx:checked::after{content:"✓";position:absolute;left:-.1mm;top:-1.6mm;font-size:12pt;line-height:1}
-.lmenu{position:absolute;z-index:9;display:flex;flex-wrap:wrap;gap:3px;width:62mm;padding:4px;background:#fff;border:1px solid #9ca3af;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+.lmenu{position:absolute;z-index:9;display:grid;grid-template-columns:repeat(5,auto);gap:3px;width:max-content;padding:4px;background:#fff;border:1px solid #9ca3af;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
 .lmenu[hidden]{display:none}
 .lmenu button{padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;font:12px system-ui,sans-serif;cursor:pointer}
 .lmenu button:hover{background:#fef9c3}
@@ -282,6 +290,14 @@ ${sideHtml(patients)}
             const min = el.classList.contains('lab') ? 4 : 5;
             while (el.scrollWidth > el.clientWidth + 1 && size > min) { size -= 0.5; el.style.fontSize = size + 'px'; }
         };
+        // 內容實際高度（textarea 有固定高度時 scrollHeight 至少等於框高，量不到短文字的高度 → 暫時壓成 1px 再量）
+        const contentH = (t) => {
+            const prev = t.style.height;
+            t.style.height = '1px';
+            const h = t.scrollHeight;
+            t.style.height = prev;
+            return h;
+        };
         const colOf = (t) => {
             const k = t.getAttribute('data-k') || '';
             return /:m\d$/.test(k) ? 'm' : /:f\d$/.test(k) ? 'f' : /_1$/.test(k) ? 't1' : 't0';
@@ -289,7 +305,7 @@ ${sideHtml(patients)}
         const fitBlock = (pt) => {
             const tas = [...pt.querySelectorAll('textarea.tx')];
             if (!tas.length) return;
-            tas.forEach((t) => { t.style.fontSize = ''; t.style.paddingTop = ''; t.classList.remove('over'); });
+            tas.forEach((t) => { t.style.fontSize = ''; t.style.paddingTop = ''; t.style.lineHeight = ''; t.classList.remove('over'); });
             const groups = {};
             tas.forEach((t) => { (groups[colOf(t)] = groups[colOf(t)] || []).push(t); });
             Object.values(groups).forEach((g) => {
@@ -304,8 +320,13 @@ ${sideHtml(patients)}
                 g.forEach((t) => {
                     const H = t.clientHeight;
                     t.style.fontSize = size + 'px';
-                    if (t.value && !fits(t, H)) t.classList.add('over');
-                    else t.style.paddingTop = Math.max(0, (H - t.scrollHeight) / 2) + 'px';   // 垂直置中
+                    if (t.value && !fits(t, H)) { t.classList.add('over'); return; }
+                    // 垂直置中：單行 → 行高設成框高，由行框把字置中（比量測內容高度準）；多行 → 用上方留白置中
+                    t.style.lineHeight = H + 'px';
+                    if (t.scrollHeight > H + 1) {
+                        t.style.lineHeight = '';
+                        t.style.paddingTop = Math.max(0, (H - contentH(t)) / 2) + 'px';
+                    }
                 });
             });
         };
@@ -320,6 +341,53 @@ ${sideHtml(patients)}
         window.addEventListener('load', fitAll);
         window.addEventListener('beforeprint', fitAll);
         save();
+        // ─── 標籤＝資料類別 → 自動帶入最新結果 ───
+        // 標籤是 Abx／TPR／O2／Tubes／GCS 時，同一行的填寫欄自動放入右側面板抓到的該類最新資料（多筆時放「全部」那一顆）。
+        // 防呆：只在填寫欄是空的、或內容仍是「上次自動帶入的原文」（store 的 a 鍵）時才換成新結果；使用者自己改過的不覆蓋。
+        // 資料晚到或重新抓取時，符合條件的欄位也會自動更新（昨天自動帶入、今天沒人改過的舊結果會被今天的取代，不會殘留）。
+        const AUTO_CATS = { ABX: 'abx', TPR: 'tpr', O2: 'o2', TUBES: 'tubes', GCS: 'gcs' };
+        const panelText = (pid, key) => {   // 字串＝有資料；''＝這類沒有資料；null＝還沒載入完或失敗
+            const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
+            const cell = sp && sp.querySelector('.sc[id$="-' + key + '"]');
+            if (!cell) return null;
+            const chips = cell.querySelectorAll('.chip');
+            if (chips.length) { const all = cell.querySelector('.chip.all'); return (all || chips[0]).getAttribute('data-t'); }
+            return cell.textContent.trim() === '—' ? '' : null;
+        };
+        let noAuto = false;   // 拖曳放入時暫停（拖進去的是使用者選的資料塊，不要被自動帶入蓋掉或誤報「已有內容」）
+        const applyAuto = (f) => {
+            if (noAuto) return 'edited';
+            const m = (f.getAttribute('data-k') || '').match(/^p:(.*):f(\d)$/);
+            if (!m) return 'nocat';
+            const lab = all.find((o) => o.getAttribute('data-k') === `p:${m[1]}:l${m[2]}`);
+            const akey = `p:${m[1]}:a${m[2]}`;
+            const last = store[akey];
+            const unedited = !f.value || f.value === last;
+            const cat = lab && AUTO_CATS[lab.value.trim().toUpperCase()];
+            const set = (v) => {
+                f.value = v; store[f.getAttribute('data-k')] = v;
+                if (v) store[akey] = v; else delete store[akey];
+                fitBlock(f.closest('.pt'));
+            };
+            if (!cat) {   // 標籤換成別的類別：先前自動帶入、沒人改過的內容一起清掉
+                if (last && f.value === last) { set(''); return 'cleared'; }
+                return 'nocat';
+            }
+            const text = panelText(m[1], cat);
+            if (text === null) return 'pending';
+            if (!unedited) return 'edited';
+            if (f.value !== text) set(text); else if (text) store[akey] = text;
+            return text ? 'applied' : 'none';
+        };
+        const autoAll = () => { document.querySelectorAll('textarea[data-k]').forEach((f) => { if (/:f\d$/.test(f.getAttribute('data-k'))) applyAuto(f); }); save(); };
+        let autoQueued = false;
+        const side = document.querySelector('.side');
+        if (side) {
+            new MutationObserver(() => { if (autoQueued) return; autoQueued = true; requestAnimationFrame(() => { autoQueued = false; autoAll(); }); })
+                .observe(side, { childList: true, subtree: true });
+        }
+        autoAll();
+
         document.addEventListener('input', (ev) => {
             const el = ev.target;
             const k = el.getAttribute && el.getAttribute('data-k');
@@ -329,10 +397,13 @@ ${sideHtml(patients)}
             if (el.tagName === 'TEXTAREA') fitBlock(el.closest('.pt'));
             else if (el.matches('.lab,.u')) fit(el);
             if (/:l\d$/.test(k)) {
-                const tpl = cfg.templates[el.value.trim().toUpperCase()];
                 const fk = k.replace(/:l(\d)$/, ':f$1');
-                const f = tpl && all.find((o) => o.getAttribute('data-k') === fk);
-                if (f && !f.value.trim()) { f.value = tpl; store[fk] = tpl; fitBlock(f.closest('.pt')); }
+                const fEl = all.find((o) => o.getAttribute('data-k') === fk);
+                const res = fEl ? applyAuto(fEl) : 'nocat';
+                if (res === 'edited' && !noAuto) toast('填寫欄已有你自己的內容，沒有覆蓋（可拖曳右側資料塊取代）');
+                // 沒有自動資料可帶時（標籤不是資料類別、或這類目前沒資料）→ GCS／MP 的範本
+                const tpl = cfg.templates[el.value.trim().toUpperCase()];
+                if (tpl && fEl && !fEl.value.trim()) { fEl.value = tpl; store[fk] = tpl; fitBlock(fEl.closest('.pt')); }
             }
             save();
         });
@@ -448,7 +519,7 @@ ${sideHtml(patients)}
             const text = ev.dataTransfer.getData('text/plain');
             setVal(r.inp, text);
             const lab = all.find((o) => o.getAttribute('data-k') === k.replace(/:f(\d)$/, ':l$1'));
-            if (lab && drag.cat) setVal(lab, drag.cat);
+            if (lab && drag.cat) { noAuto = true; setVal(lab, drag.cat); noAuto = false; }
         }, true);
         document.addEventListener('click', (ev) => {
             const h = ev.target.closest && ev.target.closest('.shn');
@@ -500,13 +571,35 @@ ${sideHtml(patients)}
         const dlg = document.getElementById('dlg');
         let cur = null, seq = 0;
         const openerOk = () => window.opener && !window.opener.closed;
+        // 失效偵測：病房列表分頁若被重新整理、導到登入頁或關閉，它裡面的抓取程式就不在了（請求會石沉大海）。
+        //   ① 每 30 秒 ping 一次，3 秒內沒 pong → 面板上方顯示警告；② 按鈕請求 2.5 秒沒收到 ack → 視窗內顯示同樣說明。
+        const warnEl = document.getElementById('sd-warn');
+        const DEAD = '⚠ 病房列表分頁已重新整理、關閉或登入逾時，這裡無法再抓資料。請回病房列表重新按「查房單」。';
+        const tokenOf = () => document.documentElement.getAttribute('data-rs-token');
+        let pingN = 0, pongN = 0, ackSeq = null, ackTimer = null;
+        window.addEventListener('message', (ev) => {
+            if (ev.origin !== location.origin || !ev.data) return;
+            if (ev.data.rs === 'pong') { pongN = Math.max(pongN, ev.data.n); if (warnEl && pongN >= pingN) warnEl.hidden = true; }
+            if (ev.data.rs === 'ack' && String(ev.data.seq) === String(ackSeq)) clearTimeout(ackTimer);
+        });
+        const ping = () => {
+            if (!openerOk()) { if (warnEl) warnEl.hidden = false; return; }
+            const n = ++pingN;
+            window.opener.postMessage({ rs: 'ping', token: tokenOf(), n }, location.origin);
+            setTimeout(() => { if (pongN < n && warnEl) warnEl.hidden = false; }, 3000);
+        };
+        setTimeout(ping, 3000);
+        setInterval(ping, 30000);
         const request = () => {
             if (!cur) return;
             if (!openerOk()) { alert('病房列表分頁已關閉，無法抓取。請回病房列表重新按「查房單」。'); return; }
             seq += 1;
             dlg.setAttribute('data-seq', String(seq));
             document.getElementById('dlg-body').innerHTML = '<span class="mu">載入中…</span>';
-            window.opener.postMessage({ rs: 'detail', token: document.documentElement.getAttribute('data-rs-token'), kind: cur.kind, idx: cur.idx, seq }, location.origin);
+            window.opener.postMessage({ rs: 'detail', token: tokenOf(), kind: cur.kind, idx: cur.idx, seq }, location.origin);
+            ackSeq = seq;
+            clearTimeout(ackTimer);
+            ackTimer = setTimeout(() => { if (ackSeq === seq) document.getElementById('dlg-body').innerHTML = `<div class="er">${DEAD}</div>`; }, 2500);
         };
         document.addEventListener('click', (ev) => {
             const b = ev.target.closest && ev.target.closest('.bt');
@@ -529,12 +622,16 @@ ${sideHtml(patients)}
         const re = document.getElementById('sd-re');
         if (re) re.onclick = () => {
             if (!window.opener || window.opener.closed) { alert('病房列表分頁已關閉，無法重新抓取。請回病房列表重新按「查房單」。'); return; }
-            window.opener.postMessage({ rs: 'refresh', token: document.documentElement.getAttribute('data-rs-token') }, location.origin);
+            window.opener.postMessage({ rs: 'refresh', token: tokenOf() }, location.origin);
+            ackSeq = 'refresh';
+            clearTimeout(ackTimer);
+            ackTimer = setTimeout(() => { if (ackSeq === 'refresh' && warnEl) warnEl.hidden = false; }, 2500);
         };
         document.getElementById('pr').onclick = () => window.print();
         // 分區清除：標籤區＝標籤（回預設）＋同行填寫欄；勾選區＝勾選格＋待辦文字
         const clearZone = (re, what) => {
             if (!confirm(`清除所有病人的${what}？`)) return;
+            if (/\[lf\]/.test(re.source)) Object.keys(store).forEach((k) => { if (/^p:.*:a\d$/.test(k)) delete store[k]; });
             all.forEach((el) => {
                 const k = el.getAttribute('data-k');
                 if (!re.test(k)) return;
@@ -1062,6 +1159,18 @@ ${sideHtml(patients)}
         }).join('');
     }
 
+    // 登入逾時診斷：重抓目前這個病房列表網址，若被導到登入頁（或出現「非合法使用此網頁」）就是逾時。true／false／null（無法判斷）
+    const SESSION_MSG = '⚠ Portal 登入可能已逾時（閒置太久）。請回病房列表重新登入，再重新按「查房單」。';
+    async function sessionAlive() {
+        try {
+            const res = await fetch(location.href, { credentials: 'same-origin', cache: 'no-store' });
+            if (res.status === 401 || res.status === 403) return false;
+            if (res.redirected && /login/i.test(res.url)) return false;
+            if (!res.ok) return null;
+            return !/非合法使用此網頁/.test((await res.text()).slice(0, 30000));
+        } catch (e) { return null; }
+    }
+
     // ─── 最近一篇 progress note 的 PAP（Problem／Assessment／Plan）：唯讀 ───
     // 2026-10-16 探測（progress-note-list／content／pap-shape probe）：
     //   1. 病程頁 HTML（GET 同一個網址）裡就有清單 #tblNoteList tbody tr[notetype]，每列帶 caseseqno／accountno／version／
@@ -1181,6 +1290,8 @@ ${sideHtml(patients)}
         try {
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, patients.length) }, worker));
             prog(`完成（${((nowMs() - t0) / 1000).toFixed(1)} 秒）`);
+            // 有任何格子「未取得」時，確認是不是登入逾時（一次）
+            if (!w.closed && w.document.querySelector('.sc .er') && (await sessionAlive()) === false) prog('⚠ 登入可能已逾時，請重新登入後重新按「查房單」');
         } finally { state.running = false; }
     }
 
@@ -1203,7 +1314,10 @@ ${sideHtml(patients)}
         const state = { running: false };
         const token = String(nowMs()) + Math.random().toString(36).slice(2);
         w.document.documentElement.setAttribute('data-rs-token', token);
-        const cache = {};   // `${idx}|${kind}` → 抓回的資料（同一次開啟內重複點不再抓）
+        const cache = {};   // `${idx}|${kind}` → { at, data }：3 分鐘內重複點不再抓；空結果不快取（可能是登入逾時造成的假空）
+        const CACHE_MS = 3 * 60000;
+        const reply = (m) => { try { if (!w.closed) w.postMessage(m, location.origin); } catch (e) { /* 對方視窗已關 */ } };
+        const isEmpty = (kind, d) => (kind === 'lab' ? (d.empty || d.noTable || !d.items.length) : kind === 'pn' ? d.none : !d.length);
         const showDetail = async (d) => {
             const dlg = w.closed ? null : w.document.getElementById('dlg');
             const body = dlg && w.document.getElementById('dlg-body');
@@ -1213,17 +1327,28 @@ ${sideHtml(patients)}
             const key = d.idx + '|' + d.kind;
             const now = nowMs();
             try {
-                if (!cache[key]) cache[key] = d.kind === 'lab' ? await fetchLabData(p, now) : d.kind === 'pn' ? await fetchProgress(p) : await fetchImages(p, now);
+                let hit = cache[key];
+                if (!hit || now - hit.at > CACHE_MS) {
+                    const data = d.kind === 'lab' ? await fetchLabData(p, now) : d.kind === 'pn' ? await fetchProgress(p) : await fetchImages(p, now);
+                    hit = { at: now, data };
+                    if (isEmpty(d.kind, data)) delete cache[key]; else cache[key] = hit;
+                }
                 if (stale()) return;
-                body.innerHTML = d.kind === 'lab' ? renderLabBody(cache[key], now) : d.kind === 'pn' ? renderProgressBody(cache[key]) : renderImagesBody(cache[key], now);
+                const data = hit.data;
+                body.innerHTML = d.kind === 'lab' ? renderLabBody(data, now) : d.kind === 'pn' ? renderProgressBody(data) : renderImagesBody(data, now);
+                // 空結果可能只是登入逾時（伺服器回空頁面）：多查一次登入狀態，逾時就明講
+                if (isEmpty(d.kind, data) && (await sessionAlive()) === false && !stale()) body.insertAdjacentHTML('afterbegin', `<div class="er">${SESSION_MSG}</div>`);
             } catch (e) {
-                if (!stale()) body.innerHTML = `<div class="er">未取得：${esc(e.name === 'AbortError' ? '逾時' : e.message)}</div>`;
+                if (stale()) return;
+                body.innerHTML = `<div class="er">未取得：${esc(e.name === 'AbortError' ? '逾時' : e.message)}</div>`;
+                if ((await sessionAlive()) === false && !stale()) body.insertAdjacentHTML('afterbegin', `<div class="er">${SESSION_MSG}</div>`);
             }
         };
         window.addEventListener('message', (ev) => {
             if (ev.origin !== location.origin || !ev.data || ev.data.token !== token) return;
-            if (ev.data.rs === 'refresh') fetchPanel(w, patients, state);
-            else if (ev.data.rs === 'detail') showDetail(ev.data);
+            if (ev.data.rs === 'ping') reply({ rs: 'pong', n: ev.data.n });
+            else if (ev.data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
+            else if (ev.data.rs === 'detail') { reply({ rs: 'ack', seq: ev.data.seq }); showDetail(ev.data); }
         });
         fetchPanel(w, patients, state);
     }
