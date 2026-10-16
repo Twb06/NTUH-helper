@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         NTUH 掛0%績效工具 v1.4.2
+// @name         NTUH 掛0%績效工具 v1.4.4
 // @namespace    ntuh-zero
-// @version      1.4.3
+// @version      1.4.4
 // @description  一鍵把指定員編以0%掛進當前病人的R角色:讀現有R→設人數(VS0/成本0/R現有+1)→照抄舊R+自己0%→刪舊R→新增。狀態機跨postback接力。不切換病人。
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/EnterTakeCarePersonInfo.aspx*
@@ -115,7 +115,7 @@
   root.innerHTML =
     '<div id="ptz-fab" title="掛0%績效工具">0%</div>' +
     '<div id="ptz-panel" style="display:none">' +
-      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">v1.4.2</span></span><span id="ptz-close">✕</span></div>' +
+      '<div id="ptz-head"><span>掛0%績效 <span class="ptz-tag">v1.4.4</span></span><span id="ptz-close">✕</span></div>' +
       '<div id="ptz-body">' +
         '<label>要掛 0% 的員編(預設掛自己,可改)</label>' +
         '<input type="text" id="ptz-emp" placeholder="輸入員編" />' +
@@ -191,6 +191,28 @@
   }
   function resetWait(S) { S.waitTries = 0; saveS(S); }
 
+  // 人數下拉的 change 是 UpdatePanel 局部 postback（頁面不 reload，腳本不會重跑），
+  // 必須等 endRequest 才能接力，否則狀態機卡在 WAIT 要使用者再點一次。
+  // 若剛好是整頁 reload，頁面一換這裡的 timer 就消失，改由 load 事件接手。
+  function waitPartialThenTick() {
+    let fired = false;
+    const sys = window.Sys;
+    const prm = (sys && sys.WebForms && sys.WebForms.PageRequestManager) ? sys.WebForms.PageRequestManager.getInstance() : null;
+    function go() {
+      if (fired) return; fired = true;
+      if (prm) { try { prm.remove_endRequest(onEnd); } catch (e) {} }
+      setTimeout(tick, 400);
+    }
+    function onEnd() { go(); }
+    if (prm) prm.add_endRequest(onEnd);
+    (function check(n) {
+      if (fired) return;
+      if (prm && prm.get_isInAsyncPostBack() && n < 30) { setTimeout(function () { check(n + 1); }, 500); return; }
+      if (n === 0) { setTimeout(function () { check(1); }, 1500); return; }
+      go();
+    })(0);
+  }
+
   function tick() {
     const S = loadS(); if (!S || !S.running) return;
     $('#ptz-panel').style.display = 'block';
@@ -205,6 +227,7 @@
       if (r === 'nochange') { S.phase = 'SET_COST0'; saveS(S); tick(); return; }
       log(S, '① ' + ROLE_VS + ' 人數 → 0', 'ptz-step');
       S.phase = 'WAIT_VS0'; saveS(S);
+      waitPartialThenTick();
       return;
     }
     if (S.phase === 'WAIT_VS0') {
@@ -219,6 +242,7 @@
       if (r === 'nochange') { S.phase = 'SET_RCOUNT'; saveS(S); tick(); return; }
       log(S, '② ' + ROLE_COST + ' 人數 → 0', 'ptz-step');
       S.phase = 'WAIT_COST0'; saveS(S);
+      waitPartialThenTick();
       return;
     }
     if (S.phase === 'WAIT_COST0') {
@@ -233,6 +257,7 @@
       if (r === 'nochange') { S.phase = 'FILL'; saveS(S); tick(); return; }
       log(S, '③ ' + ROLE_R + ' 人數 → ' + S.targetRcount, 'ptz-step');
       S.phase = 'WAIT_RCOUNT'; saveS(S);
+      waitPartialThenTick();
       return;
     }
     if (S.phase === 'WAIT_RCOUNT') {
