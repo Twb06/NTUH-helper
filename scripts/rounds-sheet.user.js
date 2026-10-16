@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.2.0
+// @version      1.2.1
 // @description  病房列表一鍵在新分頁產生可編輯的 A4 查房單（一頁 11 位）：自動帶入床號／姓名／病歷號／入院日／主治／住院醫師，頁首 VS 自動帶入主治姓名，cc、#.、標籤與待辦可直接填寫並自動暫存，可直接列印
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -437,8 +437,13 @@ ${sideHtml(patients)}
             hide();
             target.blur();
         });
-        document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && ev.target.tagName === 'TEXTAREA') ev.preventDefault(); });
-        document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' || ev.key === 'Enter') { hide(); if (document.activeElement) document.activeElement.blur(); } });
+        // 中文輸入法：選字確認用的 Enter 不能攔（preventDefault／blur 會讓已確認的字重複插入一次）。
+        // 判斷：isComposing、keyCode 229，或剛結束組字不久（Safari 的 compositionend 比 keydown 先發生，這時 isComposing 已是 false）。
+        let imeUntil = 0;
+        document.addEventListener('compositionend', () => { imeUntil = new Date().getTime() + 80; }, true);
+        const isIme = (ev) => ev.isComposing || ev.keyCode === 229 || new Date().getTime() < imeUntil;
+        document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !isIme(ev) && ev.target.tagName === 'TEXTAREA') ev.preventDefault(); });
+        document.addEventListener('keydown', (ev) => { if (isIme(ev)) return; if (ev.key === 'Escape' || ev.key === 'Enter') { hide(); if (document.activeElement) document.activeElement.blur(); } });
         document.addEventListener('mousedown', (ev) => { if (!menu.contains(ev.target) && !(ev.target.classList && (ev.target.classList.contains('lab') || ev.target.classList.contains('pre')))) hide(); });
         // 欄寬比例（全域，存起來下次沿用）
         const rl = document.getElementById('rl');
