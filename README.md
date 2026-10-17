@@ -18,7 +18,7 @@
 | `prescription-viewer` | 處方頁整理目前用藥為「商品名 劑量 頻率 途徑 開始日 特殊事項」，院內／自備藥分組，供一眼檢視與複製；也支援背景抓取現行處方 | 通用 | 處方頁點右上角「整理處方」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/prescription-viewer.user.js) |
 | `lab-summary` | 整理檢驗報告，自動分類並顯示日期與趨勢；結果可在「趨勢」段落與「表格」對齊兩種呈現間切換，並記住呈現與輸出疏密設定；支援 Culture／PCR、CSF 獨立分組、PCT、抗藥性標註、清單／橫式／綠單模式，以及背景抓取檢驗摘要 | 通用 | 報告頁點右下角「整理檢驗」，結果框標題列可切換趨勢／表格與輸出疏密 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lab-summary.user.js) |
 | `morning-briefing` | 晨間簡報：病房列表一鍵在新分頁產生「昨夜狀態」總覽，依列表順序列出所有病人，一行並排兩人；每人附生命徵象圖、給氧／尿量變化、現行抗生素（藥歷頁院方分類）與管路天數、新檢驗與影像報告 | 通用 | 病房列表查詢區點「晨間簡報」（時間窗固定為前一日 17:00 起，週一回溯到週五） | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js) |
-| `rounds-sheet` | 查房單：病房列表一鍵在新分頁產生可編輯、可列印的 A4 查房單（一頁 11 位），自動帶入病人資料與 VS 主治姓名。右側面板自動抓抗生素、管路、生命徵象等資料塊，可拖進同一位病人的欄位，內容自動暫存 | 通用 | 病房列表查詢區點「查房單」，填寫後按「列印」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/rounds-sheet.user.js) |
+| `rounds-sheet` | 查房單：病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位），自動帶入病人資料及「准」連結的預出院／已出院日期。頁首 CR／VS 分列，自動配對姓名、員編與簡碼，可新增人員或選擇僅此頁／所有頁面移除。右側抗生素、管路、生命徵象等資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存 | 通用 | 病房列表查詢區點「查房單」，頁首用「＋／−」增刪人員，填寫後按「列印」 | [安裝](https://www.tampermonkey.net/script_installation.php#url=https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/rounds-sheet.user.js) |
 
 ### 自動執行型
 

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.3.0
-// @description  病房列表一鍵在新分頁產生可編輯的 A4 查房單（一頁 11 位）：自動帶入床號／姓名／病歷號／入院日／主治／住院醫師，頁首 VS 自動帶入主治姓名，cc、#.、標籤與待辦可直接填寫並自動暫存，可直接列印
+// @version      1.4.0
+// @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-asmx.js
@@ -10,7 +10,8 @@
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/rounds-sheet.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/rounds-sheet.user.js
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      ihisaw.ntuh.gov.tw
 // ==/UserScript==
 
 (function () {
@@ -32,7 +33,268 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
     const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
 
-    const nk = (name) => String(name || '').replace(/\s+/g, '');
+    const nk = (name) => String(name || '').trim();
+    const patientName = (name) => String(name || '').replace(/\[禁\]/g, '').trim();
+
+    // EBoard 請求／回應契約見 docs/endpoints/eboard.md；本腳本僅呼叫 DrInfo。
+    // transport 保留原始 JSON；人員選取只讀 assignmentRecords，不合併 directory。
+    const EBOARD_URL = 'https://ihisaw.ntuh.gov.tw/WebApplication/EBoard/EBoardInfoHandler.ashx';
+    const EBOARD_HEADERS = {
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'Content-Type': 'application/json; charset=utf-8',
+        'X-Requested-With': 'XMLHttpRequest',
+    };
+    const staffCache = new Map();
+    const STAFF_CACHE_MS = 10 * 60000;
+    const hospitalOf = (account) => String(account || '').trim().match(/^\d*(\D.)/)?.[1] || '';
+    const staffText = (value) => value === null || value === undefined ? '' : String(value).trim();
+    const staffPerson = (record) => ({ EmpName: nk(record.EmpName), EmpNo: staffText(record.EmpNo), PhoneCode: record.PhoneCode === null || record.PhoneCode === undefined ? null : String(record.PhoneCode) });
+    const staffBeds = (record) => new Set(staffText(record.TakeCareBedList).split(',').map((b) => b.trim()).filter(Boolean));
+
+    function physicianName(cell) {
+        if (!cell) return '';
+        const copy = cell.cloneNode(true);
+        copy.querySelectorAll('button,input,select,svg,img,[role="button"],script,style').forEach((el) => el.remove());
+        // 保留姓名內的空白，僅移除前後空白；新增按鈕／圖示不屬於姓名。
+        return nk(copy.textContent);
+    }
+
+    function getTaipeiDate(now = new Date()) {
+        const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+        const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+        return `${values.year}/${values.month}/${values.day}`;
+    }
+
+    function buildEboardBody({ accountIdSe, wardCode, date = getTaipeiDate() }) {
+        const hospitalCode = hospitalOf(accountIdSe);
+        if (!hospitalCode) throw new Error('AccountIDSE 缺少可擷取的院區碼');
+        if (!staffText(wardCode)) throw new Error('缺少病房代碼');
+        return JSON.stringify({ HospitalCode: hospitalCode, WardCode: wardCode.trim(), StartDate: date, EndDate: date, ActiveFlag: 'Y', QueryNews2: 'N', Mode: 'DrInfo' });
+    }
+
+    function gmFetchEboardInfo(options) {
+        const body = buildEboardBody(options);
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST', url: EBOARD_URL, headers: EBOARD_HEADERS, data: body,
+                responseType: 'text', anonymous: false, timeout: 20000,
+                onload: (response) => {
+                    if (response.status < 200 || response.status >= 300) { reject(new Error(`EBoard HTTP ${response.status}`)); return; }
+                    try { resolve(JSON.parse(response.responseText)); }
+                    catch { reject(new Error('EBoard 未回傳有效 JSON；請確認登入狀態與回應類型')); }
+                },
+                onerror: () => reject(new Error('EBoard 網路請求失敗')),
+                ontimeout: () => reject(new Error('EBoard 請求逾時')),
+                onabort: () => reject(new Error('EBoard 請求已取消')),
+            });
+        });
+    }
+
+    function getStaffAssignments(options) {
+        options = { ...options, date: options.date || getTaipeiDate() };
+        const body = JSON.parse(buildEboardBody(options));
+        const key = [body.HospitalCode, body.WardCode, body.StartDate, body.Mode].join('|');
+        const hit = staffCache.get(key);
+        if (hit && (hit.pending || Date.now() - hit.at < STAFF_CACHE_MS)) return hit.promise;
+        // 每次呼叫清除過期記憶體；不持久保存 response 或病人清單。
+        for (const [k, entry] of staffCache) if (!entry.pending && Date.now() - entry.at >= STAFF_CACHE_MS) staffCache.delete(k);
+        const entry = { pending: true, at: 0 };
+        entry.promise = gmFetchEboardInfo(options).then((data) => {
+            if (!Array.isArray(data) || !Array.isArray(data[0]) || data[0].some((r) => !r || typeof r !== 'object' || Array.isArray(r))) throw new Error('EBoard DrInfo 格式不符');
+            entry.pending = false;
+            entry.at = Date.now();
+            return data;
+        }).catch((error) => { staffCache.delete(key); throw error; });
+        staffCache.set(key, entry);
+        return entry.promise;
+    }
+
+    // VS 只按 DRVS 與 trim 後姓名精確配對，不檢查床位；多筆即報錯，不去重後選第一筆。
+    function selectVS(data, name) {
+        const matches = data[0].filter((r) => r.RoleFilter === 'DRVS' && nk(r.EmpName) === nk(name) && nk(name));
+        if (matches.length > 1) throw new Error('VS 同名匹配超過一筆，無法判定');
+        return matches.length ? { status: 'found', person: staffPerson(matches[0]) } : { status: 'not-found' };
+    }
+
+    function resolveStaffBed(data, baseBed) {
+        if (!baseBed) return '';
+        const beds = new Set(data[0].flatMap((r) => [...staffBeds(r)]));
+        const variants = [baseBed, `${baseBed}N`].filter((b) => beds.has(b));
+        // N 代表此床的新病人，非 N 可能是前一位或轉床病人，不能當作當日出院。
+        // 本腳本尚未用 PlanCheckIn 核實歸屬；混合分配時留空，不猜測或去除 N。
+        return variants.length > 1 ? '' : variants[0] || baseBed;
+    }
+
+    // CR 候選須為 DRRS 且覆蓋本列印頁至少一個完整床位 token。
+    // scoringPatients 是同院區／病房「目前表格全部病人」，不只本列印頁；
+    // score 計算其照護病人中，住院醫師姓名不是自己的筆數，僅保留 score > 0。
+    // 依 score、完整去重照護床數遞減排序；同分保留所有人。清單外床位不能加分。
+    // 缺床位／住院姓名會使該範圍計分不足；重複員編不自行合併。VS 可獨立繼續。
+    // 回傳 { status: found|not-found|insufficient-data, candidates, warnings }；
+    // 分頁／篩選可能限制計分範圍，不能宣稱已涵蓋完整病房。
+    function selectCR(data, pagePatients, scoringPatients) {
+        const warnings = [];
+        if (pagePatients.some((p) => !p.bedToken)) warnings.push('本頁部分床位 N 歸屬未核實，未用於候選覆蓋判定');
+        const pageBeds = new Set(pagePatients.map((p) => p.bedToken).filter(Boolean));
+        const matches = data[0].filter((r) => r.RoleFilter === 'DRRS' && [...staffBeds(r)].some((bed) => pageBeds.has(bed)));
+        const candidates = [];
+        matches.forEach((r) => {
+            const person = staffPerson(r), beds = staffBeds(r);
+            if (!person.EmpName || !person.EmpNo) { warnings.push('CR 候選缺少姓名或員編'); return; }
+            if (data[0].filter((other) => other.RoleFilter === 'DRRS' && staffText(other.EmpNo) === person.EmpNo).length > 1) { warnings.push('CR 員編重複，未確認合併規則，已略過'); return; }
+            // 不完整資料可能影響排序，不把空姓名當作不同醫師，也不猜 N。
+            if (!scoringPatients.length || scoringPatients.some((p) => !p.bedToken || !nk(p.resident))) { warnings.push('CR 計分資料不足（床號／住院醫師缺失或 N 歸屬未核實）'); return; }
+            const score = scoringPatients.filter((p) => beds.has(p.bedToken) && nk(p.resident) !== person.EmpName).length;
+            if (score > 0) candidates.push({ ...person, score, bedCount: beds.size });
+        });
+        candidates.sort((a, b) => b.score - a.score || b.bedCount - a.bedCount);
+        return { status: candidates.length ? 'found' : warnings.length ? 'insufficient-data' : 'not-found', candidates, warnings: [...new Set(warnings)] };
+    }
+
+    function staffStatus(result) {
+        const messages = { 'not-found': '未找到符合條件的人員', 'insufficient-data': 'CR 計分資料不足', error: '無法取得人員' };
+        return result.status === 'found' ? 'DrInfo 配對；CR 計分僅目前病房列表，可能受篩選／分頁限制' : result.reason || messages[result.status] || '無法判定';
+    }
+
+    async function buildStaffHeaders(patients) {
+        const scopes = new Map(), loaded = new Map();
+        const scopeKey = (p) => `${hospitalOf(p.caseno)}|${p.ward}`;
+        patients.forEach((p) => { const key = scopeKey(p); if (!scopes.has(key)) scopes.set(key, []); scopes.get(key).push(p); });
+        const date = getTaipeiDate();
+        await Promise.all([...scopes].map(async ([key, scope]) => {
+            try {
+                const data = await getStaffAssignments({ accountIdSe: scope[0].caseno, wardCode: scope[0].ward, date });
+                const scoring = scope.map((p) => ({ ...p, bedToken: resolveStaffBed(data, p.staffBed === undefined ? p.bed : p.staffBed) }));
+                loaded.set(key, { data, scoring });
+            } catch (error) { loaded.set(key, { error: error.message }); }
+        }));
+        const pages = [];
+        for (let i = 0; i < patients.length; i += PER_PAGE) {
+            const page = patients.slice(i, i + PER_PAGE), cr = [], vs = [], warnings = [];
+            for (const key of new Set(page.map(scopeKey))) {
+                const group = loaded.get(key);
+                if (group.error) { warnings.push(group.error); continue; }
+                const pageScope = page.filter((p) => scopeKey(p) === key).map((p) => group.scoring.find((row) => row.caseno === p.caseno));
+                const result = selectCR(group.data, pageScope, group.scoring);
+                warnings.push(...result.warnings);
+                result.candidates.forEach((person) => cr.push({ id: `CR-${staffHash(key + '|' + person.EmpNo)}`, person, title: `CR score ${person.score}；完整照護床數 ${person.bedCount}` }));
+            }
+            cr.sort((a, b) => b.person.score - a.person.score || b.person.bedCount - a.person.bedCount);
+            pageDocs(page).forEach((name) => {
+                const results = [];
+                for (const key of new Set(page.filter((p) => nk(p.attending) === name).map(scopeKey))) {
+                    const group = loaded.get(key);
+                    try { results.push(group.error ? { status: 'error', reason: group.error } : selectVS(group.data, name)); }
+                    catch (error) { results.push({ status: 'error', reason: error.message }); }
+                }
+                const first = results[0];
+                const same = results.every((r) => JSON.stringify(r) === JSON.stringify(first));
+                const result = same ? first : { status: 'error', reason: '跨病房 VS 資料不一致，請手動核對' };
+                vs.push({ id: `VS-${staffHash(name)}`, person: result.status === 'found' ? result.person : { EmpName: name }, title: staffStatus(result) });
+            });
+            const title = [...new Set(warnings)].join('；') || 'CR 僅列 score > 0 且覆蓋本頁的候選；計分僅目前列表，可能受篩選／分頁限制';
+            pages.push({ pg: i / PER_PAGE + 1, cr, vs, title });
+        }
+        return pages;
+    }
+
+    function staffHash(value) {
+        let hash = 2166136261;
+        for (const c of value) hash = Math.imul(hash ^ c.charCodeAt(0), 16777619);
+        return (hash >>> 0).toString(36);
+    }
+
+    // 動態頁首第一排 CR、第二排 VS；各頁編輯與新增獨立，移除可選此頁／全部頁。
+    // 自動配對值不持久保存；已修改／已暫存的姓名不能接上另一人的員編、簡碼。
+    // h:v2 以頁面病人集合＋人員／院區病房識別，避免排序變動時誤套舊值；不讀舊版位置鍵。
+    // __staffV2 僅記錄新增欄位與移除 ID；全頁移除也要標記尚未收到該人的頁面，防止延遲回應加回。
+    function applyStaffHeaders(doc, pages, state) {
+        pages.forEach(({ pg, cr, vs, title }) => {
+            const header = doc.querySelector(`.hdr[data-page="${pg}"]`);
+            if (!header) return;
+            header.title = title;
+            for (const [role, people] of [['CR', cr], ['VS', vs]]) {
+                const row = header.querySelector(`[data-role="${role}"]`);
+                row.title = title;
+                people.forEach((person) => state.upsert(header, row, person));
+            }
+        });
+        state.changed();
+    }
+
+    function installStaffHeaders(doc, store, save, fill, changed, staffHash, nk) {
+        const metadata = store.__staffV2 || (store.__staffV2 = {});
+        const pageState = (header) => metadata[header.dataset.scope] || (metadata[header.dataset.scope] = { removed: [], added: [] });
+        const create = (header, row, id, person = {}, title = '') => {
+            const slot = doc.createElement('span');
+            slot.className = 'hf'; slot.dataset.slot = id; slot.title = title;
+            const savedName = store[`h:v2:${header.dataset.scope}:${id}:a`];
+            const changedIdentity = savedName !== undefined && nk(savedName) !== person.EmpName;
+            if (changedIdentity) slot.title += '；保留手動姓名，未帶入其他人員資料';
+            ['EmpName', 'EmpNo', 'PhoneCode'].forEach((field, i) => {
+                if (i) slot.appendChild(doc.createTextNode('('));
+                const el = doc.createElement('input');
+                el.className = `u ${['w9', 'w8', 'w7'][i]}`;
+                el.autocomplete = 'off'; el.spellcheck = false;
+                el.dataset.k = `h:v2:${header.dataset.scope}:${id}:${['a', 'b', 'c'][i]}`;
+                if ((!i || !changedIdentity) && person[field] !== null && person[field] !== undefined) el.dataset.def = person[field];
+                slot.appendChild(el); fill(el);
+                if (i) slot.appendChild(doc.createTextNode(')'));
+            });
+            const remove = doc.createElement('button'); remove.type = 'button'; remove.className = 'staff-remove'; remove.textContent = '−'; remove.title = '移除此人員';
+            const menu = doc.createElement('span'); menu.className = 'staff-remove-menu'; menu.hidden = true;
+            const removeFrom = (headers) => {
+                headers.forEach((target) => {
+                    const saved = pageState(target);
+                    if (!saved.removed.includes(id)) saved.removed.push(id);
+                    saved.added = saved.added.filter((item) => item.id !== id);
+                    target.querySelectorAll('[data-slot]').forEach((item) => { if (item.dataset.slot === id) item.remove(); });
+                });
+                save(); changed();
+            };
+            [['僅此頁移除', () => removeFrom([header])], ['所有頁面移除', () => removeFrom([...doc.querySelectorAll('.hdr[data-page]')])], ['取消', () => { menu.hidden = true; }]].forEach(([label, action]) => {
+                const button = doc.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; menu.appendChild(button);
+            });
+            remove.onclick = () => {
+                const opening = menu.hidden;
+                doc.querySelectorAll('.staff-remove-menu').forEach((item) => { item.hidden = true; });
+                menu.hidden = !opening;
+            };
+            slot.appendChild(remove); slot.appendChild(menu); row.querySelector('.staff-slots').appendChild(slot);
+            return slot;
+        };
+        doc.querySelectorAll('.hdr[data-page]').forEach((header) => {
+            const saved = pageState(header);
+            saved.added.forEach(({ role, id }) => create(header, header.querySelector(`[data-role="${role}"]`), id));
+            header.querySelectorAll('.staff-add').forEach((button) => {
+                button.onclick = () => {
+                    const role = button.closest('[data-role]').dataset.role;
+                    const id = `manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+                    saved.added.push({ role, id });
+                    create(header, button.closest('[data-role]'), id); save(); changed();
+                };
+            });
+            // VS 姓名先可見，與稍後配對使用同一穩定 id。
+            JSON.parse(header.dataset.names).forEach((name) => {
+                const id = `VS-${staffHash(name)}`;
+                if (!saved.removed.includes(id)) create(header, header.querySelector('[data-role="VS"]'), id, { EmpName: name });
+            });
+        });
+        return {
+            changed,
+            upsert(header, row, { id, person, title }) {
+                if (pageState(header).removed.includes(id)) return;
+                let slot = [...row.querySelectorAll('[data-slot]')].find((el) => el.dataset.slot === id);
+                if (!slot) { create(header, row, id, person, title); return; }
+                slot.title = title;
+                const inputs = [...slot.querySelectorAll('input')];
+                if (inputs[0].hasAttribute('data-staff-manual') && nk(inputs[0].value) !== person.EmpName) { slot.title += '；保留手動姓名，未帶入其他人員資料'; return; }
+                ['EmpName', 'EmpNo', 'PhoneCode'].forEach((field, i) => {
+                    if (!inputs[i].hasAttribute('data-staff-manual') && person[field] !== null && person[field] !== undefined) { inputs[i].dataset.def = person[field]; inputs[i].value = person[field]; }
+                });
+            },
+        };
+    }
 
     // ═══════════════════════════════════════════════════════════
     // 病房列表 → 病人清單（元素 id 前綴會變，一律用尾綴選取）
@@ -41,25 +303,32 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
         const table = document.querySelector('[id$="DataGridAccountList"]');
         if (!table) return [];
         const out = [];
+        const headers = [...table.rows[0].cells].map(txt);
+        const column = (labels) => headers.findIndex((label) => labels.includes(label));
+        const attendingCol = column(['主治', '主治醫師']), residentCol = column(['住院', '住院醫師']), admissionCol = column(['入院日', '入院日期']);
         for (const tr of [...table.rows].slice(1)) {
             const news = tr.querySelector('[id$="NEWSLabel"]');
             const caseno = news && news.getAttribute('caseno');
             if (!caseno) continue;
             const cells = [...tr.cells];
-            // 欄位順序：房、室、床、姓名、病歷號、性、齡、主治(7)、住院(8)、入院日(9)、EWS；
-            // 入院日不靠固定欄位，從第 9 欄起找第一個長得像日期的
-            const adm = cells.slice(9).map(txt).find((t) => /\d{2,4}\s*[\/.-]\s*\d{1,2}\s*[\/.-]\s*\d{1,2}/.test(t)) || '';
+            const adm = txt(cells[admissionCol]);
+            const permitTitle = tr.querySelector('[id$="LinkPermitDischarge"]')?.getAttribute('title') || '';
+            const discharge = permitTitle.match(/^\s*(\d{4}\/\d{2}\/\d{2})\s+(可出院|已出院)\s*$/);
+            const room = txt(tr.querySelector('[id$="RoomLabel"]')), bed = txt(tr.querySelector('[id$="BedLabel"]'));
             out.push({
                 caseno,
+                staffBed: room && bed ? `${room}-${bed}` : '',
                 chartNo: news.getAttribute('chartno') || txt(tr.querySelector('[id$="PatChartNo"]')),
-                ward: news.getAttribute('wardcode') || txt(tr.querySelector('[id$="WardLabel"]')),
-                name: txt(tr.querySelector('[id$="LinkPatientName"]')),
+                ward: txt(tr.querySelector('[id$="WardLabel"]')),
+                name: patientName(txt(tr.querySelector('[id$="LinkPatientName"]'))),
                 bed: [txt(tr.querySelector('[id$="RoomLabel"]')), txt(tr.querySelector('[id$="BedLabel"]'))].filter(Boolean).join('-'),
                 age: txt(tr.querySelector('[id$="PatientAge"]')),
                 sex: txt(tr.querySelector('[id$="PatientSex"]')),
-                attending: txt(cells[7]),
-                resident: txt(cells[8]),
+                attending: physicianName(cells[attendingCol]),
+                resident: physicianName(cells[residentCol]),
                 adm,
+                dischargeDate: discharge ? discharge[1] : '',
+                discharged: !!discharge && discharge[2] === '已出院',
                 hospDay: (tr.innerHTML.match(/住院總天數\s*[:：]\s*(\d+)/) || [])[1] || '',
             });
         }
@@ -73,17 +342,11 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
     const ta = (key, cls) => `<textarea class="${cls}" data-k="${esc(key)}" rows="1" autocomplete="off" spellcheck="false"></textarea>`;
     const input = (key, cls, extra) => `<input class="${cls}" data-k="${esc(key)}" autocomplete="off" spellcheck="false"${extra || ''}>`;
 
-    // docs：這一頁病人的主治姓名（依出現順序、去重）→ 依序帶入 VS 格的第一欄；員編、簡碼留空手填
-    function headerHtml(pg, docs) {
-        // 對應紙本頁首：  CR / VS  、  VS / VS   （每格：名稱 ____ ( ____ ) ( ____ )）
-        const g = (name, n, three, d) => {
-            const df = d ? ` data-def="${esc(d)}"` : '';
-            return `<span class="hf">${name}${input(`h:${pg}:${n}:a`, 'u w9', df)}(${input(`h:${pg}:${n}:b`, 'u w8')})${three ? `(${input(`h:${pg}:${n}:c`, 'u w7')})` : ''}</span>`;
-        };
-        return `<div class="hdr">
-<div class="hr">${g('CR', 1, true)}${g('VS', 2, true, docs[0])}</div>
-<div class="hr">${g('VS', 3, true, docs[1])}${g('VS', 4, true, docs[2])}</div>
-</div>`;
+    // 先帶入本頁主治姓名；DrInfo 配對完成後填入未編輯的姓名、員編與簡碼。
+    function headerHtml(pg, patients) {
+        const docs = pageDocs(patients);
+        const scope = staffHash(patients.map((p) => p.caseno).join('|'));
+        return `<div class="hdr" data-page="${pg}" data-scope="${scope}" data-names="${esc(JSON.stringify(docs))}">${['CR', 'VS'].map((role) => `<div class="hr" data-role="${role}"><b>${role}</b><div class="staff-slots"></div><button class="staff-add" type="button" title="新增 ${role} 人員">＋</button></div>`).join('')}</div>`;
     }
 
     // 住院第幾天：優先用列表上的「住院總天數」，沒有就由入院日算（入院當天算 Day 1；民國年自動換算）
@@ -122,17 +385,16 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
         const row = (r, tag) => `<div class="ln"><div class="c1"><span class="tg">${tag}</span>${ta(k(`m${r}`), 'tx')}</div><div class="c2">${input(k(`l${r}`), 'lab')}${ta(k(`f${r}`), 'tx')}</div><div class="c3">${[0, 1].map((n) => { const sx = n ? `_${n}` : ''; return `<div class="cell"><input type="checkbox" class="bx" data-k="${esc(k(`c${r}${sx}`))}">${ta(k(`t${r}${sx}`), n ? 'tx td' : 'tx td pre')}</div>`; }).join('')}</div></div>`;
         const info = [
             bedLabel(p) && `<b>${esc(bedLabel(p))}</b>`,
-            `<b>${esc(p.name)}</b>`,
-            sexAge(p) && esc(sexAge(p)),
+            `<b>${esc(patientName(p.name))}</b>`,
+            sexAge(p) && `（${esc(sexAge(p))}）`,
             esc(p.chartNo),
             p.adm && `入 ${esc(p.adm)}${dayOf(p) ? `(Day ${esc(dayOf(p))})` : ''}`,
-            `預出院${input(k('dc'), 'u w9')}`,
-            p.attending && `VS ${esc(p.attending)}`,
-            p.resident && `R ${esc(p.resident)}`,
         ].filter(Boolean).join('<span class="sep"></span>');
+        const discharge = `<div class="discharge">${p.discharged ? '已出院' : '預出院'}${input(k('dc'), 'u w9', ` data-def="${esc(p.dischargeDate || '')}"`)}</div>`;
+        const doctors = `<div class="staff-vr"><span title="${esc(p.attending)}">${p.attending ? `VS ${esc(p.attending)}` : ''}</span><span title="${esc(p.resident)}">${p.resident ? `R ${esc(p.resident)}` : ''}</span></div>`;
         const dn = parseInt(dayOf(p), 10);
         return `<section class="pt" data-id="${esc(id)}">${iconsHtml(dn >= 1 && dn <= NEW_MAX_DAY)}
-<div class="ln info"><div class="il">${info}</div></div>
+<div class="ln info"><div class="il">${info}</div>${discharge}${doctors}</div>
 ${row(0, 'cc')}
 ${row(1, '#.')}
 ${row(2, '#.')}
@@ -185,25 +447,34 @@ body{margin:0;background:#e5e7eb;color:#111;font:10.5pt/1 system-ui,"Noto Sans T
 .bar button.g{background:#4b5563}
 .bar .m{color:#9ca3af;margin-left:auto;font-size:12px}
 .gen{position:absolute;left:9mm;top:2.5mm;font-size:6.5pt;color:#6b7280}
-.page{position:relative;width:210mm;height:297mm;margin:14px 0 14px 12px;padding:7mm 9mm;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);overflow:hidden;break-after:page}
-.hdr{height:15mm;font-size:10pt}
-.hr{display:flex;align-items:center;height:7.5mm;gap:4mm;white-space:nowrap}
-.hf{display:inline-flex;align-items:baseline}
+.page{position:relative;width:210mm;height:297mm;margin:14px 0 14px 12px;padding:7mm 9mm;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);overflow:visible;break-after:page}
+.hdr{font-size:10pt;min-height:15mm}
+.hr{display:flex;align-items:flex-start;gap:2mm;min-height:7.5mm;padding:1mm 0}
+.hr>b{width:6mm;flex:none;line-height:5.5mm}.staff-slots{display:flex;flex:1;flex-wrap:wrap;gap:1mm 3mm;min-width:0}
+.hf{position:relative;display:inline-flex;align-items:baseline;white-space:nowrap;max-width:100%}
+.staff-remove-menu{position:absolute;top:100%;right:0;z-index:6;display:flex;gap:4px;padding:5px;background:#fff;border:1px solid #9ca3af;border-radius:4px;box-shadow:0 2px 6px #0003}
+.staff-remove-menu[hidden]{display:none}
+.staff-remove-menu button{white-space:nowrap;padding:4px 6px;cursor:pointer;font:12px system-ui}
+.staff-add,.staff-remove{border:0;border-radius:3px;color:#4b5563;cursor:pointer;background:#f3f4f6;font:12px system-ui;padding:0 3px;line-height:5mm}
+.staff-add{flex:none}.staff-remove{margin-left:1mm}
 input,textarea{font:inherit;color:inherit;background:transparent;border:0;outline:0;padding:0;margin:0}
 textarea{display:block;resize:none;overflow:hidden;line-height:1.05;overflow-wrap:anywhere;align-self:center}
 input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 .w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
-.pt{position:relative;height:24mm;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
+.pt{position:relative;height:var(--pt-height,24mm);break-inside:avoid;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
 .ics{position:absolute;left:-8.2mm;top:.4mm;width:7.4mm;display:flex;flex-direction:column;gap:.7mm;align-items:center}
 .ic{width:4.8mm;height:4.8mm;display:flex;align-items:center;justify-content:center;visibility:hidden;color:#111}
 .ic.on{visibility:visible}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 .ic .nw{font:700 5.4pt/1 system-ui,sans-serif;border:.25mm solid #111;border-radius:1mm;padding:.35mm .5mm;letter-spacing:-.02em}
-.ln{display:flex;align-items:center;height:6mm;padding-right:1mm}
-.info .il{flex:1;white-space:nowrap;overflow:hidden;font-size:10.5pt}
+.ln{display:flex;align-items:center;height:calc(var(--pt-height,24mm)/4);padding-right:1mm}
+.info .il{flex:1;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
+.discharge{flex:none;margin-left:3.5mm;white-space:nowrap}
+.staff-vr{flex:none;margin-left:auto;padding-left:2mm;display:grid;grid-template-columns:25mm 25mm;gap:2mm;text-align:right;white-space:nowrap}
+.staff-vr span{overflow:hidden;text-overflow:ellipsis}
 .il b{font-weight:700}.sep{display:inline-block;width:3.5mm}
 .tg{width:7mm;font-weight:700;flex:none}
-.tx{flex:1;min-width:0;height:5.6mm;font-size:10.5pt}
+.tx{flex:1;min-width:0;height:calc(var(--pt-height,24mm)/4 - .4mm);font-size:10.5pt}
 .c1,.c2,.c3{min-width:0;display:flex;align-items:center}
 .c1{flex:var(--r1,2) 1 0}
 .c2{flex:var(--r2,1) 1 0}
@@ -251,7 +522,7 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
  .bx:hover{background:#fef9c3}
 }
 @media print{
- body{background:#fff}.bar,.lmenu,.ruler,.side,#dlg{display:none}
+ body{background:#fff}.bar,.lmenu,.ruler,.side,#dlg,.staff-add,.staff-remove,.staff-remove-menu{display:none}
  .page{margin:0;box-shadow:none}
  input:hover,input:focus,textarea:hover,textarea:focus{background:transparent}
 }
@@ -261,15 +532,15 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 <div class="wrap">
 <main class="main">
 <div class="ruler" title="拖曳三角形調整欄寬"><div class="rl" id="rl"><i class="hd" id="h1"></i><i class="hd" id="h2"></i></div></div>
-${pages.map((pp, i) => `<div class="page"><div class="gen">生成 ${esc(stamp)}</div>${headerHtml(i + 1, pageDocs(pp))}${pp.map(blockHtml).join('')}</div>`).join('')}
+${pages.map((pp, i) => `<div class="page"><div class="gen">生成 ${esc(stamp)}</div>${headerHtml(i + 1, pp)}${pp.map(blockHtml).join('')}</div>`).join('')}
 </main>
 ${sideHtml(patients)}
 </div>
-<script>(${pageScript.toString()})(${JSON.stringify({ key: STORE_KEY, keep: KEEP_DAYS, labels: LABELS, options: LABEL_OPTIONS, presets: TODO_PRESETS, templates: LABEL_TEMPLATES, ratio: RATIO })});<\/script></body></html>`;
+<script>(${pageScript.toString()})(${JSON.stringify({ key: STORE_KEY, keep: KEEP_DAYS, labels: LABELS, options: LABEL_OPTIONS, presets: TODO_PRESETS, templates: LABEL_TEMPLATES, ratio: RATIO })}, ${applyStaffHeaders.toString()}, ${installStaffHeaders.toString()}, ${staffHash.toString()}, ${nk.toString()});<\/script></body></html>`;
     }
 
     // 在新分頁內執行（toString 後注入，不可引用外層變數）
-    function pageScript(cfg) {
+    function pageScript(cfg, applyStaffHeaders, installStaffHeaders, staffHash, nk) {
         const now = new Date().getTime();
         let store = {};
         try { store = JSON.parse(localStorage.getItem(cfg.key) || '{}') || {}; } catch (e) { store = {}; }
@@ -289,7 +560,8 @@ ${sideHtml(patients)}
             const v = store[k];
             if (el.type === 'checkbox') el.checked = !!v;
             else if (/:l\d$/.test(k)) el.value = v !== undefined ? v : cfg.labels[+k.slice(-1)] || '';
-            else el.value = v || el.getAttribute('data-def') || '';
+            else el.value = v !== undefined ? v : el.getAttribute('data-def') || '';
+            if (k.startsWith('h:') && v !== undefined) el.setAttribute('data-staff-manual', '1');
         };
         const all = [...document.querySelectorAll('[data-k]')];
         all.forEach(fill);
@@ -347,12 +619,24 @@ ${sideHtml(patients)}
                 });
             });
         };
+        let alignStaff = () => {};
         const fitAll = () => {
+            document.querySelectorAll('.page').forEach((page) => {
+                const header = page.querySelector('.hdr');
+                const count = page.querySelectorAll('.pt').length;
+                const mm = 96 / 25.4;
+                const available = 283 * mm - header.getBoundingClientRect().height;
+                const height = Math.max(48, Math.min(24 * mm, available / count));
+                page.style.setProperty('--pt-height', height + 'px');
+                page.style.height = Math.max(297 * mm, header.getBoundingClientRect().height + height * count + 14 * mm) + 'px';
+            });
             document.querySelectorAll('.pt').forEach(fitBlock);
             document.querySelectorAll('input.lab,input.u').forEach(fit);
+            alignStaff();
         };
         let fitQueued = false;
         const fitSoon = () => { if (fitQueued) return; fitQueued = true; requestAnimationFrame(() => { fitQueued = false; fitAll(); }); };
+        const staffState = installStaffHeaders(document, store, save, fill, fitSoon, staffHash, nk);
         fitAll();
         setTimeout(fitAll, 300);
         window.addEventListener('load', fitAll);
@@ -440,6 +724,7 @@ ${sideHtml(patients)}
             const k = el.getAttribute && el.getAttribute('data-k');
             if (!k) return;
             store[k] = el.type === 'checkbox' ? el.checked : el.value;
+            if (k.startsWith('h:')) el.setAttribute('data-staff-manual', '1');
             if (el.tagName === 'TEXTAREA' && /\n/.test(el.value)) { el.value = el.value.replace(/\s*\n+\s*/g, ' '); store[k] = el.value; }   // 貼上含換行的文字 → 換成空格
             if (el.tagName === 'TEXTAREA') fitBlock(el.closest('.pt'));
             else if (el.matches('.lab,.u')) fit(el);
@@ -595,6 +880,7 @@ ${sideHtml(patients)}
                 sp.style.height = r.height + 'px';
             });
         };
+        alignStaff = align;
         align();
         setTimeout(align, 300);
         window.addEventListener('resize', align);
@@ -631,6 +917,7 @@ ${sideHtml(patients)}
         let pingN = 0, pongN = 0, ackSeq = null, ackTimer = null;
         window.addEventListener('message', (ev) => {
             if (ev.origin !== location.origin || !ev.data) return;
+            if (ev.data.rs === 'staff' && ev.data.token === tokenOf()) { applyStaffHeaders(document, ev.data.fields, staffState); }
             if (ev.data.rs === 'pong') { pongN = Math.max(pongN, ev.data.n); if (warnEl && pongN >= pingN) warnEl.hidden = true; }
             if (ev.data.rs === 'ack' && String(ev.data.seq) === String(ackSeq)) clearTimeout(ackTimer);
         });
@@ -698,7 +985,7 @@ ${sideHtml(patients)}
         document.getElementById('clr').onclick = () => {
             if (!confirm('清除所有病人的填寫、待辦、勾選、標籤與頁首欄位？')) return;
             for (const k of Object.keys(store)) if (k.indexOf('p:') === 0 || k.indexOf('h:') === 0) delete store[k];
-            all.forEach(fill);
+            document.querySelectorAll('[data-k]').forEach((el) => { el.removeAttribute('data-staff-manual'); fill(el); });
             fitAll();
             updateIcons();
             save();
@@ -1403,6 +1690,7 @@ ${sideHtml(patients)}
             else if (ev.data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
             else if (ev.data.rs === 'detail') { reply({ rs: 'ack', seq: ev.data.seq }); showDetail(ev.data); }
         });
+        buildStaffHeaders(patients).then((fields) => reply({ rs: 'staff', token, fields }));
         fetchPanel(w, patients, state);
     }
 
