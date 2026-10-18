@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      2.5.0
+// @version      2.7.0
 // @description  點擊 FAB 後自動擷取診斷書資料；背景解析手術同意書 PDF，依手術流水號配對並優先同主治醫師，確認後填入囑言。支援自費項目與常用字串。
 // @author       YT / Twb06 / WeiJyun9008
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -853,7 +853,9 @@
             const fullTitle = classSpan.getAttribute('title') || '';
             const catMatch = fullTitle.match(/類別：\s*([^\s\n]+)/);
             const catStr = catMatch ? catMatch[1].trim() : classSpan.textContent.trim();
-            if (catStr !== '住院') continue;
+            // 手術情境由排程表的「類別」決定：住院／門診／急診（急診送刀）。
+            // 三者都需要，才能同時支援住院、門診與急診送刀的診斷書，並綁定同意書流水號。
+            if (catStr !== '住院' && catStr !== '門診' && catStr !== '急診') continue;
             const dateSpan = tds[1].querySelector('span[id*="OPDateString"]'); if (!dateSpan) continue;
             const dateStr = dateSpan.textContent.trim(); if (!dateStr.match(/^\d{4}\/\d{2}\/\d{2}$/)) continue;
             let currentOpName = '';
@@ -889,7 +891,7 @@
             if (!opList.some(item => opScheduleIdse
                 ? item.opScheduleIdse === opScheduleIdse
                 : item.opDate === dateStr && item.opName === currentOpName)) {
-                opList.push({ opDate: dateStr, opName: currentOpName, opScheduleIdse: opScheduleIdse, vsEmpNo: vsNo, vsName });
+                opList.push({ opDate: dateStr, opName: currentOpName, opScheduleIdse: opScheduleIdse, vsEmpNo: vsNo, vsName, category: catStr });
             }
         }
         // 按日期從新到舊排序 (最新一筆在 list[0])
@@ -905,7 +907,113 @@
         return { opDate: '', opName: '' };
     }
 
-    function addOpRow(date = '', name = '', opScheduleIdse = '') {
+    // 依門診窗口挑選手術：門診起始日～今天之間的手術優先（由舊到新）；
+    // 窗口內沒有 → 取門診起始日之前、最接近的一筆（最多回看 365 天）；都沒有才退回最新一筆。
+    function pickOpsByOpdWindow(opList, windowStart, todayOverride) {
+        if (!opList || opList.length === 0) return [];
+        const startObj = parseDate(windowStart);
+        if (!startObj) return [opList[0]];
+        const today = parseDate(todayOverride || todayStr());
+        const dated = opList.map(op => ({ op, d: parseDate(op.opDate) })).filter(entry => entry.d);
+        if (dated.length === 0) return [opList[0]];
+        const inWindow = dated
+            .filter(entry => entry.d >= startObj && (!today || entry.d <= today))
+            .sort((a, b) => a.d - b.d).map(entry => entry.op);
+        const before = dated.filter(entry => entry.d < startObj).sort((a, b) => b.d - a.d)[0];
+        const nearestBefore = before && (startObj - before.d) / 86400000 <= 365 ? [before.op] : [];
+        // 門診原則：門診起始日「前一次」＋ 起始日～今天之間全部
+        if (inWindow.length > 0) return nearestBefore.concat(inWindow);
+        if (nearestBefore.length > 0) return nearestBefore;
+        return [dated.sort((a, b) => b.d - a.d)[0].op];
+    }
+
+    // 依「住院／門診」勾選狀態與日期，推算應該出現的手術清單：
+    //   有住院 → 本次住院區間內的手術
+    //   有門診 → 門診起始日「前一次」＋ 起始日～今天
+    //   兩者都勾 → 兩者聯集（去重、由舊到新）
+    function desiredOpsByChecks(opList) {
+        const hasInpat = !!document.getElementById('ntuh-diag-has-inpat')?.checked;
+        const hasOpd = !!document.getElementById('ntuh-diag-has-opd')?.checked;
+        const picked = [];
+        const push = op => {
+            if (!op) return;
+            const key = op.opScheduleIdse || `${op.opDate}|${op.opName}`;
+            if (!picked.some(item => (item.opScheduleIdse || `${item.opDate}|${item.opName}`) === key)) picked.push(op);
+        };
+        if (hasInpat) {
+            const inpat = fetchInpatData();
+            const startObj = parseDate(inpat.inpatStartDate);
+            const lastStay = inpat.timeline[inpat.timeline.length - 1];
+            const endObj = parseDate(lastStay?.end) || parseDate(todayStr());
+            if (startObj && endObj) {
+                opList.filter(op => {
+                    const d = parseDate(op.opDate);
+                    return d && d >= startObj && d <= endObj;
+                }).forEach(push);
+            }
+        }
+        if (hasOpd) {
+            const opdStart = document.getElementById('ntuh-diag-opd-start-date')?.value.trim() || '';
+            if (opdStart) pickOpsByOpdWindow(opList, opdStart).forEach(push);
+            else if (opList.length > 0) push(opList[0]);
+        }
+        return picked.sort((a, b) => parseDate(a.opDate) - parseDate(b.opDate));
+    }
+
+    // 勾選狀態或日期變動時同步手術列；回傳是否有變更。使用者手動新增的列（無流水號）會保留。
+    async function syncOpRowsFromChecks(options = {}) {
+        const container = document.getElementById('ntuh-diag-op-rows-container');
+        if (!container) return false;
+        const manualRows = Array.from(container.children)
+            .filter(row => !row.getAttribute('data-op-idse'))
+            .map(row => ({
+                date: row.querySelector('.ntuh-diag-op-date-input')?.value.trim() || '',
+                name: row.querySelector('.ntuh-diag-op-name-input')?.value.trim() || ''
+            }));
+        const opList = fetchOpDataList();
+        const picked = desiredOpsByChecks(opList);
+        const currentIds = Array.from(container.children)
+            .filter(row => row.getAttribute('data-op-idse'))
+            .map(row => row.getAttribute('data-op-idse'));
+        const wantedIds = picked.map(op => op.opScheduleIdse).filter(Boolean);
+        const unchanged = currentIds.length === wantedIds.length && currentIds.every((id, index) => id === wantedIds[index]);
+        if (unchanged && !options.force) return false;
+        container.innerHTML = '';
+        picked.forEach(op => addOpRow(op.opDate, op.opName, op.opScheduleIdse, describeOpTiming(op), op.category));
+        manualRows.forEach(row => addOpRow(row.date, row.name, ''));
+        detectedOpList = picked;
+        if (options.rescan !== false) await triggerConsentScan();
+        return true;
+    }
+
+    // 手術情境：優先採用排程表「類別」（住院／門診／急診＝急診送刀）；
+    // 類別缺失時才退而以住院區間／急診紀錄推定。
+    function describeOpTiming(op) {
+        if (!op || !op.opDate) return '';
+        const opDate = parseDate(op.opDate);
+        if (!opDate) return '';
+        const category = String(op.category || '').trim();
+        const inpat = fetchInpatData();
+        const startObj = parseDate(inpat.inpatStartDate);
+        const lastStay = inpat.timeline[inpat.timeline.length - 1];
+        const endObj = parseDate(lastStay?.end);
+        const inThisStay = !!(startObj && opDate >= startObj && (!endObj || opDate <= endObj));
+
+        if (category === '急診') return '急診送刀';
+        if (category === '門診') return '門診手術';
+        if (category === '住院') return inThisStay ? '住院中' : '住院(非本次)';
+
+        // 類別未知的後備：用急診紀錄與住院區間推定
+        let emg = null;
+        try { emg = fetchEmgData(inpat.inpatStartDate); } catch (_e) { emg = null; }
+        const emgArrival = emg && emg.arrivalDT ? parseDate(emg.arrivalDT) : null;
+        const isEmgStay = !!(emg && emgFeedsStay(emg, inpat.inpatStartDate));
+        if (emgArrival && isEmgStay && opDate >= emgArrival && (!startObj || opDate <= startObj)) return '急診送刀 (推定)';
+        if (inThisStay) return '住院中';
+        return '';
+    }
+
+    function addOpRow(date = '', name = '', opScheduleIdse = '', timing = '', category = '') {
         const container = document.getElementById('ntuh-diag-op-rows-container');
         if (!container) return;
 
@@ -913,16 +1021,21 @@
         const row = document.createElement('div');
         row.className = 'ntuh-diag-op-row';
         row.setAttribute('data-op-idse', opScheduleIdse);
+        if (category) row.setAttribute('data-op-category', category);
         row.style.cssText = 'display:flex; flex-direction:column; gap:4px; padding:6px; border:1px solid #2d3650; border-radius:6px; background:#141824; position:relative; margin-bottom:4px;';
 
         let removeBtnHtml = '';
         if (!isFirst) {
             removeBtnHtml = `<button class="ntuh-diag-remove-op-btn" type="button" style="background:none; border:none; color:#e05c5c; cursor:pointer; font-size:14px; padding:0 4px; line-height:1;">✕</button>`;
         }
+        const timingHtml = timing
+            ? `<span title="依住院區間與急診紀錄推定，請自行確認" style="flex-shrink:0; font-size:10px; color:#f0a030; border:1px solid #6b4a12; border-radius:4px; padding:1px 4px;">${timing}</span>`
+            : '';
 
         row.innerHTML = `
             <div style="display:flex; align-items:center; gap:4px;">
                 <input class="ntuh-diag-op-date-input" type="text" placeholder="手術日期 YYYY/MM/DD" value="${date}" style="flex:1; background:#0f1420; border:1px solid #2d3650; border-radius:6px; color:#c8d3e8; padding:4px 6px; font-size:11px;" />
+                ${timingHtml}
                 ${removeBtnHtml}
             </div>
             <input class="ntuh-diag-op-name-input" type="text" placeholder="手術名稱" value="${name}" style="background:#0f1420; border:1px solid #2d3650; border-radius:6px; color:#c8d3e8; padding:4px 6px; font-size:11px;" />
@@ -1195,6 +1308,30 @@
         return `於${fmtDate(evt.date, calendar)}接受自費${item}治療`;
     }
 
+    // 把門診日期依「其他事件」的日期切段，每段產生一個事件（保留「A、B」串法），
+    // 讓 events.sort 能把門診與手術／急診／自費／住院依時間交錯排列。
+    function pushOpdRuns(target, dates, dept, calendar, anchors) {
+        const runs = [];
+        let run = null;
+        (dates || []).forEach(dateStr => {
+            const dObj = parseDate(dateStr);
+            if (!dObj) return;
+            const time = dObj.getTime();
+            const key = (anchors || []).filter(anchor => anchor < time).sort((a, b) => b - a)[0];
+            const runKey = key === undefined ? -Infinity : key;
+            if (!run || run.key !== runKey) {
+                run = { key: runKey, date: dObj, dates: [dateStr] };
+                runs.push(run);
+            } else {
+                run.dates.push(dateStr);
+            }
+        });
+        runs.forEach(item => {
+            const text = buildOpdText(item.dates, '', dept, calendar);
+            if (text) target.push({ type: 'opd', date: item.date, text });
+        });
+    }
+
     function buildText({
         hasInpat, hasOpd, hasOp, hasEmg,
         opdDates, opdStartDate,
@@ -1204,6 +1341,13 @@
         const formatDate = value => fmtDate(value, calendar);
         const formatDateTime = value => fmtDateTime(value, calendar);
         const events = [];
+        let postDischargeOpdDates = [];
+        // 門診切段錨點：手術、自費、急診到院、本次入院日 → 門診段落才能與其他事件依時間交錯
+        const opdAnchors = [];
+        (opEvents || []).forEach(evt => { const d = parseDate(evt.date); if (d) opdAnchors.push(d.getTime()); });
+        (feeEvents || []).forEach(evt => { const d = parseDate(evt.date); if (d) opdAnchors.push(d.getTime()); });
+        if (hasEmg && emg && emg.arrivalDT) { const d = parseDate(emg.arrivalDT); if (d) opdAnchors.push(d.getTime()); }
+        if (hasInpat && inpat && inpat.inpatStartDate) { const d = parseDate(inpat.inpatStartDate); if (d) opdAnchors.push(d.getTime()); }
 
         if (hasOpd && opdDates && opdDates.length > 0) {
             let filtered = opdDates;
@@ -1211,16 +1355,19 @@
                 const start = parseDate(opdStartDate);
                 if (start) filtered = opdDates.filter(d => parseDate(d) >= start);
             }
-            if (filtered.length > 0) {
-                const opdMinDateObj = parseDate(filtered[0]);
-                const opdText = buildOpdText(opdDates, opdStartDate, dept, calendar);
-                if (opdText) {
-                    events.push({
-                        type: 'opd',
-                        date: opdMinDateObj,
-                        text: opdText
-                    });
-                }
+            if (filtered.length > 0 && hasInpat) {
+                // 住院案例：出院日之後的門診日 → 出院後回診事件；
+                // 出院日（含）之前的門診日 → 依其他事件切段後交錯排序（與純門診同一套邏輯）
+                const dischargeObj = parseDate(dischargeDate);
+                const beforeEnd = dischargeObj
+                    ? filtered.filter(d => { const o = parseDate(d); return o && o <= dischargeObj; })
+                    : filtered;
+                postDischargeOpdDates = dischargeObj
+                    ? filtered.filter(d => { const o = parseDate(d); return o && o > dischargeObj; })
+                    : [];
+                pushOpdRuns(events, beforeEnd, dept, calendar, opdAnchors);
+            } else if (filtered.length > 0) {
+                pushOpdRuns(events, filtered, dept, calendar, opdAnchors);
             }
         }
 
@@ -1234,9 +1381,14 @@
         const unmergedOps = [];
 
         if (opEvents && opEvents.length > 0) {
+            const emgArrivalObj = hasEmg && emg && emg.arrivalDT ? parseDate(emg.arrivalDT) : null;
             opEvents.forEach(evt => {
                 const evtDateObj = parseDate(evt.date);
-                if (hasInpat && inpatStartDateObj && dischargeDateObj && evtDateObj && evtDateObj >= inpatStartDateObj && evtDateObj <= dischargeDateObj) {
+                const withinStay = !!(hasInpat && inpatStartDateObj && dischargeDateObj && evtDateObj && evtDateObj >= inpatStartDateObj && evtDateObj <= dischargeDateObj);
+                // 急診送刀：類別為「急診」且落在急診到院～離院期間者，即使早於入院日也要併入本次住院敘述
+                const emgSurgery = !!(fromEmg && String(evt.category || '').trim() === '急診' && evtDateObj && emgArrivalObj &&
+                    evtDateObj >= emgArrivalObj && (!dischargeDateObj || evtDateObj <= dischargeDateObj));
+                if (withinStay || emgSurgery) {
                     mergedOps.push(evt);
                 } else {
                     unmergedOps.push(evt);
@@ -1266,8 +1418,14 @@
             // 1. 住院開始子事件（若入院第一床即加護病房，直接寫「加護病房住院」，不再另補轉入 ICU）
             const startIsICU = timeline.length > 0 && ICU_SET.has(timeline[0].bed);
             const startWard = startIsICU ? '加護病房' : '一般病房';
+            // 急診送刀（類別＝急診，且已併入本次住院）→ 先寫急診就醫與離部，住院改寫在「手術之後」
+            const emgLaparotomy = hasInpat && fromEmg && mergedOps.some(evt => String(evt.category || '').trim() === '急診');
             let startText = '';
-            if (fromEmg) {
+            if (fromEmg && emgLaparotomy) {
+                const aStr = emg.arrivalDT ? formatDateTime(emg.arrivalDT) : formatDate(inpat.inpatStartDate);
+                const lStr = emg.leaveDT ? formatDateTime(emg.leaveDT) : formatDate(inpat.inpatStartDate);
+                startText = `於${aStr}至本院急診就醫，於${lStr}離部`;
+            } else if (fromEmg) {
                 const aStr = emg.arrivalDT ? formatDateTime(emg.arrivalDT) : formatDate(inpat.inpatStartDate);
                 const lStr = emg.leaveDT ? formatDateTime(emg.leaveDT) : formatDate(inpat.inpatStartDate);
                 startText = `於${aStr}至本院急診就醫，於${lStr}轉至本院${startDept}${startWard}住院`;
@@ -1279,6 +1437,15 @@
                 priority: 1,
                 text: startText
             });
+
+            // 急診送刀：住院敘述接在手術之後（priority 3 > 手術 2），日期用實際病房入住日
+            if (emgLaparotomy) {
+                inpatSubEvents.push({
+                    date: parseDate(inpat.inpatStartDate) || inpatStartDateObj,
+                    priority: 3,
+                    text: `術後於${formatDate(inpat.inpatStartDate)}至本院${startDept}${startWard}住院`
+                });
+            }
 
             // 3. 遍歷住院期間的其他病房/科別異動事件
             for (let i = 1; i < timeline.length; i++) {
@@ -1343,6 +1510,17 @@
                     text: `於${dFmt}出院`
                 });
             }
+
+            // 5b. 出院後回診（出院日之後的門診日）→ 接在出院之後，寫成「出院後於…回診」
+            postDischargeOpdDates.forEach(dateStr => {
+                const dObj = parseDate(dateStr);
+                if (!dObj) return;
+                inpatSubEvents.push({
+                    date: dObj,
+                    priority: 5,
+                    text: `出院後於${formatDate(dateStr)}回診`
+                });
+            });
 
             // 對所有住院子事件進行排序：先按日期，同天則按優先權：起點(1) -> 手術(2) -> 轉床(3) -> 出院(4)
             inpatSubEvents.sort((a, b) => {
@@ -1416,7 +1594,7 @@
             }
             let txt = `病人因上述原因，${ev.text}`;
             if (ev.type === 'inpat') {
-                txt += `，出院後宜於門診持續追蹤治療。`;
+                txt += postDischargeOpdDates.length > 0 ? `，宜於門診持續追蹤治療。` : `，出院後宜於門診持續追蹤治療。`;
             } else {
                 txt += `。`;
             }
@@ -1431,7 +1609,7 @@
 
         const lastEvent = events[events.length - 1];
         if (lastEvent.type === 'inpat') {
-            txt += `，出院後宜於門診持續追蹤治療。`;
+            txt += postDischargeOpdDates.length > 0 ? `，宜於門診持續追蹤治療。` : `，出院後宜於門診持續追蹤治療。`;
         } else if (lastEvent.type === 'emg') {
             txt += `，宜於門診追蹤治療。`;
         } else {
@@ -1504,7 +1682,7 @@
                         const dateVal = dateInput ? dateInput.value.trim() : '';
                         const nameVal = nameInput ? nameInput.value.trim() : '';
                         if (dateVal) {
-                            opEvents.push({ date: dateVal, name: nameVal });
+                            opEvents.push({ date: dateVal, name: nameVal, category: row.getAttribute('data-op-category') || '' });
                         }
                     }
                 }
@@ -1650,6 +1828,12 @@
     }
 
     async function triggerConsentScan() {
+        // DevTools／無 GM 環境：跨來源同意書查詢會被 CORS 擋，直接跳過並說明；
+        // 術名仍由手術排程表的「術式」欄帶入，不影響囑言與時序。
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            setDiagStatus('ℹ 同意書查詢需 Tampermonkey（目前為 DevTools 模式，已跳過）；術名仍由手術排程帶入。', 'warn');
+            return;
+        }
 
         try {
             const params = new URLSearchParams(window.location.search);
@@ -1819,6 +2003,7 @@
             if (dischargeRow) {
                 dischargeRow.style.display = this.checked ? 'flex' : 'none';
             }
+            syncOpRowsFromChecks();
         });
 
         document.getElementById('ntuh-diag-has-opd').addEventListener('change', async function() {
@@ -1835,19 +2020,27 @@
                 } else {
                     setDiagStatus('未找到門診紀錄', 'warn');
                 }
+                // 不論勾選或取消，門診狀態變更後都要重算手術清單（含取消時移除門診來源的手術）
+                await syncOpRowsFromChecks();
             } else {
                 detailEl.style.display = 'none';
+                await syncOpRowsFromChecks();
             }
         });
 
-        document.getElementById('ntuh-diag-has-op').addEventListener('change', function() {
+        document.getElementById('ntuh-diag-opd-start-date').addEventListener('change', () => {
+            syncOpRowsFromChecks();
+        });
+
+        document.getElementById('ntuh-diag-has-op').addEventListener('change', async function() {
             const detailEl = document.getElementById('ntuh-diag-op-detail');
             if (this.checked) {
                 detailEl.style.display = 'flex';
+                await syncOpRowsFromChecks();
                 const container = document.getElementById('ntuh-diag-op-rows-container');
                 if (container && container.children.length === 0) {
                     if (detectedOpList && detectedOpList.length > 0) {
-                        addOpRow(detectedOpList[0].opDate, '', detectedOpList[0].opScheduleIdse);
+                        addOpRow(detectedOpList[0].opDate, detectedOpList[0].opName || '', detectedOpList[0].opScheduleIdse, describeOpTiming(detectedOpList[0]), detectedOpList[0].category);
                     } else {
                         addOpRow(todayStr(), '', '');
                     }
@@ -1935,14 +2128,16 @@
                     return d && startObj && d >= startObj && d <= endObj;
                 }).sort((a, b) => parseDate(a.opDate) - parseDate(b.opDate)); // 由舊到新
             } else if (opList.length > 0) {
-                autoOps = [opList[0]];
+                // 無住院：若已有門診起始日，以門診窗口挑選；否則維持原本帶最新一筆
+                const opdStart = document.getElementById('ntuh-diag-opd-start-date')?.value.trim() || '';
+                autoOps = opdStart ? pickOpsByOpdWindow(opList, opdStart) : [opList[0]];
             }
 
             detectedOpList = autoOps;
             if (autoOps.length > 0) {
                 document.getElementById('ntuh-diag-has-op').checked = true;
                 document.getElementById('ntuh-diag-op-detail').style.display = 'flex';
-                autoOps.forEach(o => addOpRow(o.opDate, o.opName, o.opScheduleIdse));
+                autoOps.forEach(o => addOpRow(o.opDate, o.opName, o.opScheduleIdse, describeOpTiming(o), o.category));
             } else {
                 document.getElementById('ntuh-diag-has-op').checked = false;
                 document.getElementById('ntuh-diag-op-detail').style.display = 'none';

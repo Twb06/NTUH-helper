@@ -29,8 +29,8 @@ const context = vm.createContext({
 });
 const entryPoint = source.indexOf("    if (document.readyState === 'loading')");
 vm.runInContext(source.slice(0, entryPoint) + `
-    globalThis.api = { diagnosticError, handleConsentMessage, initRouter, mountDiagUIWhenReady, handleReceivedConsent, buildText, fetchEmgData, emgFeedsStay, fetchOpDataList,
-        applySuggestedOperationNameByDate, selectBoundConsents, readBoundConsents, requestConsentInfos,
+    globalThis.api = { diagnosticError, handleConsentMessage, initRouter, mountDiagUIWhenReady, handleReceivedConsent, buildText, fetchEmgData, emgFeedsStay, fetchOpDataList, pickOpsByOpdWindow,
+        applySuggestedOperationNameByDate, selectBoundConsents, readBoundConsents, requestConsentInfos, desiredOpsByChecks, syncOpRowsFromChecks, describeOpTiming,
         triggerConsentScan, autoDetectRecords, runDiagFiller, createDiagUI, extractSuggestedOperationNameFromPdf,
         setMocks(mocks) {
             if (mocks.createDiagUI) createDiagUI = mocks.createDiagUI;
@@ -326,6 +326,96 @@ const ops = [
     assert(!elements.has('ntuh-diag-debug-output'));
     assert(!elements.has('ntuh-diag-open-consent'), 'Remove the outdated manual consent entry');
     assert.equal(context.api.diagnosticError('HTTP 403 https://ihisaw.ntuh.gov.tw/show?SESSION=secret PersonID=private'), 'HTTP 403 [網址已隱藏] [識別參數已隱藏]');
+    // ── 門診窗口挑選手術（門診診斷書讀同意書用）────────────────────────────
+    const windowOps = [
+        { opDate: '2026/10/19', opName: 'A', opScheduleIdse: 'ID-A', category: '住院' },
+        { opDate: '2026/09/15', opName: 'B', opScheduleIdse: 'ID-B', category: '門診' },
+        { opDate: '2025/08/15', opName: 'C', opScheduleIdse: 'ID-C', category: '住院' }
+    ];
+    const idsIn = (ops, start, today) => context.api.pickOpsByOpdWindow(ops, start, today)
+        .map(op => op.opScheduleIdse).join(',');
+    assert.equal(idsIn(windowOps, '2026/09/01', '2026/12/31'), 'ID-B,ID-A',
+        'Window start keeps in-window operations, oldest first');
+    assert.equal(idsIn(windowOps, '2026/10/01', '2026/12/31'), 'ID-B,ID-A',
+        'Outpatient rule keeps the operation right before the window plus everything inside it');
+    assert.equal(idsIn(windowOps, '2026/12/01', '2026/12/31'), 'ID-A',
+        'No operation inside the window falls back to the nearest one before it');
+    assert.equal(idsIn(windowOps, '2020/01/01', '2026/12/31'), 'ID-C,ID-B,ID-A',
+        'All operations inside the window are returned oldest first');
+    assert.equal(idsIn(windowOps, '2026/09/01', '2026/09/30'), 'ID-B',
+        'Future-dated operations are excluded from the window');
+    assert.equal(idsIn([], '2026/09/01'), '', 'Empty schedule stays empty');
+
+    // ── 非住院：門診須與手術依時間交錯 ─────────────────────────────
+    const interleaved = context.api.buildText({
+        hasInpat: false, hasOpd: true, hasOp: true, hasEmg: false,
+        opdDates: ['2026/09/01', '2026/09/08', '2026/10/01'], opdStartDate: '2026/09/01',
+        inpat: { inpatStartDate: '', timeline: [] }, emg: { arrivalDT: '', leaveDT: '' },
+        dept: '眼科', opEvents: [{ date: '2026/09/15', name: '白內障' }], feeEvents: [], dischargeDate: ''
+    });
+    const idxEarlyOpd = interleaved.indexOf('西元2026年9月1日');
+    const idxOp = interleaved.indexOf('接受白內障術');
+    const idxLateOpd = interleaved.indexOf('西元2026年10月1日');
+    assert(idxEarlyOpd >= 0 && idxOp > idxEarlyOpd && idxLateOpd > idxOp,
+        'Outpatient visits before the operation stay before it, visits after come after');
+
+    // ── 住院：門診仍是單一段落且在住院之前（行為不變）────────────────────
+    const inpatWithOpd = context.api.buildText({
+        hasInpat: true, hasOpd: true, hasOp: true, hasEmg: false,
+        opdDates: ['2026/09/01', '2026/09/08', '2026/10/01'], opdStartDate: '2026/09/01',
+        inpat: { inpatStartDate: '2026/09/10', timeline: [{ bed: '08C', start: '2026/09/10', end: '2026/09/16', dept: '眼科', acct: 'a' }] },
+        emg: { arrivalDT: '', leaveDT: '' }, dept: '眼科',
+        opEvents: [{ date: '2026/09/12', name: '白內障' }], feeEvents: [], dischargeDate: '2026/09/16'
+    });
+    assert.equal((inpatWithOpd.match(/門診追蹤/g) || []).length, 1, 'Admission case keeps one merged outpatient segment');
+    assert(inpatWithOpd.indexOf('門診追蹤') < inpatWithOpd.indexOf('住院'), 'Merged outpatient segment still precedes admission');
+    assert(inpatWithOpd.includes('出院後於西元2026年10月01日回診'), 'Post-discharge visits become 出院後回診 after the discharge event');
+    assert(inpatWithOpd.indexOf('出院') < inpatWithOpd.indexOf('出院後於'), '回診 statement follows the discharge event');
+    assert(!inpatWithOpd.includes('出院後宜於門診持續追蹤治療'), 'Explicit 回診 replaces the generic post-discharge closing');
+    assert(inpatWithOpd.endsWith('宜於門診持續追蹤治療。'), 'Closing still ends with the follow-up sentence');
+
+    // ── 住院：出院前門診也要依其他事件交錯（門診→手術→住院）────────────
+    const inpatSplit = context.api.buildText({
+        hasInpat: true, hasOpd: true, hasOp: true, hasEmg: false,
+        opdDates: ['2026/09/01', '2026/09/20'], opdStartDate: '2026/09/01',
+        inpat: { inpatStartDate: '2026/09/10', timeline: [{ bed: '08C', start: '2026/09/10', end: '2026/09/16', dept: '眼科', acct: 'a' }] },
+        emg: { arrivalDT: '', leaveDT: '' }, dept: '眼科',
+        opEvents: [{ date: '2026/09/05', name: '白內障' }], feeEvents: [], dischargeDate: '2026/09/16'
+    });
+    const splitOpd = inpatSplit.indexOf('西元2026年9月1日');
+    const splitOp = inpatSplit.indexOf('接受白內障術');
+    const splitStay = inpatSplit.indexOf('住院');
+    assert(splitOpd >= 0 && splitOp > splitOpd && splitStay > splitOp,
+        'Pre-admission outpatient visit is ordered before the operation and the admission');
+
+    // ── 急診送刀 vs 住院刀：囑言範例逐字比對 ─────────────────────────────
+    const surgeryCase = {
+        hasInpat: true, hasOpd: false, hasOp: true, hasEmg: true,
+        opdDates: [], opdStartDate: '', dept: '眼科部',
+        inpat: { inpatStartDate: '2026/10/16', timeline: [{ bed: '08C', start: '2026/10/16', end: '2026/10/19', dept: '眼科部', acct: 'a' }] },
+        emg: { arrivalDT: '2026/10/15 08:50', leaveDT: '2026/10/16 17:29', leaveDate: '2026/10/16', disposition: '住院' },
+        feeEvents: [], dischargeDate: '2026/10/19'
+    };
+    const opName = '左眼視網膜剝離玻璃體切除手術';
+    assert.equal(
+        context.api.buildText({ ...surgeryCase, opEvents: [{ date: '2026/10/16', name: opName, category: '急診' }] }),
+        '病人因上述原因，於西元2026年10月15日08時50分至本院急診就醫，於西元2026年10月16日17時29分離部，'
+        + '於西元2026年10月16日接受左眼視網膜剝離玻璃體切除手術，術後於西元2026年10月16日至本院眼科部一般病房住院，'
+        + '於西元2026年10月19日出院，出院後宜於門診持續追蹤治療。',
+        'Emergency-room surgery: 離部 → 手術 → 術後…住院 → 出院');
+    assert.equal(
+        context.api.buildText({ ...surgeryCase, opEvents: [{ date: '2026/10/16', name: opName, category: '住院' }] }),
+        '病人因上述原因，於西元2026年10月15日08時50分至本院急診就醫，於西元2026年10月16日17時29分轉至本院眼科部一般病房住院，'
+        + '於西元2026年10月16日接受左眼視網膜剝離玻璃體切除手術，於西元2026年10月19日出院，出院後宜於門診持續追蹤治療。',
+        'Ward surgery: 轉至病房住院 → 手術 → 出院');
+
+    // ── 無 GM 環境（DevTools 模式）：同意書查詢應跳過且不拋錯 ─────────────
+    delete context.GM_xmlhttpRequest;
+    await context.api.triggerConsentScan();
+    assert.equal(elements.get('ntuh-diag-status').className, 'diag-warn', 'Missing GM must warn, not throw');
+    assert(String(elements.get('ntuh-diag-status').textContent || '').includes('DevTools'),
+        'Status explains that the consent lookup was skipped in DevTools mode');
+
     context.api.setMocks({ token: 'test' });
     context.api.handleConsentMessage({ ntuh: true, token: 'test', warning: '未能唯一配對' });
     assert.equal(elements.get('ntuh-diag-status').className, 'diag-warn');
