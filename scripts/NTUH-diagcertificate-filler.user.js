@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      2.6.0
+// @version      2.6.1
 // @description  點擊 FAB 後自動擷取診斷書資料；背景解析手術同意書 PDF，依手術流水號配對並優先同主治醫師，確認後填入囑言。支援自費項目與常用字串。
 // @author       YT / Twb06 / WeiJyun9008
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
@@ -999,17 +999,17 @@
         const endObj = parseDate(lastStay?.end);
         const inThisStay = !!(startObj && opDate >= startObj && (!endObj || opDate <= endObj));
 
-        if (category === '急診') return '急診送刀';
+        if (category === '急診') return '急診手術';
         if (category === '門診') return '門診手術';
-        if (category === '住院') return inThisStay ? '住院中' : '住院(非本次)';
+        if (category === '住院') return inThisStay ? '住院手術' : '住院(非本次)';
 
         // 類別未知的後備：用急診紀錄與住院區間推定
         let emg = null;
         try { emg = fetchEmgData(inpat.inpatStartDate); } catch (_e) { emg = null; }
         const emgArrival = emg && emg.arrivalDT ? parseDate(emg.arrivalDT) : null;
         const isEmgStay = !!(emg && emgFeedsStay(emg, inpat.inpatStartDate));
-        if (emgArrival && isEmgStay && opDate >= emgArrival && (!startObj || opDate <= startObj)) return '急診送刀 (推定)';
-        if (inThisStay) return '住院中';
+        if (emgArrival && isEmgStay && opDate >= emgArrival && (!startObj || opDate <= startObj)) return '急診手術 (推定)';
+        if (inThisStay) return '住院手術';
         return '';
     }
 
@@ -1302,6 +1302,30 @@
         return `於${dateStr}至本院${deptName}門診追蹤`;
     }
 
+    // 一串日期合併成「西元2026年10月01日、10月15日、西元2027年01月05日」（同年只寫一次年份）。
+    // 零填充與 fmtDate 相同，讓「出院後於…回診」等敘述與出院日寫法一致。
+    function formatDateList(dates, calendar = 'gregorian') {
+        let text = '';
+        let written = 0;
+        let currentYear = null;
+        (dates || []).forEach(value => {
+            const d = parseDate(value);
+            if (!d) return;
+            const year = String(d.getFullYear());
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            if (year !== currentYear) {
+                if (written > 0) text += '、';
+                text += `${fmtYear(year, calendar)}${month}月${day}日`;
+                currentYear = year;
+            } else {
+                text += `、${month}月${day}日`;
+            }
+            written += 1;
+        });
+        return text;
+    }
+
     // 自費事件敘述：「於{日期}接受自費{項目}治療」（項目若已含「自費」開頭則去除避免重複）
     function feeEventText(evt, calendar = 'gregorian') {
         const item = String(evt.name || '').replace(/^自費/, '').trim();
@@ -1511,16 +1535,16 @@
                 });
             }
 
-            // 5b. 出院後回診（出院日之後的門診日）→ 接在出院之後，寫成「出院後於…回診」
-            postDischargeOpdDates.forEach(dateStr => {
-                const dObj = parseDate(dateStr);
-                if (!dObj) return;
+            // 5b. 出院後回診（出院日之後的門診日）→ 接在出院之後，彙整成一句
+            //     「出院後於A、B、C回診」。逐日各寫一句會讓同一位病人的囑言不斷重複「出院後於…」。
+            const postDischargeDates = postDischargeOpdDates.filter(dateStr => !!parseDate(dateStr));
+            if (postDischargeDates.length > 0) {
                 inpatSubEvents.push({
-                    date: dObj,
+                    date: parseDate(postDischargeDates[0]),
                     priority: 5,
-                    text: `出院後於${formatDate(dateStr)}回診`
+                    text: `出院後於${formatDateList(postDischargeDates, calendar)}回診`
                 });
-            });
+            }
 
             // 對所有住院子事件進行排序：先按日期，同天則按優先權：起點(1) -> 手術(2) -> 轉床(3) -> 出院(4)
             inpatSubEvents.sort((a, b) => {
@@ -1587,18 +1611,20 @@
 
         if (events.length === 0) return '';
 
+        // 結尾一律要有一句門診追蹤：
+        // 住院 → 「出院後宜於門診持續追蹤治療。」；若已寫出出院後回診，就不再重複「出院後」；
+        // 沒有住院（純門診／門診手術／自費／急診）→ 也要有「宜於門診持續追蹤治療。」
+        const closingSentence = type => {
+            if (type !== 'inpat') return '，宜於門診持續追蹤治療。';
+            return postDischargeOpdDates.length > 0 ? '，宜於門診持續追蹤治療。' : '，出院後宜於門診持續追蹤治療。';
+        };
+
         if (events.length === 1) {
             const ev = events[0];
             if (ev.type === 'emg') {
-                return `病人於${formatDateTime(emg.arrivalDT)}至本院急診，經診斷治療及留院觀察後，於${formatDateTime(emg.leaveDT || emg.arrivalDT)}離院，宜於門診追蹤治療。`;
+                return `病人於${formatDateTime(emg.arrivalDT)}至本院急診，經診斷治療及留院觀察後，於${formatDateTime(emg.leaveDT || emg.arrivalDT)}離院${closingSentence('emg')}`;
             }
-            let txt = `病人因上述原因，${ev.text}`;
-            if (ev.type === 'inpat') {
-                txt += postDischargeOpdDates.length > 0 ? `，宜於門診持續追蹤治療。` : `，出院後宜於門診持續追蹤治療。`;
-            } else {
-                txt += `。`;
-            }
-            return txt;
+            return `病人因上述原因，${ev.text}${closingSentence(ev.type)}`;
         }
 
         let txt = '病人因上述原因，';
@@ -1607,14 +1633,7 @@
             txt += ev.text;
         });
 
-        const lastEvent = events[events.length - 1];
-        if (lastEvent.type === 'inpat') {
-            txt += postDischargeOpdDates.length > 0 ? `，宜於門診持續追蹤治療。` : `，出院後宜於門診持續追蹤治療。`;
-        } else if (lastEvent.type === 'emg') {
-            txt += `，宜於門診追蹤治療。`;
-        } else {
-            txt += `。`;
-        }
+        txt += closingSentence(events[events.length - 1].type);
 
         return txt;
     }
