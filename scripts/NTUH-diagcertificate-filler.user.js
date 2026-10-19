@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH DiagCertificate Filler
 // @namespace    http://tampermonkey.net/
-// @version      2.7.0
+// @version      2.6.0
 // @description  點擊 FAB 後自動擷取診斷書資料；背景解析手術同意書 PDF，依手術流水號配對並優先同主治醫師，確認後填入囑言。支援自費項目與常用字串。
 // @author       YT / Twb06 / WeiJyun9008
 // @match        https://hisaw.ntuh.gov.tw/WebApplication/Clinics/DiagCertificate*
