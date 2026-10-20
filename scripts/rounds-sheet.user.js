@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.4.0
+// @version      1.5.0
 // @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -19,14 +19,18 @@
 
     /* global NTUHAsmx, NTUHNews2 */
 
-    const PER_PAGE = 11;                          // 一頁病人數（與紙本模板一致）
-    const LABELS = ['Abx', 'Lab', 'Tubes'];        // 三行標籤的預設值（每位病人可各自改）
-const RATIO = [2, 1, 1];                      // 三欄寬度比例預設（內容｜標籤＋填寫｜勾選＋待辦），頁面上可調
-const TODO_PRESETS = ['Weekly', '診斷書', '病摘', '入摘', '出摘', 'Off-service', 'On-service'];  // 每行第一組待辦的快速填入選項
-// 選到（或輸入）這些標籤時，同一行的填寫欄若是空的就自動帶入範本
-const LABEL_TEMPLATES = { GCS: 'E.  V.  M.  ', MP: 'RU/LU/RL/LL:   /   /   /   ' };
-const NEW_MAX_DAY = 2;   // 住院第幾天以內算「新入院」（入院當天＝Day 1）
-const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'Image', 'MP'];  // 點標籤彈出的選項（兩排各 5 個），也可自行輸入
+    const VERSION = '1.5.0';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
+    const PER_PAGE = 11;                          // 一頁病人數（預設；沒有人加行時的分頁，與紙本模板一致）
+    const PAGE_LINES = 44;                        // 一頁可放幾「行」（資訊行＋每行文字，6mm 一行；11 位×4 行＝44，所以預設仍是每頁 11 位）
+    const DEFAULT_ROWS = [0, 1, 2];               // 每位病人預設的行 id；最後一行右側的＋／−增減
+    const MAX_ROWS = 8;
+    const MIN_ROWS = 2;
+    const LABELS = ['Abx', 'Lab', 'Tubes'];        // 各行標籤的預設值（依行 id）
+    const RATIO = [2, 1, 1];                      // 三欄寬度比例預設（筆記｜標籤＋填寫｜勾選＋待辦），尺規可調
+    // 選到（或輸入）這些標籤時，同一行的填寫欄若是空的就自動帶入範本
+    const LABEL_TEMPLATES = { GCS: 'E.  V.  M.  ', MP: 'RU/LU/RL/LL:   /   /   /   ' };
+    const NEW_MAX_DAY = 2;   // 住院第幾天以內算「新入院」（入院當天＝Day 1）
+    const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'Image', 'MP'];  // 點標籤彈出的選項（兩排各 5 個），也可自行輸入
     const STORE_KEY = 'ntuh-rounds-sheet:v1';
     const KEEP_DAYS = 30;                         // 超過幾天沒再出現在列表的病人，暫存內容自動清掉
 
@@ -151,12 +155,32 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
         return { status: candidates.length ? 'found' : warnings.length ? 'insufficient-data' : 'not-found', candidates, warnings: [...new Set(warnings)] };
     }
 
+    // 分頁：沒人加行 → 每頁 PER_PAGE 位；有人加行 → 依實際行數（資訊行＋各行）由上往下排，放不下就換頁
+    const rowsOfPatient = (p, rowsMap) => (rowsMap && rowsMap[p.chartNo || p.caseno]) || DEFAULT_ROWS;
+    function paginate(patients, rowsMap) {
+        if (!patients.some((p) => rowsOfPatient(p, rowsMap).length !== DEFAULT_ROWS.length)) {
+            const out = [];
+            for (let i = 0; i < patients.length; i += PER_PAGE) out.push(patients.slice(i, i + PER_PAGE));
+            return out;
+        }
+        const out = [];
+        let page = [], used = 0;
+        patients.forEach((p) => {
+            const lines = 1 + rowsOfPatient(p, rowsMap).length;
+            if (page.length && used + lines > PAGE_LINES) { out.push(page); page = []; used = 0; }
+            page.push(p); used += lines;
+        });
+        if (page.length) out.push(page);
+        return out;
+    }
+
     function staffStatus(result) {
         const messages = { 'not-found': '未找到符合條件的人員', 'insufficient-data': 'CR 計分資料不足', error: '無法取得人員' };
         return result.status === 'found' ? 'DrInfo 配對；CR 計分僅目前病房列表，可能受篩選／分頁限制' : result.reason || messages[result.status] || '無法判定';
     }
 
-    async function buildStaffHeaders(patients) {
+    async function buildStaffHeaders(patients, groups) {
+        const pageGroups = groups || paginate(patients);
         const scopes = new Map(), loaded = new Map();
         const scopeKey = (p) => `${hospitalOf(p.caseno)}|${p.ward}`;
         patients.forEach((p) => { const key = scopeKey(p); if (!scopes.has(key)) scopes.set(key, []); scopes.get(key).push(p); });
@@ -169,8 +193,8 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
             } catch (error) { loaded.set(key, { error: error.message }); }
         }));
         const pages = [];
-        for (let i = 0; i < patients.length; i += PER_PAGE) {
-            const page = patients.slice(i, i + PER_PAGE), cr = [], vs = [], warnings = [];
+        for (const [gi, page] of pageGroups.entries()) {
+            const cr = [], vs = [], warnings = [];
             for (const key of new Set(page.map(scopeKey))) {
                 const group = loaded.get(key);
                 if (group.error) { warnings.push(group.error); continue; }
@@ -193,7 +217,7 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
                 vs.push({ id: `VS-${staffHash(name)}`, person: result.status === 'found' ? result.person : { EmpName: name }, title: staffStatus(result) });
             });
             const title = [...new Set(warnings)].join('；') || 'CR 僅列 score > 0 且覆蓋本頁的候選；計分僅目前列表，可能受篩選／分頁限制';
-            pages.push({ pg: i / PER_PAGE + 1, cr, vs, title });
+            pages.push({ pg: gi + 1, cr, vs, title });
         }
         return pages;
     }
@@ -305,13 +329,16 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
         const out = [];
         const headers = [...table.rows[0].cells].map(txt);
         const column = (labels) => headers.findIndex((label) => labels.includes(label));
-        const attendingCol = column(['主治', '主治醫師']), residentCol = column(['住院', '住院醫師']), admissionCol = column(['入院日', '入院日期']);
+        const attendingCol = column(['主治', '主治醫師']), residentCol = column(['住院', '住院醫師']), admissionCol = (() => { const exact = column(['入院日', '入院日期']); return exact >= 0 ? exact : headers.findIndex((label) => /入院/.test(label)); })();
         for (const tr of [...table.rows].slice(1)) {
             const news = tr.querySelector('[id$="NEWSLabel"]');
             const caseno = news && news.getAttribute('caseno');
             if (!caseno) continue;
             const cells = [...tr.cells];
-            const adm = txt(cells[admissionCol]);
+            // 入院日：先看表頭對到的欄；表頭文字對不到（改版、帶排序符號等）或內容不像日期時，退回「第 9 欄起第一個長得像日期的格子」
+            const dateRe = /\d{2,4}\s*[\/.-]\s*\d{1,2}\s*[\/.-]\s*\d{1,2}/;
+            let adm = admissionCol >= 0 ? txt(cells[admissionCol]) : '';
+            if (!dateRe.test(adm)) adm = cells.slice(9).map(txt).find((t) => dateRe.test(t)) || '';
             const permitTitle = tr.querySelector('[id$="LinkPermitDischarge"]')?.getAttribute('title') || '';
             const discharge = permitTitle.match(/^\s*(\d{4}\/\d{2}\/\d{2})\s+(可出院|已出院)\s*$/);
             const room = txt(tr.querySelector('[id$="RoomLabel"]')), bed = txt(tr.querySelector('[id$="BedLabel"]'));
@@ -338,8 +365,7 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
     // ═══════════════════════════════════════════════════════════
     // 頁面
     // ═══════════════════════════════════════════════════════════
-    // 多行文字框（cc／#.／填寫／待辦）：固定高度，放不下時由頁面腳本自動跳行＋縮字；Enter 不換行
-    const ta = (key, cls) => `<textarea class="${cls}" data-k="${esc(key)}" rows="1" autocomplete="off" spellcheck="false"></textarea>`;
+    const NOTE_DEFAULT = '#.\n#.\n#.';              // 筆記區預設內容（三行 #.）
     const input = (key, cls, extra) => `<input class="${cls}" data-k="${esc(key)}" autocomplete="off" spellcheck="false"${extra || ''}>`;
 
     // 先帶入本頁主治姓名；DrInfo 配對完成後填入未編輯的姓名、員編與簡碼。
@@ -368,6 +394,8 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
         const age = m ? `${m[1]}y${m[2] || 0}m` : mo ? `0y${mo[1]}m` : (/^\d+$/.test(p.age) ? `${p.age}y0m` : p.age);
         return [sx, age].filter(Boolean).join(', ');
     }
+    // 預出院日：Portal 給 2026/10/21，欄位顯示成手寫習慣的「10/21」（月/日、不補零）；格式認不得就原樣
+    const shortDate = (d) => { const m = String(d || '').match(/^\d{4}\/(\d{1,2})\/(\d{1,2})$/); return m ? `${+m[1]}/${+m[2]}` : String(d || ''); };
     const bedLabel = (p) => [p.ward, p.bed].filter(Boolean).join(' ');   // 病房＋床號
 
     // 病人資訊行左邊留白處的小圖示（NEW／抗生素藥瓶／管路／吹氣）：由資料自動亮起，也可以點一下手動開關；列印只印亮的
@@ -379,25 +407,26 @@ const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'I
     };
     const iconsHtml = (isNew) => `<div class="ics">${Object.entries(ICONS).map(([k, [, tip, svg]]) => `<span class="ic" data-ic="${k}"${k === 'new' && isNew ? ' data-auto="1"' : ''} title="${esc(tip)}（點一下手動開關）">${svg}</span>`).join('')}</div>`;
 
-    function blockHtml(p) {
+    // 標籤區／勾選區的單元由頁面腳本產生（見 UNITS），這裡只留空的 .c2／.c3
+    function blockHtml(p, rows = DEFAULT_ROWS) {
         const id = p.chartNo || p.caseno;
         const k = (n) => `p:${id}:${n}`;
-        const row = (r, tag) => `<div class="ln"><div class="c1"><span class="tg">${tag}</span>${ta(k(`m${r}`), 'tx')}</div><div class="c2">${input(k(`l${r}`), 'lab')}${ta(k(`f${r}`), 'tx')}</div><div class="c3">${[0, 1].map((n) => { const sx = n ? `_${n}` : ''; return `<div class="cell"><input type="checkbox" class="bx" data-k="${esc(k(`c${r}${sx}`))}">${ta(k(`t${r}${sx}`), n ? 'tx td' : 'tx td pre')}</div>`; }).join('')}</div></div>`;
+        const row = (r, last) => `<div class="ln" data-r="${r}"><div class="c2"></div><div class="c3"></div>${last ? '<span class="rctl"><button type="button" class="radd" title="在最後新增一行">＋</button><button type="button" class="rdel" title="移除最後一行（至少保留 2 行）"' + (rows.length <= MIN_ROWS ? ' disabled' : '') + '>−</button></span>' : ''}</div>`;
         const info = [
             bedLabel(p) && `<b>${esc(bedLabel(p))}</b>`,
             `<b>${esc(patientName(p.name))}</b>`,
             sexAge(p) && `（${esc(sexAge(p))}）`,
             esc(p.chartNo),
-            p.adm && `入 ${esc(p.adm)}${dayOf(p) ? `(Day ${esc(dayOf(p))})` : ''}`,
+            p.adm && `入 ${esc(p.adm)}${dayOf(p) ? ` (D${esc(dayOf(p))})` : ''}`,
         ].filter(Boolean).join('<span class="sep"></span>');
-        const discharge = `<div class="discharge">${p.discharged ? '已出院' : '預出院'}${input(k('dc'), 'u w9', ` data-def="${esc(p.dischargeDate || '')}"`)}</div>`;
+        const discharge = `<div class="discharge">${p.discharged ? '已出院' : '預出院'}${input(k('dc'), 'u w6', ` data-def="${esc(shortDate(p.dischargeDate))}"`)}</div>`;
         const doctors = `<div class="staff-vr"><span title="${esc(p.attending)}">${p.attending ? `VS ${esc(p.attending)}` : ''}</span><span title="${esc(p.resident)}">${p.resident ? `R ${esc(p.resident)}` : ''}</span></div>`;
         const dn = parseInt(dayOf(p), 10);
-        return `<section class="pt" data-id="${esc(id)}">${iconsHtml(dn >= 1 && dn <= NEW_MAX_DAY)}
+        return `<section class="pt" data-id="${esc(id)}" style="--rows:${rows.length}">${iconsHtml(dn >= 1 && dn <= NEW_MAX_DAY)}
 <div class="ln info"><div class="il">${info}</div>${discharge}${doctors}</div>
-${row(0, 'cc')}
-${row(1, '#.')}
-${row(2, '#.')}
+<div class="pbody"><div class="c1">${`<textarea class="nt" data-k="${esc(k('n'))}" data-def="${esc(NOTE_DEFAULT).replace(/\n/g, '&#10;')}" rows="1" autocomplete="off" spellcheck="false"></textarea>`}</div><div class="prows">
+${rows.map((r, ord) => row(r, ord === rows.length - 1)).join('\n')}
+</div></div>
 </section>`;
     }
 
@@ -425,9 +454,8 @@ ${patients.map((p, i) => `<div class="sp" data-id="${esc(p.chartNo || p.caseno)}
 <div id="dlg" hidden data-seq="0"><div class="dh"><b id="dlg-t"></b><button type="button" id="dlg-c">複製全部</button><button type="button" id="dlg-x">✕</button></div><div id="dlg-body"></div></div>`;
     }
 
-    function pageShell(patients, today, stamp) {
-        const pages = [];
-        for (let i = 0; i < patients.length; i += PER_PAGE) pages.push(patients.slice(i, i + PER_PAGE));
+    function pageShell(patients, today, stamp, groups, rowsMap) {
+        const pages = groups || paginate(patients, rowsMap);
         return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>查房單 ${esc(today)}</title>
 <style>
@@ -435,17 +463,15 @@ ${patients.map((p, i) => `<div class="sp" data-id="${esc(p.chartNo || p.caseno)}
 *{box-sizing:border-box}
 html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 body{margin:0;background:#e5e7eb;color:#111;font:10.5pt/1 system-ui,"Noto Sans TC","PingFang TC",sans-serif}
-.bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:8px 16px;background:#1f2937;color:#fff;font-size:13px}
+.bar{position:sticky;top:0;z-index:5;height:37px;display:flex;gap:10px;align-items:center;padding:8px 16px;background:#1f2937;color:#fff;font-size:13px}
 .bar button{padding:5px 14px;border:0;border-radius:6px;background:#0f766e;color:#fff;font-size:13px;cursor:pointer}
-.bar{height:37px}
 .ruler{position:sticky;top:37px;z-index:4;width:210mm;height:20px;margin:6px 0 0 12px;background:#fff;background-image:repeating-linear-gradient(90deg,#9ca3af 0 1px,transparent 1px 10mm);background-size:calc(100% - 18mm) 6px;background-position:9mm 14px;background-repeat:no-repeat;box-shadow:0 1px 4px rgba(0,0,0,.25);user-select:none}
 .rl{position:absolute;left:9mm;right:9mm;top:0;bottom:0}
 .hd{position:absolute;top:2px;width:14px;margin-left:-7px;height:16px;cursor:ew-resize;touch-action:none}
 .hd::before{content:"";position:absolute;left:1px;top:2px;border:6px solid transparent;border-top:10px solid #0f766e;border-bottom:0}
 .hd::after{content:"";display:none;position:absolute;left:6px;top:20px;height:100vh;border-left:1px dashed #0f766e;pointer-events:none}
 .hd.on::after{display:block}
-.bar button.g{background:#4b5563}
-.bar .m{color:#9ca3af;margin-left:auto;font-size:12px}
+.bar button.g{background:#4b5563}.bar .m{color:#9ca3af;margin-left:auto;font-size:12px}
 .gen{position:absolute;left:9mm;top:2.5mm;font-size:6.5pt;color:#6b7280}
 .page{position:relative;width:210mm;height:297mm;margin:14px 0 14px 12px;padding:7mm 9mm;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);overflow:visible;break-after:page}
 .hdr{font-size:10pt;min-height:15mm}
@@ -460,27 +486,53 @@ body{margin:0;background:#e5e7eb;color:#111;font:10.5pt/1 system-ui,"Noto Sans T
 input,textarea{font:inherit;color:inherit;background:transparent;border:0;outline:0;padding:0;margin:0}
 textarea{display:block;resize:none;overflow:hidden;line-height:1.05;overflow-wrap:anywhere;align-self:center}
 input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
-.w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
-.pt{position:relative;height:var(--pt-height,24mm);break-inside:avoid;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
+.w6{width:11mm}.w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
+.pt{position:relative;height:calc(var(--lh,6mm) * (1 + var(--rows,3)));break-inside:avoid;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
 .ics{position:absolute;left:-8.2mm;top:.4mm;width:7.4mm;display:flex;flex-direction:column;gap:.7mm;align-items:center}
 .ic{width:4.8mm;height:4.8mm;display:flex;align-items:center;justify-content:center;visibility:hidden;color:#111}
 .ic.on{visibility:visible}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 .ic .nw{font:700 5.4pt/1 system-ui,sans-serif;border:.25mm solid #111;border-radius:1mm;padding:.35mm .5mm;letter-spacing:-.02em}
-.ln{display:flex;align-items:center;height:calc(var(--pt-height,24mm)/4);padding-right:1mm}
+.ln{position:relative;display:flex;align-items:center;height:var(--lh,6mm);padding-right:1mm}
 .info .il{flex:1;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
 .discharge{flex:none;margin-left:3.5mm;white-space:nowrap}
-.staff-vr{flex:none;margin-left:auto;padding-left:2mm;display:grid;grid-template-columns:25mm 25mm;gap:2mm;text-align:right;white-space:nowrap}
-.staff-vr span{overflow:hidden;text-overflow:ellipsis}
-.il b{font-weight:700}.sep{display:inline-block;width:3.5mm}
-.tg{width:7mm;font-weight:700;flex:none}
-.tx{flex:1;min-width:0;height:calc(var(--pt-height,24mm)/4 - .4mm);font-size:10.5pt}
+.staff-vr{flex:none;margin-left:auto;padding-left:2mm;display:grid;grid-template-columns:auto auto;gap:3mm;text-align:right;white-space:nowrap}
+.staff-vr span{max-width:25mm;overflow:hidden;text-overflow:ellipsis}
+.il b{font-weight:700}.sep{display:inline-block;width:2.5mm}
+.tx{flex:1;min-width:0;height:calc(var(--lh,6mm) - .4mm);font-size:10.5pt}
 .c1,.c2,.c3{min-width:0;display:flex;align-items:center}
-.c1{flex:var(--r1,2) 1 0}
-.c2{flex:var(--r2,1) 1 0}
-.c1>.tx,.c2>.tx{margin-right:2.5mm}
-.c3{flex:var(--r3,1) 1 0;gap:2mm}
-.cell{flex:1 1 0;min-width:0;display:flex;align-items:center}
+.c1{flex:calc(var(--r1,2) * 1000) 1 0;align-items:stretch;padding-right:2.5mm}
+.pbody{display:flex;height:calc(var(--lh,6mm) * var(--rows,3))}
+.prows{flex:calc((var(--r2,1) + var(--r3,1)) * 1000) 1 0;min-width:0}
+.nt{flex:1;min-width:0;width:100%;height:100%;font-size:10.5pt;line-height:var(--lh,6mm);white-space:pre-wrap}
+.c2{flex:calc(var(--r2,1) * 1000) 1 0}
+.lunit>.tx{margin-right:2.5mm}
+.c3{flex:calc(var(--r3,1) * 1000) 1 0;gap:2mm}
+.cell{position:relative;flex:1 1 0;min-width:0;display:flex;align-items:center}
+.lunit{position:relative;flex:1 1 0;min-width:0;height:calc(var(--span,1) * var(--lh,6mm));display:flex;align-items:flex-start}
+.tx.tall{line-height:var(--lh,6mm);white-space:pre-wrap}
+.lunit>.lab{margin-top:calc((var(--lh,6mm) - 5mm) / 2)}
+.lunit>.tx{height:calc(var(--span,1) * var(--lh,6mm) - .4mm)}
+.uh{position:absolute;left:-2.5mm;top:calc(var(--lh,6mm) / 2);transform:translateY(-50%);width:2.5mm;text-align:center;color:#cbd5e1;font:700 12px/1 system-ui,sans-serif;cursor:pointer;user-select:none;z-index:2}
+.rctl{position:absolute;right:-8.6mm;top:50%;transform:translateY(-50%);display:flex;gap:.8mm;z-index:2}
+.radd,.rdel{border:0;border-radius:3px;background:#f3f4f6;color:#9ca3af;cursor:pointer;font:12px system-ui;line-height:4mm;padding:0 3px}
+.radd:hover,.rdel:hover{color:#4b5563;background:#e5e7eb}
+.rdel:disabled{opacity:.35;cursor:not-allowed}
+.uh:hover{color:#6b7280}
+.cadd{display:none;flex:none;margin-top:calc((var(--lh,6mm) - 5mm) / 2);height:5mm;line-height:4.2mm;padding:0;border:1px dashed #9ca3af;border-radius:3px;background:transparent;color:#9ca3af;cursor:pointer;font:12px system-ui}
+.none>.cadd,.cadd.cov{display:block}
+.c2>.cadd{width:19mm}
+.c3>.cadd{width:8mm;margin-left:2mm}
+.cunit{position:relative;flex:1 1 0;min-width:0;height:calc(var(--span,1) * var(--lh,6mm));display:flex;gap:2mm;align-items:flex-start}
+.cunit>.cell{align-items:flex-start;height:100%}
+.cunit .tx{height:calc(var(--span,1) * var(--lh,6mm) - .4mm)}
+.cunit .bx{margin-top:calc((var(--lh,6mm) - 3.4mm) / 2)}
+.c2,.c3{position:relative;align-items:flex-start;align-self:flex-start}
+.cadd.cov{position:absolute;z-index:3;top:var(--lh,6mm);left:0}
+.c3>.cadd.cov{margin-left:0;left:2mm}
+.cadd:hover{color:#0f766e;border-color:#0f766e;background:#f0fdfa}
+.cgmenu{position:absolute;z-index:12;display:flex;flex-direction:column;gap:2px;padding:4px;background:#fff;border:1px solid #9ca3af;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+.cgmenu[hidden]{display:none}.cgmenu button{text-align:left;white-space:nowrap;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;font:12px system-ui,sans-serif;cursor:pointer}.cgmenu button:hover{background:#fef9c3}
 .tx.td{margin-left:1.5mm}
 .lab{flex:none;width:19mm;margin-right:1.5mm;text-align:center;font-size:8pt;font-weight:700;height:5mm;border:.25mm solid #111;border-radius:1mm}
 .bx{-webkit-appearance:none;appearance:none;flex:none;width:3.4mm;height:3.4mm;margin:0 0 0 2mm;border:.3mm solid #111;border-radius:0;position:relative;cursor:pointer;background:#fff}
@@ -518,29 +570,37 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
  .chip.all{border-style:dashed;color:#4b5563}
  input:hover,input:focus,textarea:hover,textarea:focus{background:#fef9c3}
  .tx.over{outline:1px solid #dc2626;outline-offset:-1px}
- .tx{border-bottom:.2mm dotted #cbd5e1}
+ .tx,.nt{border-bottom:.2mm dotted #cbd5e1}
  .bx:hover{background:#fef9c3}
 }
 @media print{
- body{background:#fff}.bar,.lmenu,.ruler,.side,#dlg,.staff-add,.staff-remove,.staff-remove-menu{display:none}
+ body{background:#fff}.bar,.lmenu,.ruler,.side,#dlg,.uh,.cadd,.rctl,.cgmenu,.staff-add,.staff-remove,.staff-remove-menu{display:none}
  .page{margin:0;box-shadow:none}
  input:hover,input:focus,textarea:hover,textarea:focus{background:transparent}
 }
 </style></head><body>
 <div class="bar"><button id="pr">列印</button><button class="g" id="clr">清除本頁填寫</button><button class="g" id="clrl" title="清除所有病人中間欄的標籤（回到預設）與填寫內容">清除標籤區</button><button class="g" id="clrc" title="清除所有病人右邊的勾選與待辦文字">清除勾選區</button><button class="g" id="rr">重設欄寬</button>
-<span>${patients.length} 位病人・${pages.length} 頁</span><span class="m">自動暫存於此瀏覽器・點標籤、第一組待辦可選預設項目；右側資料塊可拖進同一位病人的填寫欄（放進標籤右邊那格會自動換標籤）</span></div>
+<span>${patients.length} 位病人・${pages.length} 頁</span><span style="color:#9ca3af">v${VERSION}</span><span class="m">自動暫存於此瀏覽器・點標籤可選預設項目；右側資料塊可拖進同一位病人的填寫欄（放進標籤右邊那格會自動換標籤）</span></div>
 <div class="wrap">
 <main class="main">
 <div class="ruler" title="拖曳三角形調整欄寬"><div class="rl" id="rl"><i class="hd" id="h1"></i><i class="hd" id="h2"></i></div></div>
-${pages.map((pp, i) => `<div class="page"><div class="gen">生成 ${esc(stamp)}</div>${headerHtml(i + 1, pp)}${pp.map(blockHtml).join('')}</div>`).join('')}
+${pages.map((pp, i) => `<div class="page"><div class="gen">生成 ${esc(stamp)}</div>${headerHtml(i + 1, pp)}${pp.map((p) => blockHtml(p, rowsOfPatient(p, rowsMap))).join('')}</div>`).join('')}
 </main>
 ${sideHtml(patients)}
 </div>
-<script>(${pageScript.toString()})(${JSON.stringify({ key: STORE_KEY, keep: KEEP_DAYS, labels: LABELS, options: LABEL_OPTIONS, presets: TODO_PRESETS, templates: LABEL_TEMPLATES, ratio: RATIO })}, ${applyStaffHeaders.toString()}, ${installStaffHeaders.toString()}, ${staffHash.toString()}, ${nk.toString()});<\/script></body></html>`;
+<script>(${pageScript.toString()})(${JSON.stringify({ key: STORE_KEY, keep: KEEP_DAYS, labels: LABELS, options: LABEL_OPTIONS,templates: LABEL_TEMPLATES, ratio: RATIO, defaultRows: DEFAULT_ROWS, maxRows: MAX_ROWS, minRows: MIN_ROWS })}, ${applyStaffHeaders.toString()}, ${installStaffHeaders.toString()}, ${staffHash.toString()}, ${nk.toString()});<\/script></body></html>`;
     }
 
     // 在新分頁內執行（toString 後注入，不可引用外層變數）
     function pageScript(cfg, applyStaffHeaders, installStaffHeaders, staffHash, nk) {
+        // 整張重新排版時文件會被重寫、這支腳本會再跑一次：先清掉上一輪留在 window 上的監聽與計時器
+        (window.__rsWL || []).forEach(([t, f]) => window.removeEventListener(t, f));
+        (window.__rsIV || []).forEach((h) => clearInterval(h));
+        window.__rsWL = []; window.__rsIV = [];
+        const wl = (t, f) => { window.addEventListener(t, f); window.__rsWL.push([t, f]); };
+        // 世代：整張重新排版後，上一輪遺留的計時器（延遲更新、延遲排版）還會在新文件上跑；它們手上的 store 是舊的，
+        // 若讓它們存檔就會把新的列數／內容蓋回舊值——所以只有最新一輪的腳本可以寫 localStorage。
+        const gen = window.__rsGen = (window.__rsGen || 0) + 1;
         const now = new Date().getTime();
         let store = {};
         try { store = JSON.parse(localStorage.getItem(cfg.key) || '{}') || {}; } catch (e) { store = {}; }
@@ -553,8 +613,9 @@ ${sideHtml(patients)}
             if (now - seen[id] <= limit) continue;
             delete seen[id];
             for (const k of Object.keys(store)) if (k.indexOf('p:' + id + ':') === 0) delete store[k];
+            ['__rows', '__lu', '__cu'].forEach((m) => { if (store[m]) delete store[m][id]; });
         }
-        const save = () => { try { localStorage.setItem(cfg.key, JSON.stringify(store)); } catch (e) { /* 無痕或被擋：只是不暫存 */ } };
+        const save = () => { if (window.__rsGen !== gen) return; try { localStorage.setItem(cfg.key, JSON.stringify(store)); } catch (e) { /* 無痕或被擋：只是不暫存 */ } };
         const fill = (el) => {
             const k = el.getAttribute('data-k');
             const v = store[k];
@@ -565,11 +626,8 @@ ${sideHtml(patients)}
         };
         const all = [...document.querySelectorAll('[data-k]')];
         all.forEach(fill);
-        // 自動排版（放得下為原則）：
-        //   單行輸入框（標籤、頁首欄位）超出就逐步縮小字型（最小 5px，標籤 4px）。
-        //   多行文字框固定高度：先各自找「剛好放得下」的最大字級（單行放不下就自動跳行），
-        //   再依「欄」統一字級（同一位病人內，cc／#.／#. 的內容欄共用一個字級、三個填寫欄共用、第一組待辦共用、第二組待辦共用）；
-        //   同一行的不同欄之間可以不同。縮到 MIN_FS 仍放不下的欄位會標紅框（會被截斷，請精簡）。刪減文字後會回到原本大小。
+        // 自動排版（放得下為原則）：單行輸入框超出就縮字；多行文字框各自找放得下的最大字級，
+        // 再依「欄」統一（同一位病人的填寫欄共用、兩組待辦各自共用）。縮到 MIN_FS 仍放不下就標紅框。
         const MIN_FS = 7;
         const fits = (el, H) => el.scrollHeight <= H + 1 && el.scrollWidth <= el.clientWidth + 1;
         const fit = (el) => {   // 單行輸入框
@@ -589,10 +647,23 @@ ${sideHtml(patients)}
         };
         const colOf = (t) => {
             const k = t.getAttribute('data-k') || '';
-            return /:m\d$/.test(k) ? 'm' : /:f\d$/.test(k) ? 'f' : /_1$/.test(k) ? 't1' : 't0';
+            return /:f\d(_\d+)?$/.test(k) ? 'f' + (t.getAttribute('data-ord') || '0') : 't' + (t.getAttribute('data-ord') || '0');
+        };
+        // 筆記區（一個大文字框）：先「對齊模式」（行高＝右邊每一行的高度，每行字對到每一行）；放不下就「緊縮模式」（行高 1.05、字級由大往小）
+        const fitNote = (nt) => {
+            nt.style.fontSize = ''; nt.style.lineHeight = ''; nt.classList.remove('over');
+            if (!nt.value) return;
+            const H = nt.clientHeight;
+            if (fits(nt, H)) return;
+            nt.style.lineHeight = '1.05';
+            let size = parseFloat(getComputedStyle(nt).fontSize);
+            for (; size >= MIN_FS; size -= 0.5) { nt.style.fontSize = size + 'px'; if (fits(nt, H)) return; }
+            nt.style.fontSize = MIN_FS + 'px';
+            nt.classList.add('over');
         };
         const fitBlock = (pt) => {
-            const tas = [...pt.querySelectorAll('textarea.tx')];
+            pt.querySelectorAll('textarea.nt, textarea.tall').forEach(fitNote);
+            const tas = [...pt.querySelectorAll('textarea.tx:not(.tall)')];
             if (!tas.length) return;
             tas.forEach((t) => { t.style.fontSize = ''; t.style.paddingTop = ''; t.style.lineHeight = ''; t.classList.remove('over'); });
             const groups = {};
@@ -623,15 +694,22 @@ ${sideHtml(patients)}
         const fitAll = () => {
             document.querySelectorAll('.page').forEach((page) => {
                 const header = page.querySelector('.hdr');
-                const count = page.querySelectorAll('.pt').length;
+                // 這頁共幾行（每位病人＝資訊行＋各行）。沒人加行時＝4×病人數，結果與原本「依病人數縮排」相同；有加行時以實際行數算
+                const lines = [...page.querySelectorAll('.pt')].reduce((n, pt) => n + 1 + pt.querySelectorAll('.ln:not(.info)').length, 0);
                 const mm = 96 / 25.4;
                 const available = 283 * mm - header.getBoundingClientRect().height;
-                const height = Math.max(48, Math.min(24 * mm, available / count));
-                page.style.setProperty('--pt-height', height + 'px');
-                page.style.height = Math.max(297 * mm, header.getBoundingClientRect().height + height * count + 14 * mm) + 'px';
+                const lh = Math.max(12, Math.min(6 * mm, available / lines));
+                page.style.setProperty('--lh', lh + 'px');
+                page.style.height = Math.max(297 * mm, header.getBoundingClientRect().height + lh * lines + 14 * mm) + 'px';
             });
             document.querySelectorAll('.pt').forEach(fitBlock);
             document.querySelectorAll('input.lab,input.u').forEach(fit);
+            // 病人資訊行（床號、姓名、性別年齡、病歷號、入院日）：右邊還有預出院與 VS／R，放不下時整行縮小字型而不是把入院日截掉
+            document.querySelectorAll('.il').forEach((il) => {
+                il.style.fontSize = '';
+                let size = parseFloat(getComputedStyle(il).fontSize);
+                while (il.scrollWidth > il.clientWidth + 1 && size > 7) { size -= 0.5; il.style.fontSize = size + 'px'; }
+            });
             alignStaff();
         };
         let fitQueued = false;
@@ -639,14 +717,160 @@ ${sideHtml(patients)}
         const staffState = installStaffHeaders(document, store, save, fill, fitSoon, staffHash, nk);
         fitAll();
         setTimeout(fitAll, 300);
-        window.addEventListener('load', fitAll);
-        window.addEventListener('beforeprint', fitAll);
+        wl('load', fitAll);
+        wl('beforeprint', fitAll);
         save();
+        // ─── 單元（標籤區「標籤＋填寫」、勾選區「一對 ☐＋待辦」）───
+        //   每位病人每區一份有順序的清單（存資料鍵 id，沿用行 id；標籤預設＝各行 id，勾選預設＝空），由上往下壓縮排列：
+        //   第 j 個單元放在第 j 行，刪掉一個後面的往上遞補，最後一個延伸到最後一行；單元數不能超過行數。
+        //   「⋮」點一下 → 移除（有內容先確認）；空位的虛線「＋」新增。HTML 只在這裡產生（伺服器端只給空的 .c2／.c3）。
+        const tall = (span) => (span > 1 ? ' tall' : '');
+        const sfx = (i) => (i ? `_${i}` : '');
+        const UH = '<span class="uh" title="點一下可移除">⋮</span>';
+        const taJs = (key, cls, ord) => `<textarea class="${cls}" data-k="${key}" data-ord="${ord}" rows="1" autocomplete="off" spellcheck="false"></textarea>`;
+        const cellJs = (id, r, i, span) => `<div class="cell"><input type="checkbox" class="bx" data-k="p:${id}:c${r}${sfx(i)}">${taJs(`p:${id}:t${r}${sfx(i)}`, 'tx td' + tall(span), i)}</div>`;
+        const cKeys = (id, k) => [0, 1].flatMap((i) => [`p:${id}:c${k}${sfx(i)}`, `p:${id}:t${k}${sfx(i)}`]);
+        const UNITS = {
+            l: { store: '__lu', sel: '.c2', html: (id, k, span, j) => `<div class="lunit" data-u="${j}" style="--span:${span}">${UH}<input class="lab" data-k="p:${id}:l${k}" autocomplete="off" spellcheck="false">${taJs(`p:${id}:f${k}`, 'tx' + tall(span), 0)}</div>`,
+                keys: (id, k) => ['l', 'f', 'a'].map((c) => `p:${id}:${c}${k}`), used: (id, k) => !!(store[`p:${id}:f${k}`] || '').trim() },
+            c: { store: '__cu', sel: '.c3', html: (id, k, span, j) => `<div class="cunit" data-u="${j}" style="--span:${span}">${UH}${cellJs(id, k, 0, span)}${cellJs(id, k, 1, span)}</div>`,
+                keys: cKeys, used: (id, k) => cKeys(id, k).some((key) => (typeof store[key] === 'string' ? store[key].trim() : store[key])) },
+        };
+        const uMap = (kind) => store[UNITS[kind].store] || (store[UNITS[kind].store] = {});
+        const uDefault = (kind, id) => (kind === 'l' ? [...rowIdsOf(id)] : []);
+        const uList = (kind, id) => { const v = uMap(kind)[id]; return v ? [...v] : uDefault(kind, id); };
+        const uSave = (kind, id, list) => {
+            const m = uMap(kind), def = uDefault(kind, id);
+            if (list.length === def.length && list.every((k, i) => k === def[i])) delete m[id]; else m[id] = list;
+        };
+        const refreshAll = () => all.splice(0, all.length, ...document.querySelectorAll('[data-k]'));
+        const renderColumn = (kind, pt) => {
+            const id = pt.getAttribute('data-id'), u = UNITS[kind], list = uList(kind, id);
+            const rowsEls = [...pt.querySelectorAll('.ln:not(.info)')];
+            rowsEls.forEach((ln, j) => {
+                const box = ln.querySelector(u.sel);
+                let html = '';
+                if (j < list.length) {
+                    const span = j === list.length - 1 ? rowsEls.length - j : 1;   // 最後一個單元延伸到最後一行
+                    html += u.html(id, list[j], span, j);
+                    if (span > 1) html += '<button type="button" class="cadd cov" title="新增一組">＋</button>';   // 在最後一個單元下面（第一個被蓋住的行）新增
+                }
+                box.innerHTML = html + '<button type="button" class="cadd" title="新增一組">＋</button>';
+                box.classList.toggle('none', j === 0 && !list.length);
+                box.querySelectorAll('[data-k]').forEach(fill);
+            });
+            refreshAll();
+        };
+        const uAdd = (kind, pt) => {
+            const id = pt.getAttribute('data-id'), list = uList(kind, id);
+            const cand = rowIdsOf(id).find((k) => !list.includes(k));
+            if (cand === undefined) { toast('單元數不能超過行數（先用最後一行右側的＋加一行）'); return; }
+            list.push(cand);
+            uSave(kind, id, list); renderColumn(kind, pt);
+            fitBlock(pt); save();
+        };
+        const uDelete = (kind, pt, ord) => {
+            const id = pt.getAttribute('data-id'), u = UNITS[kind], list = uList(kind, id), k = list[ord];
+            if (k === undefined) return;
+            if (u.used(id, k) && !confirm('這一組有填寫（或勾選）的內容，刪除後無法復原，確定要刪除嗎？')) return;
+            u.keys(id, k).forEach((key) => { delete store[key]; });
+            list.splice(ord, 1);
+            uSave(kind, id, list); renderColumn(kind, pt);
+            fitBlock(pt); save();
+        };
+        const uMenu = document.createElement('div');
+        uMenu.className = 'cgmenu';
+        uMenu.hidden = true;
+        document.body.appendChild(uMenu);
+        const ctxOf = (box) => ({ pt: box.closest('.pt'), kind: box.classList.contains('c2') ? 'l' : 'c' });
+        // 把手「⋮」：點一下 → 只有「移除」一個選項（有內容會再確認）
+        const openMenu = (handle, label, act) => {
+            uMenu.textContent = '';
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = label;
+            b.onclick = () => { uMenu.hidden = true; act(); };
+            uMenu.appendChild(b);
+            uMenu.hidden = false;
+            const rc = handle.getBoundingClientRect();
+            uMenu.style.left = (Math.min(rc.left, document.documentElement.clientWidth - uMenu.offsetWidth - 8) + window.scrollX) + 'px';
+            uMenu.style.top = (rc.bottom + window.scrollY + 2) + 'px';
+        };
+        const openUnitMenu = (handle) => {
+            const unit = handle.parentElement, { pt, kind } = ctxOf(unit.parentElement), ord = +unit.getAttribute('data-u');
+            openMenu(handle, '移除', () => uDelete(kind, pt, ord));
+        };
+        // ─── 行（cc／#.）增減：每位病人最後一行右側的「＋」「−」＝在最後新增一行／移除最後一行（至少保留 MIN_ROWS 行）。
+        //   行以「行 id」（0–9，資料鍵用）記在 store.__rows[病人id]，順序＝畫面由上到下，預設 [0,1,2]；
+        //   第一行標 cc、其餘標 #.。改完通知病房列表分頁整張重新排版（病人放不下就移到下一頁）。
+        const rowsMap = () => store.__rows || (store.__rows = {});
+        const rowIdsOf = (id) => rowsMap()[id] || cfg.defaultRows;
+        const setRowIds = (id, list) => {
+            const def = cfg.defaultRows;
+            if (list.length === def.length && list.every((v, i) => v === def[i])) delete rowsMap()[id]; else rowsMap()[id] = list;
+        };
+        const askRepaginate = (revert) => {
+            save();
+            const fail = () => { revert(); save(); toast(DEAD); };
+            if (!openerOk()) { fail(); return; }
+            window.opener.postMessage({ rs: 'repaginate', token: tokenOf() }, location.origin);
+            ackSeq = 'repag';
+            clearTimeout(ackTimer);
+            ackTimer = setTimeout(() => { if (ackSeq === 'repag') fail(); }, 2500);
+        };
+        const addRow = (pt, ord) => {
+            const id = pt.getAttribute('data-id'), prev = [...rowIdsOf(id)];
+            if (prev.length >= cfg.maxRows) { toast(`每位病人最多 ${cfg.maxRows} 行`); return; }
+            const newId = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].find((n) => !prev.includes(n));
+            const list = [...prev];
+            list.splice(ord, 0, newId);
+            setRowIds(id, list);
+            askRepaginate(() => setRowIds(id, prev));
+        };
+        const delRow = (pt, ord) => {
+            const id = pt.getAttribute('data-id'), prev = [...rowIdsOf(id)];
+            if (prev.length <= cfg.minRows) { toast(`至少要保留 ${cfg.minRows} 行`); return; }
+            const next = prev.filter((_, i) => i !== ord);
+            // 單元數不能超過行數：行少一行後多出來的單元（標籤預設是每行一個；有自訂清單時是清單尾端）要拿掉，資料一起刪
+            const plan = ['l', 'c'].map((kind) => {
+                const had = uMap(kind)[id], before = uList(kind, id);
+                const after = had ? before.slice(0, next.length) : (kind === 'l' ? [...next] : []);
+                return { kind, had: had && [...had], after, drop: before.filter((k) => !after.includes(k)) };
+            });
+            const dropKeys = plan.flatMap((q) => q.drop.flatMap((k) => UNITS[q.kind].keys(id, k)));
+            const used = plan.some((q) => q.drop.some((k) => UNITS[q.kind].used(id, k)));
+            if (used && !confirm('這一行會一併拿掉最後的單元，其中有填寫（或勾選）的內容，刪除後無法復原，確定要刪除嗎？')) return;
+            const removed = {};
+            dropKeys.forEach((key) => { if (key in store) { removed[key] = store[key]; delete store[key]; } });
+            setRowIds(id, next);
+            plan.forEach((q) => uSave(q.kind, id, q.after));
+            askRepaginate(() => {
+                setRowIds(id, prev);
+                Object.assign(store, removed);
+                plan.forEach((q) => { const m = uMap(q.kind); if (q.had) m[id] = q.had; else delete m[id]; });
+            });
+        };
+        document.addEventListener('click', (ev) => {
+            const t = ev.target.closest ? ev.target : null;
+            if (!t) return;
+            const rowDel = t.closest('.rdel');
+            if (rowDel) { uMenu.hidden = true; const pt = rowDel.closest('.pt'); delRow(pt, rowIdsOf(pt.getAttribute('data-id')).length - 1); return; }   // 最後一行右側的「−」＝移除最後一行（有內容會先確認）
+            const rowAdd = t.closest('.radd');
+            if (rowAdd) { uMenu.hidden = true; const pt = rowAdd.closest('.pt'); addRow(pt, rowIdsOf(pt.getAttribute('data-id')).length); return; }   // 最後一行右側的「＋」＝在最後新增一行
+            const add = t.closest('.cadd');
+            if (add) { const { pt, kind } = ctxOf(add.parentElement); uAdd(kind, pt); return; }   // 區域被移除光時的「＋」（讓移除可以復原）
+            const h = t.closest('.uh');
+            if (h) { openUnitMenu(h); return; }
+            if (!t.closest('.cgmenu')) uMenu.hidden = true;
+        });
+        document.querySelectorAll('.pt').forEach((pt) => { renderColumn('l', pt); renderColumn('c', pt); });
+        fitAll();
+        ['l', 'c'].forEach((kind) => { const m = uMap(kind); Object.keys(m).forEach((id) => { if (!document.querySelector(`.pt[data-id="${CSS.escape(id)}"]`)) delete m[id]; }); });
+
         // ─── 標籤＝資料類別 → 自動帶入最新結果 ───
         // 標籤是 Abx／TPR／O2／Tubes／GCS 時，同一行的填寫欄自動放入右側面板抓到的該類最新資料（多筆時放「全部」那一顆）。
         // 防呆：只在填寫欄是空的、或內容仍是「上次自動帶入的原文」（store 的 a 鍵）時才換成新結果；使用者自己改過的不覆蓋。
         // 資料晚到或重新抓取時，符合條件的欄位也會自動更新（昨天自動帶入、今天沒人改過的舊結果會被今天的取代，不會殘留）。
-        const AUTO_CATS = { ABX: 'abx', TPR: 'tpr', O2: 'o2', TUBES: 'tubes', GCS: 'gcs' };
+        const AUTO_CATS = { ABX: 'abx', TPR: 'tpr', O2: 'o2', TUBES: 'tubes', GCS: 'gcs', IO: 'io' };
         const panelText = (pid, key) => {   // 字串＝有資料；''＝這類沒有資料；null＝還沒載入完或失敗
             const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
             const cell = sp && sp.querySelector('.sc[id$="-' + key + '"]');
@@ -657,11 +881,13 @@ ${sideHtml(patients)}
         };
         let noAuto = false;   // 拖曳放入時暫停（拖進去的是使用者選的資料塊，不要被自動帶入蓋掉或誤報「已有內容」）
         const applyAuto = (f) => {
+            applyAuto.changed = false; applyAuto.label = '';
             if (noAuto) return 'edited';
-            const m = (f.getAttribute('data-k') || '').match(/^p:(.*):f(\d)$/);
+            const m = (f.getAttribute('data-k') || '').match(/^p:(.*):f(\d)(_\d+)?$/);
             if (!m) return 'nocat';
-            const lab = all.find((o) => o.getAttribute('data-k') === `p:${m[1]}:l${m[2]}`);
-            const akey = `p:${m[1]}:a${m[2]}`;
+            const sfx = m[3] || '';
+            const lab = all.find((o) => o.getAttribute('data-k') === `p:${m[1]}:l${m[2]}${sfx}`);
+            const akey = `p:${m[1]}:a${m[2]}${sfx}`;
             const last = store[akey];
             const unedited = !f.value || f.value === last;
             const cat = lab && AUTO_CATS[lab.value.trim().toUpperCase()];
@@ -677,10 +903,27 @@ ${sideHtml(patients)}
             const text = panelText(m[1], cat);
             if (text === null) return 'pending';
             if (!unedited) return 'edited';
-            if (f.value !== text) set(text); else if (text) store[akey] = text;
+            if (f.value !== text) { set(text); if (text) { applyAuto.changed = true; applyAuto.label = lab.value.trim(); } } else if (text) store[akey] = text;
             return text ? 'applied' : 'none';
         };
-        const autoAll = () => { document.querySelectorAll('textarea[data-k]').forEach((f) => { if (/:f\d$/.test(f.getAttribute('data-k'))) applyAuto(f); }); save(); };
+        // 自動更新完跳訊息：1.2 秒內的更新合併成一則（資料是分批到的），例如「已依最新資料更新：Abx、TPR（3 個欄位）」
+        const updated = { labels: new Set(), n: 0, timer: null };
+        const noteUpdate = (label) => {
+            updated.labels.add(label); updated.n += 1;
+            clearTimeout(updated.timer);
+            updated.timer = setTimeout(() => {
+                toast(`已依最新資料更新：${[...updated.labels].join('、')}（${updated.n} 個欄位）`, true);
+                updated.labels.clear(); updated.n = 0;
+            }, 1200);
+        };
+        const autoAll = () => {
+            document.querySelectorAll('textarea[data-k]').forEach((f) => {
+                if (!/:f\d(_\d+)?$/.test(f.getAttribute('data-k'))) return;
+                applyAuto(f);
+                if (applyAuto.changed) noteUpdate(applyAuto.label);
+            });
+            save();
+        };
         // ─── 病人圖示：NEW（住院天數）、藥瓶（有抗生素）、管路（有管路）、吹氣（SpO2 有給氧裝置）；點一下手動開關（存在 p:<id>:ic:<名> ）
         const panelHas = (pid, key, sel) => {
             const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
@@ -713,7 +956,7 @@ ${sideHtml(patients)}
         let autoQueued = false;
         const side = document.querySelector('.side');
         if (side) {
-            new MutationObserver(() => { if (autoQueued) return; autoQueued = true; requestAnimationFrame(() => { autoQueued = false; autoAll(); updateIcons(); }); })
+            new MutationObserver(() => { if (autoQueued) return; autoQueued = true; setTimeout(() => { autoQueued = false; autoAll(); updateIcons(); }, 60); })   // setTimeout：分頁在背景時 rAF 會暫停，資料就不會更新
                 .observe(side, { childList: true, subtree: true });
         }
         autoAll();
@@ -725,13 +968,14 @@ ${sideHtml(patients)}
             if (!k) return;
             store[k] = el.type === 'checkbox' ? el.checked : el.value;
             if (k.startsWith('h:')) el.setAttribute('data-staff-manual', '1');
-            if (el.tagName === 'TEXTAREA' && /\n/.test(el.value)) { el.value = el.value.replace(/\s*\n+\s*/g, ' '); store[k] = el.value; }   // 貼上含換行的文字 → 換成空格
+            if (el.tagName === 'TEXTAREA' && !el.classList.contains('nt') && !el.classList.contains('tall') && /\n/.test(el.value)) { el.value = el.value.replace(/\s*\n+\s*/g, ' '); store[k] = el.value; }   // 貼上含換行的文字 → 換成空格
             if (el.tagName === 'TEXTAREA') fitBlock(el.closest('.pt'));
             else if (el.matches('.lab,.u')) fit(el);
-            if (/:l\d$/.test(k)) {
-                const fk = k.replace(/:l(\d)$/, ':f$1');
+            if (/:l\d(_\d+)?$/.test(k)) {
+                const fk = k.replace(/:l(\d)(_\d+)?$/, ':f$1$2');
                 const fEl = all.find((o) => o.getAttribute('data-k') === fk);
                 const res = fEl ? applyAuto(fEl) : 'nocat';
+                if (applyAuto.changed) noteUpdate(applyAuto.label);
                 if (res === 'edited' && !noAuto) toast('填寫欄已有你自己的內容，沒有覆蓋（可拖曳右側資料塊取代）');
                 // 沒有自動資料可帶時（標籤不是資料類別、或這類目前沒資料）→ GCS／MP 的範本
                 const tpl = cfg.templates[el.value.trim().toUpperCase()];
@@ -748,12 +992,11 @@ ${sideHtml(patients)}
         const hide = () => { menu.hidden = true; target = null; };
         document.addEventListener('focusin', (ev) => {
             const el = ev.target;
-            const isLab = el.classList && el.classList.contains('lab');
-            if (!isLab && !(el.classList && el.classList.contains('pre'))) { if (!menu.contains(el)) hide(); return; }
+            if (!(el.classList && el.classList.contains('lab'))) { if (!menu.contains(el)) hide(); return; }
             target = el;
             el.select();
             menu.textContent = '';
-            (isLab ? cfg.options : cfg.presets).forEach((o) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = o; menu.appendChild(b); });
+            cfg.options.forEach((o) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = o; menu.appendChild(b); });
             menu.hidden = false;
             const r = el.getBoundingClientRect();
             const left = Math.min(r.left, document.documentElement.clientWidth - menu.offsetWidth - 8);
@@ -774,9 +1017,9 @@ ${sideHtml(patients)}
         let imeUntil = 0;
         document.addEventListener('compositionend', () => { imeUntil = new Date().getTime() + 80; }, true);
         const isIme = (ev) => ev.isComposing || ev.keyCode === 229 || new Date().getTime() < imeUntil;
-        document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !isIme(ev) && ev.target.tagName === 'TEXTAREA') ev.preventDefault(); });
-        document.addEventListener('keydown', (ev) => { if (isIme(ev)) return; if (ev.key === 'Escape' || ev.key === 'Enter') { hide(); if (document.activeElement) document.activeElement.blur(); } });
-        document.addEventListener('mousedown', (ev) => { if (!menu.contains(ev.target) && !(ev.target.classList && (ev.target.classList.contains('lab') || ev.target.classList.contains('pre')))) hide(); });
+        document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !isIme(ev) && ev.target.tagName === 'TEXTAREA' && !ev.target.classList.contains('nt') && !ev.target.classList.contains('tall')) ev.preventDefault(); });
+        document.addEventListener('keydown', (ev) => { if (isIme(ev)) return; if (ev.key === 'Enter' && ev.target.classList && (ev.target.classList.contains('nt') || ev.target.classList.contains('tall'))) return; if (ev.key === 'Escape' || ev.key === 'Enter') { hide(); if (document.activeElement) document.activeElement.blur(); } });
+        document.addEventListener('mousedown', (ev) => { if (!menu.contains(ev.target) && !(ev.target.classList && ev.target.classList.contains('lab'))) hide(); });
         // 欄寬比例（全域，存起來下次沿用）
         const rl = document.getElementById('rl');
         const hs = [document.getElementById('h1'), document.getElementById('h2')];
@@ -824,7 +1067,7 @@ ${sideHtml(patients)}
             const inp = ev.target.closest && ev.target.closest('input,textarea');
             if (!inp) return null;
             const pt = inp.closest('.pt');
-            return { inp, ok: !!pt && pt.getAttribute('data-id') === drag.pid && inp.classList.contains('tx') };
+            return { inp, ok: !!pt && pt.getAttribute('data-id') === drag.pid && (inp.classList.contains('tx') || inp.classList.contains('nt')) };
         };
         document.addEventListener('dragstart', (ev) => {
             const c = ev.target.closest && ev.target.closest('.chip');
@@ -851,11 +1094,11 @@ ${sideHtml(patients)}
             if (!r) return;
             if (!r.ok) { ev.preventDefault(); ev.stopPropagation(); toast('這是另一位病人的資料，不能放在這裡（請放進同一位病人的欄位）'); return; }
             const k = r.inp.getAttribute('data-k') || '';
-            if (!/:f\d$/.test(k)) return;   // 其他欄位：瀏覽器原生放入文字
+            if (!/:f\d(_\d+)?$/.test(k)) return;   // 其他欄位：瀏覽器原生放入文字
             ev.preventDefault(); ev.stopPropagation();
             const text = ev.dataTransfer.getData('text/plain');
             setVal(r.inp, text);
-            const lab = all.find((o) => o.getAttribute('data-k') === k.replace(/:f(\d)$/, ':l$1'));
+            const lab = all.find((o) => o.getAttribute('data-k') === k.replace(/:f(\d)(_\d+)?$/, ':l$1$2'));
             if (lab && drag.cat) { noAuto = true; setVal(lab, drag.cat); noAuto = false; }
         }, true);
         document.addEventListener('click', (ev) => {
@@ -883,8 +1126,8 @@ ${sideHtml(patients)}
         alignStaff = align;
         align();
         setTimeout(align, 300);
-        window.addEventListener('resize', align);
-        window.addEventListener('load', align);
+        wl('resize', align);
+        wl('load', align);
         // 右側面板寬度：拖左邊緣調整，存起來沿用
         const sw = document.getElementById('rz');
         const setSw = (px) => document.body.style.setProperty('--sw', px + 'px');
@@ -915,7 +1158,7 @@ ${sideHtml(patients)}
         const DEAD = '⚠ 病房列表分頁已重新整理、關閉或登入逾時，這裡無法再抓資料。請回病房列表重新按「查房單」。';
         const tokenOf = () => document.documentElement.getAttribute('data-rs-token');
         let pingN = 0, pongN = 0, ackSeq = null, ackTimer = null;
-        window.addEventListener('message', (ev) => {
+        wl('message', (ev) => {
             if (ev.origin !== location.origin || !ev.data) return;
             if (ev.data.rs === 'staff' && ev.data.token === tokenOf()) { applyStaffHeaders(document, ev.data.fields, staffState); }
             if (ev.data.rs === 'pong') { pongN = Math.max(pongN, ev.data.n); if (warnEl && pongN >= pingN) warnEl.hidden = true; }
@@ -928,7 +1171,7 @@ ${sideHtml(patients)}
             setTimeout(() => { if (pongN < n && warnEl) warnEl.hidden = false; }, 3000);
         };
         setTimeout(ping, 3000);
-        setInterval(ping, 30000);
+        window.__rsIV.push(setInterval(ping, 30000));
         const request = () => {
             if (!cur) return;
             if (!openerOk()) { alert('病房列表分頁已關閉，無法抓取。請回病房列表重新按「查房單」。'); return; }
@@ -970,7 +1213,7 @@ ${sideHtml(patients)}
         // 分區清除：標籤區＝標籤（回預設）＋同行填寫欄；勾選區＝勾選格＋待辦文字
         const clearZone = (re, what) => {
             if (!confirm(`清除所有病人的${what}？`)) return;
-            if (/\[lf\]/.test(re.source)) Object.keys(store).forEach((k) => { if (/^p:.*:a\d$/.test(k)) delete store[k]; });
+            if (/\[lf\]/.test(re.source)) Object.keys(store).forEach((k) => { if (/^p:.*:a\d(_\d+)?$/.test(k)) delete store[k]; });
             all.forEach((el) => {
                 const k = el.getAttribute('data-k');
                 if (!re.test(k)) return;
@@ -980,8 +1223,8 @@ ${sideHtml(patients)}
             fitAll();
             save();
         };
-        document.getElementById('clrl').onclick = () => clearZone(/^p:.*:[lf]\d$/, '標籤區（標籤回到預設、填寫內容清空）');
-        document.getElementById('clrc').onclick = () => clearZone(/^p:.*:[ct]\d(_\d)?$/, '勾選區（勾選與待辦文字）');
+        document.getElementById('clrl').onclick = () => clearZone(/^p:.*:[lf]\d(_\d+)?$/, '標籤區（標籤回到預設、填寫內容清空）');
+        document.getElementById('clrc').onclick = () => clearZone(/^p:.*:[ct]\d(_\d+)?$/, '勾選區（勾選與待辦文字）');
         document.getElementById('clr').onclick = () => {
             if (!confirm('清除所有病人的填寫、待辦、勾選、標籤與頁首欄位？')) return;
             for (const k of Object.keys(store)) if (k.indexOf('p:') === 0 || k.indexOf('h:') === 0) delete store[k];
@@ -1591,7 +1834,7 @@ ${sideHtml(patients)}
     async function fetchPanel(w, patients, state) {
         if (state.running) return;
         state.running = true;
-        const set = (id, html) => { if (!w.closed) { const el = w.document.getElementById(id); if (el) el.innerHTML = html; } };
+        const set = (id, html) => { state.cache[id] = html; if (!w.closed) { const el = w.document.getElementById(id); if (el) el.innerHTML = html; } };
         const prog = (t) => set('sd-prog', esc(t));
         const t0 = nowMs();
         const now = nowMs();
@@ -1647,16 +1890,28 @@ ${sideHtml(patients)}
         const two = (n) => String(n).padStart(2, '0');
         const today = `${d.getMonth() + 1}/${d.getDate()}`;
         const stamp = `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
-        w.document.open();
-        w.document.write(pageShell(patients, today, stamp));
-        w.document.close();
         // 抓取在這個分頁（病房列表）跑；面板的「重新抓取」按鈕用 postMessage 通知這裡（比對 token，不依賴 source 物件）
-        const state = { running: false };
+        const state = { running: false, cache: {} };   // cache：右側面板各格的內容（整張重新排版後原樣放回，不重抓）
         const token = String(nowMs()) + Math.random().toString(36).slice(2);
-        w.document.documentElement.setAttribute('data-rs-token', token);
+        const reply = (m) => { try { if (!w.closed) w.postMessage(m, location.origin); } catch (e) { /* 對方視窗已關 */ } };
+        // 整張排版：依「每位病人的行數」分頁（沒人加行＝每頁 11 位）。第一次開啟與每次加／刪行都走這裡；
+        // 文件被重寫後頁面腳本會重新初始化，使用者填的內容都在 localStorage（輸入當下就存），所以不會掉。
+        const render = () => {
+            const y = w.scrollY || 0;
+            let rowsMap = {};
+            try { rowsMap = (JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}).__rows || {}; } catch (e) { rowsMap = {}; }
+            const groups = paginate(patients, rowsMap);
+            w.document.open();
+            w.document.write(pageShell(patients, today, stamp, groups, rowsMap));
+            w.document.close();
+            w.document.documentElement.setAttribute('data-rs-token', token);
+            Object.entries(state.cache).forEach(([id, html]) => { const el = w.document.getElementById(id); if (el) el.innerHTML = html; });
+            w.scrollTo(0, y);
+            buildStaffHeaders(patients, groups).then((fields) => reply({ rs: 'staff', token, fields }));
+        };
+        render();
         const cache = {};   // `${idx}|${kind}` → { at, data }：3 分鐘內重複點不再抓；空結果不快取（可能是登入逾時造成的假空）
         const CACHE_MS = 3 * 60000;
-        const reply = (m) => { try { if (!w.closed) w.postMessage(m, location.origin); } catch (e) { /* 對方視窗已關 */ } };
         const isEmpty = (kind, d) => (kind === 'lab' ? (d.empty || d.noTable || !d.items.length) : kind === 'pn' ? d.none : !d.length);
         const showDetail = async (d) => {
             const dlg = w.closed ? null : w.document.getElementById('dlg');
@@ -1687,10 +1942,10 @@ ${sideHtml(patients)}
         window.addEventListener('message', (ev) => {
             if (ev.origin !== location.origin || !ev.data || ev.data.token !== token) return;
             if (ev.data.rs === 'ping') reply({ rs: 'pong', n: ev.data.n });
+            else if (ev.data.rs === 'repaginate') { reply({ rs: 'ack', seq: 'repag' }); render(); }
             else if (ev.data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
             else if (ev.data.rs === 'detail') { reply({ rs: 'ack', seq: ev.data.seq }); showDetail(ev.data); }
         });
-        buildStaffHeaders(patients).then((fields) => reply({ rs: 'staff', token, fields }));
         fetchPanel(w, patients, state);
     }
 
