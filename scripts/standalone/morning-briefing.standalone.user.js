@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.9.1-standalone
+// @version      1.9.2-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -236,177 +236,38 @@ function isOnOxygen(inside) {
 }(typeof window !== 'undefined' ? window : globalThis));
 
 
-// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個請求、預設 12 秒逾時，可由 options.timeoutMs 覆寫）──
-(function () {
-    'use strict';
-    if (window.NTUHAsmx) return;
-    let active = 0;
-    const queue = [];
-    async function withSlot(task) {
-        if (active >= 3) await new Promise((release) => queue.push(release));
-        active += 1;
-        try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
-    }
-    async function outerData(datatype, options) {
-        const context = (options && options.context) || {};
-        const url = window.location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '')
-            + 'ProgressNoteControl/Service/OuterData.asmx/GetOuterDataTable';
-        return withSlot(async () => {
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), (options && options.timeoutMs) || 12000);
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
-                    body: JSON.stringify({ jsonstring: JSON.stringify(context), datatype }),
-                    signal: ctrl.signal,
-                    credentials: 'same-origin',
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const j = await res.json();
-                let v = j && j.d;
-                if (typeof v === 'string') { try { v = JSON.parse(v); } catch { /* keep */ } }
-                return (v && v.Html) || '';
-            } finally { clearTimeout(timer); }
-        });
-    }
-    const parseHtml = (html) => new DOMParser().parseFromString(html || '', 'text/html');
-    window.NTUHAsmx = { outerData, parseHtml };
-})();
+// ── 內嵌：抓取共用層 ──
+// ==============================================================
+// NTUH 抓取共用層（病房列表頁用）：PersonID、藥歷抗生素、管路、影像報告解析
+// --------------------------------------------------------------
+// 晨間簡報（morning-briefing）與查房單（rounds-sheet）原本各有一份，抽到這裡共用。
+// 都在病房列表（OpenWard.aspx）這個分頁執行：要用它網址上的 SESSION 與病人清單 Cookie。
+//
+// 用法（Tampermonkey）：
+//   // @require https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-fetch.js
+//   之後用全域的 NTUHFetch；node 測試則 require('./ntuh-fetch.js')（解析函式需要 DOMParser）。
+//
+// 注意：@require 會被 Tampermonkey 快取；改這支後要讓使用者更新外部資源，
+//       兩支腳本也要各自 bump @version。
+// ==============================================================
 
-// ── 主程式 ──
-
-(function () {
+/* global module */
+(function (root) {
     'use strict';
 
-    /* global NTUHAsmx, NTUHNews2 */
-
-    const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
-    // 為什麼分兩階段（新竹實測 2026-09-30，11 位病人）：處方頁＋管路單獨測時加起來約 28 秒，剛好等於不論同時數怎麼調
-    // 的總時間（2 個、3 個、全部同時開跑都是 28～30 秒）→ 這兩個重頁面在伺服器端幾乎是一個接一個處理，
-    // 同時發再多也不會變快，只會讓 vitals／影像這種輕請求排在後面（全部同時開跑時平均等 17～19 秒）。
-    // 所以由我們決定順序：先抓完所有病人的輕請求（階段一），再抓重的（階段二，依病人順序小批處理）。
-    const HEAVY_POOL = 2;   // 階段二同時處理的病人數
-    // OuterData 逾時：請求要在瀏覽器／伺服器排隊，逾時計時包含排隊時間，所以放寬到 30 秒（lib 預設 12 秒）。
-    const OUTER_TIMEOUT_MS = 30000;
-
-    // HIS 的 date.js 會覆寫 Date.now，取毫秒一律走這個
+    // HIS 的 date.js 會覆寫 Date.now（回傳 Date 物件），一律用 new Date().getTime()
     const nowMs = () => new Date().getTime();
-    const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
     const two = (n) => String(n).padStart(2, '0');
-    const fmt = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
+    const parseHtml = (html) => new DOMParser().parseFromString(html || '', 'text/html');
+    const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
 
-    // ═══════════════════════════════════════════════════════════
-    // 病房列表 → 病人清單
-    // ═══════════════════════════════════════════════════════════
-    // 元素 id 前綴會變（NTUHWeb1／NTUHWeb9…），一律用尾綴選取
-
-    function readPatients() {
-        const table = document.querySelector('[id$="DataGridAccountList"]');
-        if (!table) return [];
-        const out = [];
-        for (const tr of [...table.rows].slice(1)) {
-            const news = tr.querySelector('[id$="NEWSLabel"]');
-            const caseno = news && news.getAttribute('caseno');
-            if (!caseno) continue;
-            const cells = tr.cells;
-            const labTitle = (tr.querySelector('[id$="LinkForthMedicalReport"]') || {}).title || '';
-            out.push({
-                caseno,                                            // = AccountIdse（已實測）
-                chartNo: news.getAttribute('chartno') || txt(tr.querySelector('[id$="PatChartNo"]')),
-                ward: news.getAttribute('wardcode') || txt(tr.querySelector('[id$="WardLabel"]')),
-                name: txt(tr.querySelector('[id$="LinkPatientName"]')),
-                bed: [txt(tr.querySelector('[id$="RoomLabel"]')), txt(tr.querySelector('[id$="BedLabel"]'))].filter(Boolean).join('-'),
-                age: txt(tr.querySelector('[id$="PatientAge"]')),
-                sex: txt(tr.querySelector('[id$="PatientSex"]')),
-                attending: txt(cells[7]),
-                resident: txt(cells[8]),
-                hospDay: (tr.innerHTML.match(/住院總天數\s*[:：]\s*(\d+)/) || [])[1] || '',
-                labTitle,
-            });
-        }
-        return out;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // 時間窗
-    // ═══════════════════════════════════════════════════════════
-    // 週一自動回溯到週五晚上，涵蓋整個週末
-
-    const REF_HOUR = 8; // 圖表參考資料起點（前一日幾點）
-
-    function briefingWindow(startHour) {
-        const n = new Date(nowMs());
-        const daysBack = n.getDay() === 1 ? 3 : 1;
-        const from = new Date(n.getFullYear(), n.getMonth(), n.getDate() - daysBack, startHour, 0).getTime();
-        // 圖表另外往前多看到前一日 08:00 當參考基準（異常判斷、給氧、抽血、影像仍用昨夜時間窗）
-        const ref = new Date(n.getFullYear(), n.getMonth(), n.getDate() - daysBack, REF_HOUR, 0).getTime();
-        return { fromMs: from, refFromMs: Math.min(ref, from), toMs: n.getTime(), daysBack };
-    }
-
-    // 列表 title「最新檢驗結果時間:HH:MM (N 小時內)」只有時分，往回推到最近的過去時間點
-    function labTimeMs(title, now) {
-        const m = title.match(/最新檢驗結果時間\s*[:：]\s*(\d{1,2}):(\d{2})/);
-        if (!m) return null;
-        const d = new Date(now);
-        d.setHours(+m[1], +m[2], 0, 0);
-        let ms = d.getTime();
-        if (ms > now) ms -= 86400000;
-        return ms;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // 單一病人：抓資料 + 判讀
-    // ═══════════════════════════════════════════════════════════
-
-    // SESSION：病房列表網址上帶著（頁內每個連結都帶）。實測：不帶時點連結會跳到需要登入的頁面，
-    // 帶上後可正常開啟（新竹分院）。只確認了這個結果，機制未確認，因此不在此推測原因。
-    // 只放進連結的 href，不顯示、不寫入儲存空間。
+    // SESSION：病房列表網址上帶著；只放進請求網址與連結，不顯示、不存
     function pageSession() {
         const m = location.search.match(/[?&]session=([^&]+)/i)
             || document.documentElement.innerHTML.match(/SESSION=([a-zA-Z0-9]{34})/i);
         return m ? m[1] : '';
-    }
-
-    // 檢驗報告頁（與 progress-note-data-helper 的 [Lab] 同一頁）：靠 ChartNo 定位病人，
-    // AccountIDSE/PersonID 都不需要；IntervalDay 為負數＝往前推幾天（-13 ≈ 兩週）。
-    function labPageUrl(p) {
-        const ses = pageSession();
-        return location.origin + '/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx'
-            + `?${ses ? 'SESSION=' + encodeURIComponent(ses) + '&' : ''}PatClass=I&WardCode=${encodeURIComponent(p.ward || '')}&ChartNo=${encodeURIComponent(p.chartNo)}`
-            + '&HospitalCode=T0&Seed=&IntervalDay=-13';
-    }
-
-    function ctxOf(p) {
-        // 實測只需 AccountIdse（其餘可留空）；ChartNo 一併帶上
-        return { AccountIdse: p.caseno, PersonId: '', ChartNo: p.chartNo, DeptCode: '', EmpDeptCode: '' };
-    }
-
-    function vitalTexts(html) {
-        const doc = NTUHAsmx.parseHtml(html);
-        const spans = [...doc.querySelectorAll('[id$="_Content"]')].map(txt);
-        if (spans.length) return spans;
-        return [...doc.querySelectorAll('tr')].map(txt);
-    }
-
-    function parsePacs(html, fromMs) {
-        const doc = NTUHAsmx.parseHtml(html);
-        const fromDay = new Date(fromMs); fromDay.setHours(0, 0, 0, 0);
-        const out = [];
-        for (const tr of doc.querySelectorAll('tbody tr')) {
-            const content = [...tr.querySelectorAll('td')].map((td) => td.textContent).find((t) => t.includes('@@@'));
-            if (!content) continue;
-            const segs = content.split('@@@').map((s) => s.replace(/\s+/g, ' ').trim());
-            const head = segs[0] || '';
-            const dm = head.match(/(\d{4})\/(\d{2})\/(\d{2})/);
-            if (!dm) continue;
-            if (new Date(+dm[1], +dm[2] - 1, +dm[3]).getTime() < fromDay.getTime()) continue; // 影像只有日期，以日為單位
-            const title = head.replace(/^\d{4}\/\d{2}\/\d{2}\s*/, '').replace(/\s*\(V\d+\)\s*$/, '').trim();
-            const report = (segs[2] || segs[1] || '').slice(0, 1500);
-            out.push({ date: `${+dm[2]}/${+dm[3]}`, title, report });
-        }
-        return out;
     }
 
     // ─── 抗生素（MedicationHistory/Default.aspx）────────────────
@@ -455,12 +316,10 @@ function isOnOxygen(inside) {
         };
     }
     const rxGate = makeGate(3);   // 藥歷表單查詢
-    // 管路與醫囑簽收頁共用、一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰；
-    // 醫囑簽收頁也是帶 AccountIDSE 的病人頁面，可能同樣改到伺服器端的「目前病人」，不能插進管路的頁面→handler 之間）
+    // 一律一次一位：管路 handler 靠「最近載入的病人」決定回誰（見 fetchTubes）。
+    // 呼叫端其他「帶 AccountIDSE 的病人頁面」請求（晨間簡報的醫囑簽收頁、查房單的病程紀錄頁）也要走這道閘，
+    // 不能插進管路的頁面→handler 之間。
     const pageGate = makeGate(1);
-
-    const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
-    const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
 
     function medicationHistoryQuery(doc, now) {
         const form = doc.querySelector('form');
@@ -534,14 +393,14 @@ function isOnOxygen(inside) {
                 const url = medicationHistoryUrl(pid);
                 const initial = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
                 if (!initial.ok) throw new Error('HTTP ' + initial.status);
-                let doc = NTUHAsmx.parseHtml(await initial.text());
+                let doc = parseHtml(await initial.text());
                 // 已保存的「全部藥物」選項若觸發 Changed handler，可能清掉抗生素勾選。
                 // 使用回傳的新表單再送一次；仍未套用分類則報錯，不能把其他藥當抗生素。
                 for (let attempt = 0; attempt < 2; attempt++) {
                     const body = medicationHistoryQuery(doc, now);
                     const res = await fetch(url, { method: 'POST', body, credentials: 'same-origin', signal: ctrl.signal });
                     if (!res.ok) throw new Error('HTTP ' + res.status);
-                    doc = NTUHAsmx.parseHtml(await res.text());
+                    doc = parseHtml(await res.text());
                     const selected = [...doc.querySelectorAll('input[type="checkbox"]:checked')]
                         .filter((el) => /_ckb/.test(el.id) && !/_ckbPatientTypeAll$/.test(el.id));
                     if (selected.length === 1 && selected[0].id.endsWith('_ckbAntibiotics')) return parseMedicationHistory(doc, now);
@@ -553,8 +412,116 @@ function isOnOxygen(inside) {
         });
     }
 
-    // ─── 檢驗數值的過濾與分組規則：取自 lab-summary（改動時兩邊要同步）──────────────────
-    // 新竹 LU 科室的項目名是中英混寫、空格不一致 → 用通則去中文＋正規化鍵查表，查不到就回傳去中文的原名（不丟資料）。
+    // ─── 管路（CatheterCare_Handler.aspx）───────────────────────
+    // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
+    // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
+    // 額外參數一律被忽略（新竹實測 2026-09-30）。所以：
+    //   1. 一律一次一位（pageGate=1），先載入該病人的頁面 HTML（不跑頁面 JS，約 0.5 秒）再立刻打 handler（約 0.1 秒）。
+    //   2. 每條管路的 <decorate> 都帶 <caseno>（＝病房列表的 AccountIDSE），逐條驗證，對不上就整批丟棄。
+    // 已知盲點：這位病人若一條管路都沒有，就沒有 caseno 可驗證；此時若有人在別的分頁操作 CatheterCare，
+    // 理論上可能拿到別人的空結果。簡報執行期間不要同時操作 CatheterCare。
+    const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;   // 周邊留置針不列入（CVC／PICC／Port-A 等中央導管要留）
+    const tubeText = (node, tag) => { const e = node.getElementsByTagName(tag)[0]; return e ? e.textContent.trim() : ''; };
+    const parseInsert = (t) => {
+        const m = t.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
+        return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN;
+    };
+
+    async function fetchTubes(p, now) {
+        return pageGate(async () => {
+            const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            try {
+                const opt = { credentials: 'same-origin', signal: ctrl.signal };
+                const page = await fetch(`${dir}CatheterCare.aspx?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}&PatClass=I`, opt);
+                if (!page.ok) throw new Error('管路頁 HTTP ' + page.status);
+                await page.text();
+                const res = await fetch(`${dir}CatheterCare_Handler.aspx?aa=${nowMs()}&mode=getCatheterRecord&catherStatus=UnRemovedOnly`, opt);
+                if (!res.ok) throw new Error('管路資料 HTTP ' + res.status);
+                const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
+                if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('UnRemovedCatheter').length) throw new Error('管路資料格式不符');
+                const decs = [...doc.getElementsByTagName('decorate')];
+                const total = parseInt(tubeText(doc.getElementsByTagName('UnRemovedCatheter')[0], 'TotalCount'), 10);
+                if (Number.isFinite(total) && total !== decs.length) throw new Error(`管路數量不符（${total}／${decs.length}）`);
+                if (decs.some((d) => tubeText(d, 'caseno') !== p.caseno)) throw new Error('管路資料與病人不符，已丟棄');
+                return decs.map((d) => {
+                    const full = tubeText(d, 'CatheterName');
+                    return { full, name: full.replace(/\(.*?\)/g, '').trim() || full, startMs: parseInsert(tubeText(d, 'CatheterInsertDateTime')) };
+                }).filter((x) => x.full && !CATH_PERIPHERAL_RE.test(x.full) && Number.isFinite(x.startMs))
+                    .map((x) => ({ name: x.name, startMs: x.startMs, day: dayNo(x.startMs, now) }))
+                    .sort((a, b) => a.startMs - b.startMs);
+            } catch (e) {
+                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
+            } finally { clearTimeout(timer); }
+        });
+    }
+
+    // ─── 醫囑變更（Nursing/WorkList_OrderCheck.aspx，醫囑簽收頁）──────────
+    // 網址參數 SESSION、PatClass=I、AccountIDSE、PersonID、Hosp=T0、Seed、EMRPop=Y（使用者提供的樣本，2026-10-14）；
+    // Seed 樣本有值、這裡留空（其他頁面留空皆可，此頁未實測）。PersonID 從病房 Cookie 取（只在記憶體內）。
+    // 頁面上方有「未簽收／已簽收／全部」三選一（rbl_SignStatus = N／Y／A），預設不是「全部」：
+    // 只讀預設畫面會漏掉另一種狀態的醫囑（例如護理師還沒簽收的夜間醫囑）。所以 GET 後若不是「全部」，
+    // 就照頁面點選項的方式送一次 postback（__EVENTTARGET = 該選項），切到「全部」（僅含一個月內資料）再解析。
+    // 表格 gv_OrderList：每列 <tr title="開立日：MM/DD HH:MM\n簽收日：yyyy/M/d 下午 hh:mm:ss\n紀錄日：…">，
+    // 欄位依表頭文字對應（類別、狀態、起日、迄日、醫令名稱…），不寫死欄序：未簽收的列可能多一欄勾選框。
+
+    // ─── 影像報告（OuterData pacs）───────────────────────────────
+    // 每列有一格是「日期 標題 (Vn)@@@...@@@報告」。只有日期、沒有時間，所以起點以日為單位。
+    // 報告保留換行（擷取 Impression 與 pre-wrap 顯示要用）、不截長度、不排序：由呼叫端決定。
+    function parsePacs(html, fromMs) {
+        const doc = parseHtml(html);
+        const fromDay = dayStart(fromMs);
+        const out = [];
+        for (const tr of doc.querySelectorAll('tbody tr')) {
+            const content = [...tr.querySelectorAll('td')].map((td) => td.textContent).find((t) => t.includes('@@@'));
+            if (!content) continue;
+            const segs = content.split('@@@').map((x) => x.replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim());
+            const head = (segs[0] || '').replace(/\s+/g, ' ');
+            const dm = head.match(/(\d{4})\/(\d{2})\/(\d{2})/);
+            if (!dm) continue;
+            const ms = new Date(+dm[1], +dm[2] - 1, +dm[3]).getTime();
+            if (ms < fromDay) continue;
+            const title = head.replace(/^\d{4}\/\d{2}\/\d{2}\s*/, '').replace(/\s*\(V\d+\)\s*$/, '').trim();
+            out.push({ ms, date: `${+dm[2]}/${+dm[3]}`, title, report: segs[2] || segs[1] || '' });
+        }
+        return out;
+    }
+
+    const api = {
+        nowMs, dayStart, dayNo, parseHtml,
+        pageSession, personIdFromPatientList,
+        makeGate, rxGate, pageGate,
+        medicationHistoryUrl, medicationHistoryQuery, parseMedicationHistory, fetchAbx,
+        CATH_PERIPHERAL_RE, fetchTubes,
+        parsePacs,
+    };
+
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    else if (!root.NTUHFetch) root.NTUHFetch = api;   // 已載入就不覆蓋（閘門要共用同一份）
+}(typeof window !== 'undefined' ? window : globalThis));
+
+
+// ── 內嵌：檢驗規則 ──
+// ==============================================================
+// 檢驗數值規則與解析（OuterData lab 的 tblLabList）
+// --------------------------------------------------------------
+// 名稱正規化、略過規則、DC 參考範圍、臨床分組：取自 lab-summary（改動時要同步）。
+// 晨間簡報（morning-briefing）與查房單（rounds-sheet）共用。純解析，不碰網路。
+//
+// 用法（Tampermonkey）：
+//   // @require https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/lab-rules.js
+//   之後用全域的 NTUHLab；node 測試則 require('./lab-rules.js')（parseLabList 需要 DOMParser）。
+// ==============================================================
+
+/* global module */
+(function (root) {
+    'use strict';
+
+    const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+    const parseHtml = (html) => new DOMParser().parseFromString(html || '', 'text/html');
+    const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+
     const LAB_CJK_RE = /[⺀-⿟　-〿㐀-䶿一-鿿豈-﫿]+/g;
     const stripCJK = (x) => String(x || '').replace(LAB_CJK_RE, ' ').replace(/\s+/g, ' ').trim();
     const nameKey = (x) => stripCJK(String(x || '').replace(/\(.*?\)/g, ' ')).replace(/[\s.\-_]/g, '').toLowerCase();
@@ -657,19 +624,20 @@ function isOnOxygen(inside) {
     const LAB_BLOOD_CAT_RE = /CBC|hemato|biochem|chem|coag|immun|serolog|tumor|thyroid|endocr/i;
     const LAB_NONBLOOD_CAT_RE = /urin|csf|cerebro|stool|fecal|fluid|gas|culture|smear|cytolog|pathol/i;
 
-    // ─── 檢驗數值（OuterData lab，點開下拉才為該病人載入）────────────────────────────
+    // ─── 檢驗數值（OuterData lab）────────────────────────────
     // 需要 PersonId（從病房 Cookie 取，只在記憶體內用、不顯示、不存）。回傳一張 tblLabList，每列＝一個檢驗結果；
     // 畫面上只有 4 個可見欄（日期 MMDD、類別、項目、科室），數值在後面 5 個隱藏欄：
     // [4] 完整日期 yyyy/MM/dd　[5] 類別　[6] 數值　[7] 項目　[8] 單位（新竹實測 2026-10-05，lab-shape-probe）。
     // 日期只到「日」（沒有時分），所以起點以日為單位；資料沒有異常標記也沒有參考範圍 → 只顯示值，不自己判斷高低。
     // 同一筆可能重複出現（例如血液培養），以（日期、類別、項目、數值、單位）去重。
-    function parseLabList(html, sinceMs) {
-        const doc = NTUHAsmx.parseHtml(html);
+    // logTag：Console 警告的前綴（例如「晨間簡報」「查房單」），方便分辨是哪支腳本。
+    function parseLabList(html, sinceMs, logTag = 'NTUHLab') {
+        const doc = parseHtml(html);
         const table = doc.querySelector('[id$="tblLabList"]');
         if (!table) {
             // 這陣子沒有報告的病人，伺服器回傳的 HTML 不含檢驗表（使用者在 HIS 逐一確認過），視為「沒有資料」而不是錯誤。
             // 風險：若院方改版導致表格不見，每位病人都會顯示「沒有報告」——訊息裡提示，並在 Console 留紀錄。
-            console.warn('[晨間簡報] OuterData lab 沒有 tblLabList，視為近期沒有檢驗報告（HTML 長度 ' + html.length + '）');
+            console.warn('[' + logTag + '] OuterData lab 沒有 tblLabList，視為近期沒有檢驗報告（HTML 長度 ' + html.length + '）');
             return { items: [], skipped: 0, noTable: true, minMs: Infinity, maxMs: -Infinity, since: dayStart(sinceMs) };
         }
         const headers = [...table.rows[0].cells].map(txt);
@@ -702,56 +670,181 @@ function isOnOxygen(inside) {
         return { items, skipped, hidden, minMs, maxMs, since };
     }
 
+
+    const api = {
+        stripCJK, nameKey,
+        LAB_NAME_MAP, LAB_NAME_BY_KEY, labDisplayName,
+        LAB_IGNORE, LAB_SKIP_KEYWORDS, LAB_SKIP_EXACT, labShouldSkip,
+        LAB_DC_RANGE, LAB_GROUPS, LAB_GROUP_OF, LAB_BLOOD_CAT_RE, LAB_NONBLOOD_CAT_RE,
+        parseLabList,
+    };
+
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    else if (!root.NTUHLab) root.NTUHLab = api;
+}(typeof window !== 'undefined' ? window : globalThis));
+
+
+// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個請求、預設 12 秒逾時，可由 options.timeoutMs 覆寫）──
+(function () {
+    'use strict';
+    if (window.NTUHAsmx) return;
+    let active = 0;
+    const queue = [];
+    async function withSlot(task) {
+        if (active >= 3) await new Promise((release) => queue.push(release));
+        active += 1;
+        try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
+    }
+    async function outerData(datatype, options) {
+        const context = (options && options.context) || {};
+        const url = window.location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '')
+            + 'ProgressNoteControl/Service/OuterData.asmx/GetOuterDataTable';
+        return withSlot(async () => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), (options && options.timeoutMs) || 12000);
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
+                    body: JSON.stringify({ jsonstring: JSON.stringify(context), datatype }),
+                    signal: ctrl.signal,
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const j = await res.json();
+                let v = j && j.d;
+                if (typeof v === 'string') { try { v = JSON.parse(v); } catch { /* keep */ } }
+                return (v && v.Html) || '';
+            } finally { clearTimeout(timer); }
+        });
+    }
+    const parseHtml = (html) => new DOMParser().parseFromString(html || '', 'text/html');
+    window.NTUHAsmx = { outerData, parseHtml };
+})();
+
+// ── 主程式 ──
+
+(function () {
+    'use strict';
+
+    /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
+
+    const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
+    // 為什麼分兩階段（新竹實測 2026-09-30，11 位病人）：處方頁＋管路單獨測時加起來約 28 秒，剛好等於不論同時數怎麼調
+    // 的總時間（2 個、3 個、全部同時開跑都是 28～30 秒）→ 這兩個重頁面在伺服器端幾乎是一個接一個處理，
+    // 同時發再多也不會變快，只會讓 vitals／影像這種輕請求排在後面（全部同時開跑時平均等 17～19 秒）。
+    // 所以由我們決定順序：先抓完所有病人的輕請求（階段一），再抓重的（階段二，依病人順序小批處理）。
+    const HEAVY_POOL = 2;   // 階段二同時處理的病人數
+    // OuterData 逾時：請求要在瀏覽器／伺服器排隊，逾時計時包含排隊時間，所以放寬到 30 秒（lib 預設 12 秒）。
+    const OUTER_TIMEOUT_MS = 30000;
+
+    // HIS 的 date.js 會覆寫 Date.now，取毫秒一律走這個
+    const nowMs = () => new Date().getTime();
+    const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+    const two = (n) => String(n).padStart(2, '0');
+    const fmt = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
+
+    // ═══════════════════════════════════════════════════════════
+    // 病房列表 → 病人清單
+    // ═══════════════════════════════════════════════════════════
+    // 元素 id 前綴會變（NTUHWeb1／NTUHWeb9…），一律用尾綴選取
+
+    function readPatients() {
+        const table = document.querySelector('[id$="DataGridAccountList"]');
+        if (!table) return [];
+        const out = [];
+        for (const tr of [...table.rows].slice(1)) {
+            const news = tr.querySelector('[id$="NEWSLabel"]');
+            const caseno = news && news.getAttribute('caseno');
+            if (!caseno) continue;
+            const cells = tr.cells;
+            const labTitle = (tr.querySelector('[id$="LinkForthMedicalReport"]') || {}).title || '';
+            out.push({
+                caseno,                                            // = AccountIdse（已實測）
+                chartNo: news.getAttribute('chartno') || txt(tr.querySelector('[id$="PatChartNo"]')),
+                ward: news.getAttribute('wardcode') || txt(tr.querySelector('[id$="WardLabel"]')),
+                name: txt(tr.querySelector('[id$="LinkPatientName"]')),
+                bed: [txt(tr.querySelector('[id$="RoomLabel"]')), txt(tr.querySelector('[id$="BedLabel"]'))].filter(Boolean).join('-'),
+                age: txt(tr.querySelector('[id$="PatientAge"]')),
+                sex: txt(tr.querySelector('[id$="PatientSex"]')),
+                attending: txt(cells[7]),
+                resident: txt(cells[8]),
+                hospDay: (tr.innerHTML.match(/住院總天數\s*[:：]\s*(\d+)/) || [])[1] || '',
+                labTitle,
+            });
+        }
+        return out;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 時間窗
+    // ═══════════════════════════════════════════════════════════
+    // 週一自動回溯到週五晚上，涵蓋整個週末
+
+    const REF_HOUR = 8; // 圖表參考資料起點（前一日幾點）
+
+    function briefingWindow(startHour) {
+        const n = new Date(nowMs());
+        const daysBack = n.getDay() === 1 ? 3 : 1;
+        const from = new Date(n.getFullYear(), n.getMonth(), n.getDate() - daysBack, startHour, 0).getTime();
+        // 圖表另外往前多看到前一日 08:00 當參考基準（異常判斷、給氧、抽血、影像仍用昨夜時間窗）
+        const ref = new Date(n.getFullYear(), n.getMonth(), n.getDate() - daysBack, REF_HOUR, 0).getTime();
+        return { fromMs: from, refFromMs: Math.min(ref, from), toMs: n.getTime(), daysBack };
+    }
+
+    // 列表 title「最新檢驗結果時間:HH:MM (N 小時內)」只有時分，往回推到最近的過去時間點
+    function labTimeMs(title, now) {
+        const m = title.match(/最新檢驗結果時間\s*[:：]\s*(\d{1,2}):(\d{2})/);
+        if (!m) return null;
+        const d = new Date(now);
+        d.setHours(+m[1], +m[2], 0, 0);
+        let ms = d.getTime();
+        if (ms > now) ms -= 86400000;
+        return ms;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 單一病人：抓資料 + 判讀
+    // ═══════════════════════════════════════════════════════════
+
+    // ─── 共用 lib 的別名（lib/ntuh-fetch.js、lib/lab-rules.js；查房單共用同一份）────────
+    // pageSession：SESSION 只放進連結的 href 與請求網址，不顯示、不存。
+    // pageGate：管路與醫囑簽收頁共用、一律一次一位（原因見 lib 的 fetchTubes 註解；醫囑簽收頁也是帶 AccountIDSE 的病人頁面，
+    // 可能同樣改到伺服器端的「目前病人」，不能插進管路的頁面→handler 之間）。
+    const { pageSession, personIdFromPatientList, pageGate, fetchAbx, fetchTubes } = NTUHFetch;
+    const { LAB_DC_RANGE, LAB_GROUPS, LAB_GROUP_OF, LAB_NONBLOOD_CAT_RE, parseLabList } = NTUHLab;
+    // 影像報告：卡片只顯示壓成一行、前 1500 字，順序照頁面
+    const parsePacs = (html, fromMs) => NTUHFetch.parsePacs(html, fromMs)
+        .map(({ date, title, report }) => ({ date, title, report: report.replace(/\s+/g, ' ').slice(0, 1500) }));
+    // ─── 共用 lib 別名結束
+
+    // 檢驗報告頁（與 progress-note-data-helper 的 [Lab] 同一頁）：靠 ChartNo 定位病人，
+    // AccountIDSE/PersonID 都不需要；IntervalDay 為負數＝往前推幾天（-13 ≈ 兩週）。
+    function labPageUrl(p) {
+        const ses = pageSession();
+        return location.origin + '/WebApplication/ElectronicMedicalReportViewer/MedicalReportContent.aspx'
+            + `?${ses ? 'SESSION=' + encodeURIComponent(ses) + '&' : ''}PatClass=I&WardCode=${encodeURIComponent(p.ward || '')}&ChartNo=${encodeURIComponent(p.chartNo)}`
+            + '&HospitalCode=T0&Seed=&IntervalDay=-13';
+    }
+
+    function ctxOf(p) {
+        // 實測只需 AccountIdse（其餘可留空）；ChartNo 一併帶上
+        return { AccountIdse: p.caseno, PersonId: '', ChartNo: p.chartNo, DeptCode: '', EmpDeptCode: '' };
+    }
+
+    function vitalTexts(html) {
+        const doc = NTUHAsmx.parseHtml(html);
+        const spans = [...doc.querySelectorAll('[id$="_Content"]')].map(txt);
+        if (spans.length) return spans;
+        return [...doc.querySelectorAll('tr')].map(txt);
+    }
+
     async function fetchLab(p, win) {
         const pid = personIdFromPatientList(document.cookie, p.caseno);
         const html = await NTUHAsmx.outerData('lab', { context: { ...ctxOf(p), PersonId: pid }, timeoutMs: OUTER_TIMEOUT_MS });
         if (!html) return { items: [], skipped: 0, hidden: 0, empty: true };
-        return parseLabList(html, win.refFromMs);
-    }
-
-    // ─── 管路（CatheterCare_Handler.aspx）───────────────────────
-    // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
-    // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
-    // 額外參數一律被忽略（新竹實測 2026-09-30）。所以：
-    //   1. 一律一次一位（pageGate=1），先載入該病人的頁面 HTML（不跑頁面 JS，約 0.5 秒）再立刻打 handler（約 0.1 秒）。
-    //   2. 每條管路的 <decorate> 都帶 <caseno>（＝病房列表的 AccountIDSE），逐條驗證，對不上就整批丟棄。
-    // 已知盲點：這位病人若一條管路都沒有，就沒有 caseno 可驗證；此時若有人在別的分頁操作 CatheterCare，
-    // 理論上可能拿到別人的空結果。簡報執行期間不要同時操作 CatheterCare。
-    const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;   // 周邊留置針不列入（CVC／PICC／Port-A 等中央導管要留）
-    const tubeText = (node, tag) => { const e = node.getElementsByTagName(tag)[0]; return e ? e.textContent.trim() : ''; };
-    const parseInsert = (t) => {
-        const m = t.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
-        return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN;
-    };
-
-    async function fetchTubes(p, now) {
-        return pageGate(async () => {
-            const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 20000);
-            try {
-                const opt = { credentials: 'same-origin', signal: ctrl.signal };
-                const page = await fetch(`${dir}CatheterCare.aspx?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}&PatClass=I`, opt);
-                if (!page.ok) throw new Error('管路頁 HTTP ' + page.status);
-                await page.text();
-                const res = await fetch(`${dir}CatheterCare_Handler.aspx?aa=${nowMs()}&mode=getCatheterRecord&catherStatus=UnRemovedOnly`, opt);
-                if (!res.ok) throw new Error('管路資料 HTTP ' + res.status);
-                const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('UnRemovedCatheter').length) throw new Error('管路資料格式不符');
-                const decs = [...doc.getElementsByTagName('decorate')];
-                const total = parseInt(tubeText(doc.getElementsByTagName('UnRemovedCatheter')[0], 'TotalCount'), 10);
-                if (Number.isFinite(total) && total !== decs.length) throw new Error(`管路數量不符（${total}／${decs.length}）`);
-                if (decs.some((d) => tubeText(d, 'caseno') !== p.caseno)) throw new Error('管路資料與病人不符，已丟棄');
-                return decs.map((d) => {
-                    const full = tubeText(d, 'CatheterName');
-                    return { full, name: full.replace(/\(.*?\)/g, '').trim() || full, startMs: parseInsert(tubeText(d, 'CatheterInsertDateTime')) };
-                }).filter((x) => x.full && !CATH_PERIPHERAL_RE.test(x.full) && Number.isFinite(x.startMs))
-                    .map((x) => ({ name: x.name, startMs: x.startMs, day: dayNo(x.startMs, now) }))
-                    .sort((a, b) => a.startMs - b.startMs);
-            } catch (e) {
-                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
-            } finally { clearTimeout(timer); }
-        });
+        return parseLabList(html, win.refFromMs, '晨間簡報');
     }
 
     // ─── 醫囑變更（Nursing/WorkList_OrderCheck.aspx，醫囑簽收頁）──────────

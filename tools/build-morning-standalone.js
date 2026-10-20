@@ -1,7 +1,7 @@
 /* eslint-env node */
 // node tools/build-morning-standalone.js
-// 把 morning-briefing.user.js 連同 lib/news2.js 與簡化版 OuterData 呼叫合併成免 @require 的單檔，
-// 輸出到 scripts/standalone/。標頭刻意移除 @require/@updateURL/@downloadURL。
+// 把 morning-briefing.user.js 連同 lib/news2.js、lib/ntuh-fetch.js、lib/lab-rules.js 與簡化版 OuterData 呼叫
+// 合併成免 @require 的單檔，輸出到 scripts/standalone/（可用第一個參數指定其他輸出路徑）。標頭刻意移除 @require/@updateURL/@downloadURL。
 const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..');
@@ -9,6 +9,8 @@ const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 
 const main = read('scripts/morning-briefing.user.js');
 const news = read('scripts/lib/news2.js');
+const fetchLib = read('scripts/lib/ntuh-fetch.js');
+const labLib = read('scripts/lib/lab-rules.js');
 const end = main.indexOf('// ==/UserScript==') + '// ==/UserScript=='.length;
 const head = main.slice(0, end).split('\n')
     .filter((l) => !/^\/\/ @(require|updateURL|downloadURL)\s/.test(l))
@@ -53,8 +55,8 @@ const shim = `// ── 內嵌：簡化版 OuterData 呼叫（同時最多 3 個
 })();
 `;
 
-const out = `${head}\n\n// ── 內嵌：NEWS2 核心 ──\n${news}\n\n${shim}\n// ── 主程式 ──${main.slice(end)}`;
-const dest = path.join(root, 'scripts/standalone/morning-briefing.standalone.user.js');
+const out = `${head}\n\n// ── 內嵌：NEWS2 核心 ──\n${news}\n\n// ── 內嵌：抓取共用層 ──\n${fetchLib}\n\n// ── 內嵌：檢驗規則 ──\n${labLib}\n\n${shim}\n// ── 主程式 ──${main.slice(end)}`;
+const dest = process.argv[2] ? path.resolve(process.argv[2]) : path.join(root, 'scripts/standalone/morning-briefing.standalone.user.js');
 fs.mkdirSync(path.dirname(dest), { recursive: true });
 fs.writeFileSync(dest, out);
 console.log('wrote', path.relative(root, dest), out.split('\n').length, 'lines');

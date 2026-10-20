@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.9.1
+// @version      1.9.2
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-asmx.js
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/ntuh-fetch.js
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/lab-rules.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/morning-briefing.user.js
 // @run-at       document-idle
@@ -16,7 +18,7 @@
 (function () {
     'use strict';
 
-    /* global NTUHAsmx, NTUHNews2 */
+    /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
 
     const START_HOUR = 17; // 昨夜時間窗起點（前一日幾點）
     // 為什麼分兩階段（新竹實測 2026-09-30，11 位病人）：處方頁＋管路單獨測時加起來約 28 秒，剛好等於不論同時數怎麼調
@@ -97,14 +99,16 @@
     // 單一病人：抓資料 + 判讀
     // ═══════════════════════════════════════════════════════════
 
-    // SESSION：病房列表網址上帶著（頁內每個連結都帶）。實測：不帶時點連結會跳到需要登入的頁面，
-    // 帶上後可正常開啟（新竹分院）。只確認了這個結果，機制未確認，因此不在此推測原因。
-    // 只放進連結的 href，不顯示、不寫入儲存空間。
-    function pageSession() {
-        const m = location.search.match(/[?&]session=([^&]+)/i)
-            || document.documentElement.innerHTML.match(/SESSION=([a-zA-Z0-9]{34})/i);
-        return m ? m[1] : '';
-    }
+    // ─── 共用 lib 的別名（lib/ntuh-fetch.js、lib/lab-rules.js；查房單共用同一份）────────
+    // pageSession：SESSION 只放進連結的 href 與請求網址，不顯示、不存。
+    // pageGate：管路與醫囑簽收頁共用、一律一次一位（原因見 lib 的 fetchTubes 註解；醫囑簽收頁也是帶 AccountIDSE 的病人頁面，
+    // 可能同樣改到伺服器端的「目前病人」，不能插進管路的頁面→handler 之間）。
+    const { pageSession, personIdFromPatientList, pageGate, fetchAbx, fetchTubes } = NTUHFetch;
+    const { LAB_DC_RANGE, LAB_GROUPS, LAB_GROUP_OF, LAB_NONBLOOD_CAT_RE, parseLabList } = NTUHLab;
+    // 影像報告：卡片只顯示壓成一行、前 1500 字，順序照頁面
+    const parsePacs = (html, fromMs) => NTUHFetch.parsePacs(html, fromMs)
+        .map(({ date, title, report }) => ({ date, title, report: report.replace(/\s+/g, ' ').slice(0, 1500) }));
+    // ─── 共用 lib 別名結束
 
     // 檢驗報告頁（與 progress-note-data-helper 的 [Lab] 同一頁）：靠 ChartNo 定位病人，
     // AccountIDSE/PersonID 都不需要；IntervalDay 為負數＝往前推幾天（-13 ≈ 兩週）。
@@ -127,368 +131,11 @@
         return [...doc.querySelectorAll('tr')].map(txt);
     }
 
-    function parsePacs(html, fromMs) {
-        const doc = NTUHAsmx.parseHtml(html);
-        const fromDay = new Date(fromMs); fromDay.setHours(0, 0, 0, 0);
-        const out = [];
-        for (const tr of doc.querySelectorAll('tbody tr')) {
-            const content = [...tr.querySelectorAll('td')].map((td) => td.textContent).find((t) => t.includes('@@@'));
-            if (!content) continue;
-            const segs = content.split('@@@').map((s) => s.replace(/\s+/g, ' ').trim());
-            const head = segs[0] || '';
-            const dm = head.match(/(\d{4})\/(\d{2})\/(\d{2})/);
-            if (!dm) continue;
-            if (new Date(+dm[1], +dm[2] - 1, +dm[3]).getTime() < fromDay.getTime()) continue; // 影像只有日期，以日為單位
-            const title = head.replace(/^\d{4}\/\d{2}\/\d{2}\s*/, '').replace(/\s*\(V\d+\)\s*$/, '').trim();
-            const report = (segs[2] || segs[1] || '').slice(0, 1500);
-            out.push({ date: `${+dm[2]}/${+dm[3]}`, title, report });
-        }
-        return out;
-    }
-
-    // ─── 抗生素（MedicationHistory/Default.aspx）────────────────
-    // 藥歷頁只需 SESSION＋PersonID；PersonID 從病房病人清單 Cookie 依 AccountIDSE 配對。
-    // GET 取得 WebForms 表單，再 POST「抗生素」查詢；以院方分類為準，不再自行比對藥名。
-    // 查詢所有病人類別以避免「全選」Changed handler 清掉住院勾選，解析時只保留「住」。
-    // 只列已開始、停用日空白或 >= 今天的醫令；停用日只有日期，當天停用仍列入。
-    // D1＝目前這張醫令的開始日，改劑量／重開醫令仍會重新起算。
-    const medicationHistoryUrl = (personId) => location.origin
-        + '/WebApplication/OtherIndependentProj/MedicationHistory/Default.aspx'
-        + `?SESSION=${encodeURIComponent(pageSession())}&PersonID=${encodeURIComponent(personId)}`;
-
-    // Cookie 的 PatN 值是舊式 escape 編碼（%uXXXX、%XX），不能直接 decodeURIComponent。
-    // 只用中段「院區_類別_PersonID_AccountIDSE」配對，不依 PatN 順序或姓名判斷。
-    function personIdFromPatientList(cookieText, accountId) {
-        const prefix = 'Page_Session_InPatientPatientListSessionKey=';
-        const cookie = cookieText.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
-        if (!cookie) throw new Error('找不到病房病人清單 Cookie');
-        const decode = (value) => value.replace(/%u([0-9a-f]{4})|%([0-9a-f]{2})/gi,
-            (_, unicode, byte) => String.fromCharCode(parseInt(unicode || byte, 16)));
-        let value = cookie.slice(prefix.length);
-        // 容許 Cookie 外層也經過 escape；PatN 值仍各自解碼。
-        if (!/^Pat\d+=/.test(value)) value = decode(value);
-        let personId = '';
-        for (const entry of value.split('&')) {
-            const match = entry.match(/^Pat\d+=(.*)$/);
-            if (!match) continue;
-            const identity = decode(match[1]).split('|')[1]?.split('_');
-            if (!identity || identity.length !== 4 || identity[1] !== 'I'
-                || !identity[2] || identity[3] !== accountId) continue;
-            if (personId && personId !== identity[2]) throw new Error('病房 Cookie 的病人識別不一致');
-            personId = identity[2];
-        }
-        if (!personId) throw new Error('病房 Cookie 找不到此住院帳號的 PersonID');
-        return personId;
-    }
-
-    // 簡單併發閘門：同時最多 max 個任務（藥歷查詢與管路，避免一次灌爆院內主機）
-    function makeGate(max) {
-        let active = 0;
-        const queue = [];
-        return async (task) => {
-            if (active >= max) await new Promise((release) => queue.push(release));
-            active += 1;
-            try { return await task(); } finally { active -= 1; const next = queue.shift(); if (next) next(); }
-        };
-    }
-    const rxGate = makeGate(3);   // 藥歷表單查詢
-    // 管路與醫囑簽收頁共用、一律一次一位（原因見下方 fetchTubes 的註解：handler 靠「最近載入的病人」決定回誰；
-    // 醫囑簽收頁也是帶 AccountIDSE 的病人頁面，可能同樣改到伺服器端的「目前病人」，不能插進管路的頁面→handler 之間）
-    const pageGate = makeGate(1);
-
-    const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
-    const dayNo = (startMs, now) => Math.round((dayStart(now) - dayStart(startMs)) / 86400000) + 1;
-
-    function medicationHistoryQuery(doc, now) {
-        const form = doc.querySelector('form');
-        const query = doc.querySelector('[id$="_btnQuery"]');
-        const antibiotics = doc.querySelector('[id$="_ckbAntibiotics"]');
-        const date = doc.querySelector('[id$="_txbStartDate"]');
-        const days = doc.querySelector('[id$="_txbDays"]');
-        const patientTypes = [...doc.querySelectorAll('input[id*="_cblPatientType_"]')];
-        if (!form || !query || !antibiotics || !date || !days || !patientTypes.length
-            || !form.querySelector('input[name="__VIEWSTATE"]')) throw new Error('藥歷查詢表單讀不到');
-        const body = new URLSearchParams();
-        // 保留隱藏欄位（包含分段 VIEWSTATE）；不帶預設藥物分類、保存選項或其他按鈕。
-        for (const el of form.querySelectorAll('input')) {
-            if (!el.name || el.disabled || ['submit', 'button', 'checkbox', 'radio'].includes(el.type)) continue;
-            body.append(el.name, el.value);
-        }
-        body.set('__EVENTTARGET', '');
-        body.set('__EVENTARGUMENT', '');
-        const d = new Date(now);
-        body.set(date.name, `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())}`);
-        // 查近 2 天的用藥紀錄（包含期間內持續使用、較早開始的醫令）。
-        body.set(days.name, '2');
-        for (const el of patientTypes) body.set(el.name, el.value);
-        const all = doc.querySelector('[id$="_ckbPatientTypeAll"]');
-        if (all) body.set(all.name, all.value);
-        body.set(antibiotics.name, antibiotics.value);
-        body.set(query.name, query.value);
-        return body;
-    }
-
-    function parseMedicationHistory(doc, now) {
-        const table = doc.querySelector('[id$="_grvData"]');
-        if (!table) {
-            const message = txt(doc.querySelector('[id$="_lblMessage"]'));
-            if (message.includes('日期範圍查無勾選範圍的處方資料')) return [];
-            throw new Error('藥歷結果表讀不到');
-        }
-        const headers = [...table.rows[0].cells].map(txt);
-        const start = headers.indexOf('開始日'), stop = headers.indexOf('停用日');
-        const nameCol = headers.indexOf('藥名'), content = headers.indexOf('處方內容');
-        if ([start, stop, nameCol, content].some((i) => i < 0)) throw new Error('藥歷欄位格式改變');
-        const dateMs = (text) => {
-            const m = text.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
-            if (!m) throw new Error('藥歷日期格式無法判讀');
-            const d = new Date(+m[1], +m[2] - 1, +m[3]);
-            if (d.getFullYear() !== +m[1] || d.getMonth() !== +m[2] - 1 || d.getDate() !== +m[3]) throw new Error('藥歷日期無效');
-            return d.getTime();
-        };
-        const today = dayStart(now), out = [];
-        for (const tr of [...table.rows].slice(1)) {
-            if (txt(tr.cells[0]) !== '住') continue;
-            if (tr.cells.length !== headers.length) throw new Error('藥歷資料列格式改變');
-            const startMs = dateMs(txt(tr.cells[start]));
-            const stopText = txt(tr.cells[stop]);
-            if (startMs > today || (stopText && dateMs(stopText) < today)) continue;
-            const rawName = txt(tr.cells[nameCol]);
-            if (!rawName) throw new Error('藥歷藥名缺漏');
-            const prescription = txt(tr.cells[content]);
-            const route = (prescription.match(/\b(IV|IF|PO|IM|SC|SQ|TOPIC|INHL)\b/i) || [])[1] || '';
-            out.push({ name: rawName.split('(')[0].trim().slice(0, 40), route, prescription, startMs, day: dayNo(startMs, now) });
-        }
-        return out.sort((a, b) => a.startMs - b.startMs);
-    }
-
-    async function fetchAbx(p, now) {
-        return rxGate(async () => {
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 45000);
-            try {
-                const pid = personIdFromPatientList(document.cookie, p.caseno);
-                const url = medicationHistoryUrl(pid);
-                const initial = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
-                if (!initial.ok) throw new Error('HTTP ' + initial.status);
-                let doc = NTUHAsmx.parseHtml(await initial.text());
-                // 已保存的「全部藥物」選項若觸發 Changed handler，可能清掉抗生素勾選。
-                // 使用回傳的新表單再送一次；仍未套用分類則報錯，不能把其他藥當抗生素。
-                for (let attempt = 0; attempt < 2; attempt++) {
-                    const body = medicationHistoryQuery(doc, now);
-                    const res = await fetch(url, { method: 'POST', body, credentials: 'same-origin', signal: ctrl.signal });
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    doc = NTUHAsmx.parseHtml(await res.text());
-                    const selected = [...doc.querySelectorAll('input[type="checkbox"]:checked')]
-                        .filter((el) => /_ckb/.test(el.id) && !/_ckbPatientTypeAll$/.test(el.id));
-                    if (selected.length === 1 && selected[0].id.endsWith('_ckbAntibiotics')) return parseMedicationHistory(doc, now);
-                }
-                throw new Error('藥歷未套用抗生素分類');
-            } catch (e) {
-                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
-            } finally { clearTimeout(timer); }
-        });
-    }
-
-    // ─── 檢驗數值的過濾與分組規則：取自 lab-summary（改動時兩邊要同步）──────────────────
-    // 新竹 LU 科室的項目名是中英混寫、空格不一致 → 用通則去中文＋正規化鍵查表，查不到就回傳去中文的原名（不丟資料）。
-    const LAB_CJK_RE = /[⺀-⿟　-〿㐀-䶿一-鿿豈-﫿]+/g;
-    const stripCJK = (x) => String(x || '').replace(LAB_CJK_RE, ' ').replace(/\s+/g, ' ').trim();
-    const nameKey = (x) => stripCJK(String(x || '').replace(/\(.*?\)/g, ' ')).replace(/[\s.\-_]/g, '').toLowerCase();
-    const LAB_NAME_MAP = {
-        // CBC：HE 科室的短名 + LH 科室的中英混寫
-        'HB': 'Hb', 'Hb': 'Hb', 'Hgb 血紅素': 'Hb',
-        'PLT': 'Plt', 'Platelet 血小板': 'Plt',
-        'WBC': 'WBC', 'W.B.C 白血球': 'WBC',
-        'MCV': 'MCV', 'MCV平均血球體積': 'MCV',
-        'R.B.C 紅血球': 'RBC', 'Hct 血球比容積': 'HCT',
-        'MCH平均血球血紅素': 'MCH', 'MCHC平均血色素比容積': 'MCHC',
-        // DC：HE 用縮寫、LH 用全名
-        'Seg': 'Seg', 'Neutrophil': 'Seg',
-        'Eos.': 'Eos.', 'Eosinophil': 'Eos.',
-        'Baso.': 'Baso.', 'Basophil': 'Baso.',
-        'Band': 'Band', 'Band neutrophil': 'Band',
-        'Lym.': 'Lym.', 'Lymphocyte': 'Lym.',
-        'Mono': 'Mono.', 'Mono.': 'Mono.', 'Monocyte': 'Mono.',
-        'Promyl.': 'Promyl.', 'Promyelocyte': 'Promyl.',
-        'Myelo.': 'Myelo.', 'Myelocyte': 'Myelo.',
-        'Meta': 'Meta', 'Metamyelocyte': 'Meta',
-        'Aty.Lym.': 'Aty.Lym.', 'Aty.Lymphocyte': 'Aty.Lym.',
-        'PlasmaCell': 'PlasmaCell', 'Plasma Cell': 'PlasmaCell',
-        'Normobl.': 'Normobl.', 'Normoblast': 'Normobl.',
-        // 生化
-        'Alb': 'Alb', 'ALB': 'Alb', 'Albumin': 'Alb',
-        'T-BIL': 'T-Bil', 'D-BIL': 'D-Bil',
-        'AST': 'AST', 'ALT': 'ALT', 'ALP': 'ALP',
-        'UN': 'BUN', 'BUN': 'BUN', 'CRE': 'CRE', 'UA': 'UA',
-        // LU 科室（新竹）用英文全名，非中文問題，需列舉
-        'Creatinine': 'CRE', 'Uric Acid': 'UA', 'RDW-CV': 'RDW', 'RDW': 'RDW',
-        'Na': 'Na', 'K': 'K', 'Mg': 'Mg', 'Ca': 'Ca', 'P': 'P', 'Cl': 'Cl',
-        'CRP': 'CRP', 'hsCRP': 'CRP',
-        'Procalcitonin': 'PCT',
-        'LacticAcid': 'LA', 'Lactate': 'LA',
-        'pH': 'pH', 'pCO2': 'PCO2', 'pO2': 'PO2',
-        'HCO3-': 'HCO3', 'Base Excess': 'BE',
-        'HbA1c': 'HbA1c', 'HbA1c糖化血色素': 'HbA1c',
-        'GLU AC': 'Glucose', 'Glucose': 'Glucose', 'Sugar': 'Glucose',
-        'NT-pro BNP': 'NT-proBNP', 'BNP': 'BNP',
-        'PT': 'PT', 'PT INR': 'INR', 'PTT': 'PTT',
-        'D-dimer': 'D-dimer', 'Fibrinogen': 'Fibrinogen',
-        'aPTT': 'aPTT',
-        'Ammonia N': 'NH3', 'Ammonia': 'NH3',
-        'CK': 'CK', 'CK-MB': 'CK-MB', 'Troponin-T': 'TnT', 'Troponin-I': 'TnI',
-        'TP': 'TP', 'LDH': 'LDH', 'AMY': 'AMY', 'Amylase': 'AMY',
-        'Lipase': 'Lip', 'GGT': 'GGT',
-        'T-CHO': 'T-CHO', 'TG': 'TG', 'LDL-C': 'LDL-C', 'HDL-C': 'HDL-C',
-        // 腫瘤標記
-        'Chromogranin A': 'CgA', 'CEA': 'CEA', 'AFP': 'AFP', 'PSA': 'PSA',
-        'CA19-9': 'CA19-9', 'CA-125': 'CA-125', 'CA15-3': 'CA15-3',
-        // 甲狀腺
-        'hsTSH': 'TSH', 'TSH': 'TSH', 'Free T4': 'Free T4', 'T4': 'T4', 'T3': 'T3',
-        // 血清學（B/C 肝、HIV、梅毒）
-        'HBsAg': 'HBsAg', 'Anti-HBs': 'Anti-HBs', 'Anti-HCV Ab': 'Anti-HCV',
-        'Anti-HCV': 'Anti-HCV',
-        'HIV Ag/Ab Combo -for screening test': 'HIV', 'HIV Ag/Ab Combo': 'HIV',
-        'S.T.S.': 'VDRL',
-    };
-    const LAB_NAME_BY_KEY = (() => {
-        const idx = {};
-        for (const [k, v] of Object.entries(LAB_NAME_MAP)) { const kk = nameKey(k); if (kk && !(kk in idx)) idx[kk] = v; }
-        return idx;
-    })();
-    const labDisplayName = (raw) => {
-        const clean = String(raw || '').replace(/\(.*?\)/g, '').trim();
-        return LAB_NAME_MAP[raw] || LAB_NAME_MAP[clean] || LAB_NAME_BY_KEY[nameKey(raw)] || stripCJK(clean) || clean;
-    };
-    // 血液檢體不看的項目（只在血液套用：尿液的 RBC／WBC 有意義）
-    const LAB_IGNORE = ['HCT', 'Hct', 'MCH', 'MCHC', 'RDW-CV', 'PS', 'RBC', 'Sugar', 'Auer body', 'Others', 'Reference Comment'];
-    // 不是檢驗值的列（子字串比對），以及整列名稱剛好等於才濾掉的（'Others' 是 LU 科室 CBC 的末列註記）
-    const LAB_SKIP_KEYWORDS = ['檢驗項目', '計算', '採檢', '登入', '最後', '本尿', 'High >', 'Low <', 'Average', '七日',
-        'BLOOD', 'Peripheral', 'URINE', 'OTHER', 'Venous', 'Catheter', 'Random', 'RANDOM', 'Special Instructions',
-        'RH', 'ABO Typing', 'antibody screen', 'Reference Comment'];
-    const LAB_SKIP_EXACT = new Set(['Others']);
-    const labShouldSkip = (raw) => {
-        const n = String(raw || '').trim();
-        return !n || LAB_SKIP_EXACT.has(n) || LAB_SKIP_KEYWORDS.some((kw) => n.indexOf(kw) > -1);
-    };
-    // 差別計數：正常範圍內就不顯示（只有異常才列）。罕見細胞（RARE_DIFF）有出現就列。
-    const LAB_DC_RANGE = { 'Eos.': [0, 8], 'Baso.': [0, 2], 'Band': [0, 5], 'Lym.': [20, 45], 'Mono.': [2, 10] };
-    // 臨床分組（順序即顯示順序，也是欄位順序）；Seg 附在 WBC 旁、MCV 附在 Hb 旁、eGFR 附在 CRE 旁
-    const LAB_GROUPS = [
-        ['Hemogram', ['WBC', 'Seg', 'Hb', 'MCV', 'Plt', 'CRP', 'PCT']],
-        ['DC', ['Band', 'Eos.', 'Baso.', 'Lym.', 'Mono.', 'Blast', 'Promyl.', 'Myelo.', 'Meta', 'Aty.Lym.', 'PlasmaCell', 'Normobl.']],
-        ['Liver', ['ALT', 'AST', 'ALP', 'T-Bil', 'D-Bil', 'GGT', 'Alb', 'TP', 'NH3']],
-        ['Renal', ['BUN', 'CRE', 'eGFR', 'UA']],
-        ['Electrolytes', ['Na', 'K', 'Cl', 'Ca', 'P', 'Mg']],
-        ['Cardiac', ['CK', 'CK-MB', 'TnT', 'NT-proBNP', 'BNP']],
-        ['Coagulation', ['PT', 'INR', 'aPTT', 'PTT', 'D-dimer', 'Fibrinogen']],
-        ['Lipid', ['T-CHO', 'TG', 'LDL-C', 'HDL-C']],
-        ['Tumor marker', ['CgA', 'CEA', 'CA19-9', 'AFP', 'PSA', 'CA-125', 'CA15-3', 'SCC', 'NSE']],
-        ['Thyroid', ['TSH', 'Free T4', 'T4', 'T3']],
-        ['Serology', ['HBsAg', 'Anti-HBs', 'Anti-HCV', 'HIV', 'VDRL']],
-        ['Others', ['Glucose', 'HbA1c', 'LDH', 'AMY', 'Lip', 'VIT. B12', 'Folic Acid', 'LA']],
-    ];
-    const LAB_GROUP_OF = Object.fromEntries(LAB_GROUPS.flatMap(([g, names]) => names.map((n) => [n, g])));
-    // OuterData 沒有檢體欄，只有 HIS 類別：類別看起來是血液才套用 IGNORE；看起來是尿液／體液／氣體／培養的，
-    // 不歸進血液臨床分組（同名的 RBC／WBC／Glucose 在那些檢體意義不同）。類別不明就不丟、也照名稱分組。
-    const LAB_BLOOD_CAT_RE = /CBC|hemato|biochem|chem|coag|immun|serolog|tumor|thyroid|endocr/i;
-    const LAB_NONBLOOD_CAT_RE = /urin|csf|cerebro|stool|fecal|fluid|gas|culture|smear|cytolog|pathol/i;
-
-    // ─── 檢驗數值（OuterData lab，點開下拉才為該病人載入）────────────────────────────
-    // 需要 PersonId（從病房 Cookie 取，只在記憶體內用、不顯示、不存）。回傳一張 tblLabList，每列＝一個檢驗結果；
-    // 畫面上只有 4 個可見欄（日期 MMDD、類別、項目、科室），數值在後面 5 個隱藏欄：
-    // [4] 完整日期 yyyy/MM/dd　[5] 類別　[6] 數值　[7] 項目　[8] 單位（新竹實測 2026-10-05，lab-shape-probe）。
-    // 日期只到「日」（沒有時分），所以起點以日為單位；資料沒有異常標記也沒有參考範圍 → 只顯示值，不自己判斷高低。
-    // 同一筆可能重複出現（例如血液培養），以（日期、類別、項目、數值、單位）去重。
-    function parseLabList(html, sinceMs) {
-        const doc = NTUHAsmx.parseHtml(html);
-        const table = doc.querySelector('[id$="tblLabList"]');
-        if (!table) {
-            // 這陣子沒有報告的病人，伺服器回傳的 HTML 不含檢驗表（使用者在 HIS 逐一確認過），視為「沒有資料」而不是錯誤。
-            // 風險：若院方改版導致表格不見，每位病人都會顯示「沒有報告」——訊息裡提示，並在 Console 留紀錄。
-            console.warn('[晨間簡報] OuterData lab 沒有 tblLabList，視為近期沒有檢驗報告（HTML 長度 ' + html.length + '）');
-            return { items: [], skipped: 0, noTable: true, minMs: Infinity, maxMs: -Infinity, since: dayStart(sinceMs) };
-        }
-        const headers = [...table.rows[0].cells].map(txt);
-        if (!['日期', '項目'].every((h) => headers.includes(h))) throw new Error('檢驗欄位格式改變');
-        const since = dayStart(sinceMs);
-        const seen = new Set(), items = [];
-        let skipped = 0, hidden = 0, minMs = Infinity, maxMs = -Infinity;
-        for (const tr of [...table.rows].slice(1)) {
-            const c = tr.cells;
-            const m = c.length >= 9 && txt(c[4]).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
-            if (!m) { skipped += 1; continue; }   // 不能靜默丟掉：回報有幾列沒顯示
-            const dateMs = new Date(+m[1], +m[2] - 1, +m[3]).getTime();
-            minMs = Math.min(minMs, dateMs); maxMs = Math.max(maxMs, dateMs);
-            const unit = txt(c[8]);
-            const rawItem = txt(c[7]) || txt(c[2]);
-            const category = txt(c[5]);
-            const item = labDisplayName(rawItem);
-            // lab-summary 的略過規則：非檢驗值的列、血液不看的項目；略過的筆數會在頁尾回報（不靜默）
-            // IGNORE 要「原始名稱」與「正規化後名稱」都檢查（與 lab-summary 一致）：RDW-CV 會被正規化成 RDW、Sugar 會被正規化成 Glucose，
-            // 只查正規化後的名稱會漏掉。
-            const cleanRaw = rawItem.replace(/\(.*?\)/g, '').trim();
-            const ignored = LAB_BLOOD_CAT_RE.test(category) && (LAB_IGNORE.includes(cleanRaw) || LAB_IGNORE.includes(item));
-            if (labShouldSkip(rawItem) || ignored) { if (dateMs >= since) hidden += 1; continue; }
-            const row = { dateMs, category, value: txt(c[6]), item, unit: unit === '*' ? '' : unit };
-            const key = [dateMs, row.category, row.item, row.value, row.unit].join('|');
-            if (seen.has(key)) continue;
-            seen.add(key);
-            if (dateMs >= since) items.push(row);
-        }
-        return { items, skipped, hidden, minMs, maxMs, since };
-    }
-
     async function fetchLab(p, win) {
         const pid = personIdFromPatientList(document.cookie, p.caseno);
         const html = await NTUHAsmx.outerData('lab', { context: { ...ctxOf(p), PersonId: pid }, timeoutMs: OUTER_TIMEOUT_MS });
         if (!html) return { items: [], skipped: 0, hidden: 0, empty: true };
-        return parseLabList(html, win.refFromMs);
-    }
-
-    // ─── 管路（CatheterCare_Handler.aspx）───────────────────────
-    // 頁面的資料來自 GET CatheterCare_Handler.aspx?mode=getCatheterRecord&catherStatus=UnRemovedOnly（XML）。
-    // 這個請求「不帶任何病人識別」：伺服器靠「最近載入 CatheterCare.aspx 的那位病人」決定回誰，
-    // 額外參數一律被忽略（新竹實測 2026-09-30）。所以：
-    //   1. 一律一次一位（pageGate=1），先載入該病人的頁面 HTML（不跑頁面 JS，約 0.5 秒）再立刻打 handler（約 0.1 秒）。
-    //   2. 每條管路的 <decorate> 都帶 <caseno>（＝病房列表的 AccountIDSE），逐條驗證，對不上就整批丟棄。
-    // 已知盲點：這位病人若一條管路都沒有，就沒有 caseno 可驗證；此時若有人在別的分頁操作 CatheterCare，
-    // 理論上可能拿到別人的空結果。簡報執行期間不要同時操作 CatheterCare。
-    const CATH_PERIPHERAL_RE = /留置針|IV\s*Catheter/i;   // 周邊留置針不列入（CVC／PICC／Port-A 等中央導管要留）
-    const tubeText = (node, tag) => { const e = node.getElementsByTagName(tag)[0]; return e ? e.textContent.trim() : ''; };
-    const parseInsert = (t) => {
-        const m = t.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
-        return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN;
-    };
-
-    async function fetchTubes(p, now) {
-        return pageGate(async () => {
-            const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '').replace(/Ward\/$/, '') + 'Nursing/';
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 20000);
-            try {
-                const opt = { credentials: 'same-origin', signal: ctrl.signal };
-                const page = await fetch(`${dir}CatheterCare.aspx?session=${encodeURIComponent(pageSession())}&AccountIDSE=${encodeURIComponent(p.caseno)}&PatClass=I`, opt);
-                if (!page.ok) throw new Error('管路頁 HTTP ' + page.status);
-                await page.text();
-                const res = await fetch(`${dir}CatheterCare_Handler.aspx?aa=${nowMs()}&mode=getCatheterRecord&catherStatus=UnRemovedOnly`, opt);
-                if (!res.ok) throw new Error('管路資料 HTTP ' + res.status);
-                const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                if (doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('UnRemovedCatheter').length) throw new Error('管路資料格式不符');
-                const decs = [...doc.getElementsByTagName('decorate')];
-                const total = parseInt(tubeText(doc.getElementsByTagName('UnRemovedCatheter')[0], 'TotalCount'), 10);
-                if (Number.isFinite(total) && total !== decs.length) throw new Error(`管路數量不符（${total}／${decs.length}）`);
-                if (decs.some((d) => tubeText(d, 'caseno') !== p.caseno)) throw new Error('管路資料與病人不符，已丟棄');
-                return decs.map((d) => {
-                    const full = tubeText(d, 'CatheterName');
-                    return { full, name: full.replace(/\(.*?\)/g, '').trim() || full, startMs: parseInsert(tubeText(d, 'CatheterInsertDateTime')) };
-                }).filter((x) => x.full && !CATH_PERIPHERAL_RE.test(x.full) && Number.isFinite(x.startMs))
-                    .map((x) => ({ name: x.name, startMs: x.startMs, day: dayNo(x.startMs, now) }))
-                    .sort((a, b) => a.startMs - b.startMs);
-            } catch (e) {
-                throw new Error(e.name === 'AbortError' ? '逾時' : e.message);
-            } finally { clearTimeout(timer); }
-        });
+        return parseLabList(html, win.refFromMs, '晨間簡報');
     }
 
     // ─── 醫囑變更（Nursing/WorkList_OrderCheck.aspx，醫囑簽收頁）──────────
