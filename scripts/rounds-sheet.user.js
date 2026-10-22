@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.2
+// @version      1.5.3
 // @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -21,7 +21,7 @@
 
     /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
 
-    const VERSION = '1.5.2';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
+    const VERSION = '1.5.3';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
     const PER_PAGE = 11;                          // 一頁病人數（預設；沒有人加行時的分頁，與紙本模板一致）
     const PAGE_LINES = 44;                        // 一頁可放幾「行」（資訊行＋每行文字，6mm 一行；11 位×4 行＝44，所以預設仍是每頁 11 位）
     const DEFAULT_ROWS = [0, 1, 2];               // 每位病人預設的行 id；最後一行右側的＋／−增減
@@ -724,7 +724,7 @@ ${sideHtml(patients)}
         wl('beforeprint', fitAll);
         save();
         // ─── 單元（標籤區「標籤＋填寫」、勾選區「一對 ☐＋待辦」）───
-        //   每位病人每區一份有順序的清單（存資料鍵 id，沿用行 id；標籤預設＝各行 id，勾選預設＝空），由上往下壓縮排列：
+        //   每位病人每區一份有順序的清單（存資料鍵 id，沿用行 id；兩區預設都是每行一個＝各行 id），由上往下壓縮排列：
         //   第 j 個單元放在第 j 行，刪掉一個後面的往上遞補，最後一個延伸到最後一行；單元數不能超過行數。
         //   「⋮」點一下 → 移除（有內容先確認）；空位的虛線「＋」新增。HTML 只在這裡產生（伺服器端只給空的 .c2／.c3）。
         const tall = (span) => (span > 1 ? ' tall' : '');
@@ -740,7 +740,7 @@ ${sideHtml(patients)}
                 keys: cKeys, used: (id, k) => cKeys(id, k).some((key) => (typeof store[key] === 'string' ? store[key].trim() : store[key])) },
         };
         const uMap = (kind) => store[UNITS[kind].store] || (store[UNITS[kind].store] = {});
-        const uDefault = (kind, id) => (kind === 'l' ? [...rowIdsOf(id)] : []);
+        const uDefault = (kind, id) => [...rowIdsOf(id)];
         const uList = (kind, id) => { const v = uMap(kind)[id]; return v ? [...v] : uDefault(kind, id); };
         const uSave = (kind, id, list) => {
             const m = uMap(kind), def = uDefault(kind, id);
@@ -836,7 +836,7 @@ ${sideHtml(patients)}
             // 單元數不能超過行數：行少一行後多出來的單元（標籤預設是每行一個；有自訂清單時是清單尾端）要拿掉，資料一起刪
             const plan = ['l', 'c'].map((kind) => {
                 const had = uMap(kind)[id], before = uList(kind, id);
-                const after = had ? before.slice(0, next.length) : (kind === 'l' ? [...next] : []);
+                const after = had ? before.slice(0, next.length) : [...next];
                 return { kind, had: had && [...had], after, drop: before.filter((k) => !after.includes(k)) };
             });
             const dropKeys = plan.flatMap((q) => q.drop.flatMap((k) => UNITS[q.kind].keys(id, k)));
