@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.8.0
-// @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS，可由主治班表自動帶入員編）／當日確認草稿（TPR 帶入 Objective、Assessment＝Objective、帶入導管）／複製最新 Progress Note 後送出（Subjective 可自訂、Assessment 可複製／留空／帶入 TPR）
+// @version      1.9.0
+// @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS，可由主治班表自動帶入員編；「准」亮燈者預出院日當天起不建）／當日確認草稿（TPR 帶入 Objective、Assessment＝Objective、帶入導管）／複製最新 Progress Note 後送出（預出院日當天起略過；Subjective 可自訂、Assessment 可複製／留空／帶入 TPR）
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -237,10 +237,15 @@
             const m = href.match(/__doPostBack\('([^']+)'/);
             if (!m) return null;
 
+            // 「准」亮燈時 title 為「2026/10/21 可出院」或「… 已出院」（與查房單同一欄位）
+            const permit = (tr.querySelector('[id$="LinkPermitDischarge"]')?.getAttribute('title') || '')
+                .match(/^\s*(\d{4})\/(\d{2})\/(\d{2})\s+(可出院|已出院)\s*$/);
+
             return {
                 name: nameEl.textContent.trim(),
                 bed: `${roomEl?.textContent?.trim() || ''}-${bedEl?.textContent?.trim() || ''}`,
                 postbackArg: m[1],
+                dischargeDate: permit ? `${permit[1]}-${permit[2]}-${permit[3]}` : '',  // YYYY-MM-DD，同 dateKey
             };
         }).filter(Boolean);
     }
@@ -380,7 +385,7 @@
             <div id="wp-sec-prewrite" style="background:#f7f7f7;border-radius:8px;padding:10px 12px">
                 <div style="margin-bottom:8px">
                     往後幾天：<input type="number" id="wp-days" min="1" max="${MAX_DAYS}" style="width:50px;padding:3px 6px;border:1px solid #bbb;border-radius:4px">
-                    <span style="color:#777;font-size:12px">（時間 ${DRAFT_HOUR}:00，Plan＝${KEEP_PLAN_TEXT}，Assessment 清空）</span>
+                    <span style="color:#777;font-size:12px">（時間 ${DRAFT_HOUR}:00，Plan＝${KEEP_PLAN_TEXT}，Assessment 清空；「准」亮燈者預出院日當天起不建）</span>
                 </div>
                 <div id="wp-vs-list"></div>
                 <div id="wp-sch-status" style="margin-top:6px;font-size:12px;color:#777"></div>
@@ -683,6 +688,15 @@
         } catch { return Object.assign({}, DEFAULT_OPTIONS); }
     }
 
+    function getBatchPatient() {
+        try {
+            const state = JSON.parse(
+                window.opener?.sessionStorage?.getItem(STORAGE_KEY)
+            );
+            return state?.patients?.[state.currentIndex] || null;
+        } catch { return null; }
+    }
+
     // ── Plan：把所有有內容的 PAP Plan 欄位改成 Keep current management ──
     function applyPlanOption(options) {
         if (options.plan !== 'keep') return;
@@ -785,6 +799,14 @@
         const mode = getBatchOptions().mode;
         if (mode === 'prewrite') { prewriteProcess(); return; }
         if (mode === 'confirm') { confirmDraftProcess(); return; }
+
+        // 預出院日（准亮燈）當天與之後不寫病程
+        const dc = getBatchPatient()?.dischargeDate || '';
+        if (dc && dateKey(new Date()) >= dc) {
+            const [, mo, d] = dc.split('-');
+            notifyOpener(`預出院 ${+mo}/${+d}，不需病程`);
+            return;
+        }
 
         const today = getTodayMMDD();
 
@@ -1247,12 +1269,16 @@
         try {
             const opts = getBatchOptions();
             const existing = new Set(scanNotes().filter(n => n.type === 'progress').map(n => n.mmdd));
-            const made = [], skipped = [], problems = [];
+            const made = [], skipped = [], dcSkipped = [], problems = [];
+            // 預出院日（准亮燈）當天與之後都不建草稿
+            const dc = getBatchPatient()?.dischargeDate || '';
 
             for (let i = 0; i < opts.days; i++) {
                 const offset = i + 1;
                 const vsid = opts.vsids[i] || opts.vsids[0] || '';
-                const mmdd = dateKey(addDays(offset)).slice(5);
+                const key = dateKey(addDays(offset));
+                const mmdd = key.slice(5);
+                if (dc && key >= dc) { dcSkipped.push(`+${offset}`); continue; }
                 if (existing.has(mmdd)) { skipped.push(`+${offset}`); continue; }
                 const err = await createDraft(offset, vsid);
                 if (err) { problems.push(err); break; }  // 失敗就停，避免後面疊出殘缺草稿
@@ -1262,6 +1288,10 @@
             const parts = [];
             if (made.length) parts.push(`✓ 已建草稿 ${made.join(' ')}`);
             if (skipped.length) parts.push(`已存在略過 ${skipped.join(' ')}`);
+            if (dcSkipped.length) {
+                const [, mo, d] = dc.split('-');
+                parts.push(`預出院 ${+mo}/${+d}，略過 ${dcSkipped.join(' ')}`);
+            }
             if (problems.length) parts.push(`⚠ ${problems.join('；')}`);
             notifyOpener((parts.join('；') || '無需建立'));
         } catch (e) {
