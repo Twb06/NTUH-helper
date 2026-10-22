@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Weekend Progress
 // @namespace    https://ihisaw.ntuh.gov.tw/
-// @version      1.7.1
-// @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS，可由主治班表自動帶入員編）／當日確認草稿（帶入 TPR 與導管）／複製最新 Progress Note 填 stable 後送出
+// @version      1.8.0
+// @description  例假日病程批次工具：週五預寫週末草稿（每日各指定 VS，可由主治班表自動帶入員編）／當日確認草稿（TPR 帶入 Objective、Assessment＝Objective、帶入導管）／複製最新 Progress Note 後送出（Subjective 可自訂、Assessment 可複製／留空／帶入 TPR）
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -35,7 +35,9 @@
         reviewer: 'keep',   // 'keep' = 維持原本 VS；'unify' = 統一填入員編
         reviewerId: '',
         plan: 'copy',       // 'copy' = 複製上一則；'keep' = 填入 Keep current management
-        mode: 'copy',       // 'prewrite' = 週五預寫草稿；'confirm' = 當日確認草稿；'copy' = 複製最新一則
+        subjText: 'stable', // copy：Subjective 要填的內容（空白 = 保留複製來的）
+        assess: 'copy',     // copy：'copy' = 複製上一則；'clear' = 留空；'tpr' = 帶入 TPR
+        mode: 'copy',      // 'prewrite' = 週五預寫草稿；'confirm' = 當日確認草稿；'copy' = 複製最新一則
         days: 2,            // prewrite：往後幾天
         vsids: [],          // prewrite：第 1、2、… 天的覆核 VS（員編）
     };
@@ -355,7 +357,23 @@
                     <input type="radio" name="wp-mode" value="confirm"> 當日確認：把今天的草稿帶入 TPR／導管後送出
                 </label>
                 <label style="display:block;margin:4px 0;cursor:pointer">
-                    <input type="radio" name="wp-mode" value="copy"> 複製最新一則（Subjective 填 stable）後送出
+                    <input type="radio" name="wp-mode" value="copy"> 複製最新一則後送出
+                </label>
+            </div>
+
+            <div id="wp-sec-copy">
+                <div style="font-weight:bold;margin-bottom:6px">Subjective</div>
+                <input type="text" id="wp-subj" placeholder="空白＝保留複製來的內容"
+                    style="width:100%;box-sizing:border-box;padding:4px 6px;border:1px solid #bbb;border-radius:4px">
+                <div style="font-weight:bold;margin:12px 0 6px">Assessment</div>
+                <label style="display:inline-block;margin:4px 12px 4px 0;cursor:pointer">
+                    <input type="radio" name="wp-assess" value="copy"> 複製
+                </label>
+                <label style="display:inline-block;margin:4px 12px 4px 0;cursor:pointer">
+                    <input type="radio" name="wp-assess" value="clear"> 留空
+                </label>
+                <label style="display:inline-block;margin:4px 12px 4px 0;cursor:pointer">
+                    <input type="radio" name="wp-assess" value="tpr"> 帶入 TPR
                 </label>
             </div>
 
@@ -404,6 +422,9 @@
         const modeRadios = [...box.querySelectorAll('input[name="wp-mode"]')];
         const revRadios  = [...box.querySelectorAll('input[name="wp-rev"]')];
         const planRadios = [...box.querySelectorAll('input[name="wp-plan"]')];
+        const assessRadios = [...box.querySelectorAll('input[name="wp-assess"]')];
+        const subjInput  = box.querySelector('#wp-subj');
+        const secCopy    = box.querySelector('#wp-sec-copy');
         const idInput    = box.querySelector('#wp-rev-id');
         const daysInput  = box.querySelector('#wp-days');
         const vsList     = box.querySelector('#wp-vs-list');
@@ -415,6 +436,8 @@
         (modeRadios.find(r => r.value === defaultMode) || modeRadios[0]).checked = true;
         (revRadios.find(r => r.value === saved.reviewer) || revRadios[0]).checked = true;
         (planRadios.find(r => r.value === saved.plan) || planRadios[0]).checked = true;
+        (assessRadios.find(r => r.value === saved.assess) || assessRadios[0]).checked = true;
+        subjInput.value = saved.subjText ?? 'stable';
         idInput.value = saved.reviewerId || '';
         daysInput.value = defaultDays;
 
@@ -481,6 +504,7 @@
             secPre.style.display = m === 'prewrite' ? '' : 'none';
             secRev.style.display = m === 'prewrite' ? 'none' : '';
             secPlan.style.display = m === 'copy' ? '' : 'none';  // 確認草稿不動 Plan
+            secCopy.style.display = m === 'copy' ? '' : 'none';
         };
         revRadios.forEach(r => r.addEventListener('change', syncId));
         modeRadios.forEach(r => r.addEventListener('change', syncMode));
@@ -502,6 +526,8 @@
                 reviewer: revRadios.find(r => r.checked)?.value || 'keep',
                 reviewerId: idInput.value.trim(),
                 plan: planRadios.find(r => r.checked)?.value || 'copy',
+                subjText: subjInput.value.trim(),
+                assess: assessRadios.find(r => r.checked)?.value || 'copy',
                 days: parseInt(daysInput.value, 10) || 1,
                 vsids: [...vsList.querySelectorAll('input')].map(i => i.value.trim()),
             };
@@ -671,6 +697,22 @@
             filled++;
         }
         return filled;
+    }
+
+    // ── Assessment：複製（不動）／留空（清掉所有可見的 PAP Assessment）／帶入 TPR（Assessment1）──
+    async function applyAssessOption(options) {
+        if (options.assess === 'clear') {
+            for (let i = 1; i <= 20; i++) {
+                const el = document.getElementById(`NTUHWeb1_ProgressNoteMainTab_ucPAP_txbAssessment${i}`);
+                if (!el || el.disabled || !el.offsetParent) continue;  // 跳過隱藏的 PAP 模板
+                fillField(el.id, '');
+            }
+            return '';
+        }
+        if (options.assess === 'tpr') {
+            return pullVitals(['NTUHWeb1_ProgressNoteMainTab_ucPAP_txbAssessment1']);
+        }
+        return '';
     }
 
     // ── 覆核者：統一填入員編 ──
@@ -898,12 +940,15 @@
             return;
         }
 
-        contentField.value = 'stable\n' + contentField.value;
-        contentField.dispatchEvent(new Event('input', { bubbles: true }));
-        contentField.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // 覆核者（Blank Note 無 PAP，不套用 Plan 選項）
+        // Subjective 選項：Blank Note 沒有分欄，加在內容最前面
         const blankOptions = getBatchOptions();
+        if (blankOptions.subjText) {
+            contentField.value = blankOptions.subjText + '\n' + contentField.value;
+            contentField.dispatchEvent(new Event('input', { bubbles: true }));
+            contentField.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // 覆核者（Blank Note 無 PAP，不套用 Plan／Assessment 選項）
         if (!applyReviewerOption(blankOptions)) {
             resultLabel += ' (覆核者未填)';
         }
@@ -911,7 +956,7 @@
         await new Promise(r => setTimeout(r, blankOptions.reviewer === 'unify' ? 1200 : 300));
 
         if (!contentField.value.trim()) {
-            fillField('NTUHWeb1_BlankNoteMainTab_txbBlankContnt', 'stable');
+            fillField('NTUHWeb1_BlankNoteMainTab_txbBlankContnt', blankOptions.subjText || 'stable');
             await new Promise(r => setTimeout(r, 300));
         }
 
@@ -1002,7 +1047,12 @@
         // 等 500ms 讓系統完全就緒再填入
         await new Promise(r => setTimeout(r, 500));
 
-        fillField('NTUHWeb1_ProgressNoteMainTab_txbSubject', 'stable');
+        const options = getBatchOptions();
+        const subjText = options.subjText;
+        if (subjText) fillField('NTUHWeb1_ProgressNoteMainTab_txbSubject', subjText);
+
+        const aErr = await applyAssessOption(options);
+        if (aErr) resultLabel += ` (${aErr})`;
 
         // 等 300ms 再處理導管
         await new Promise(r => setTimeout(r, 300));
@@ -1017,7 +1067,6 @@
         }
 
         // Plan 與覆核者
-        const options = getBatchOptions();
         applyPlanOption(options);
         const reviewerOk = applyReviewerOption(options);
         if (!reviewerOk) resultLabel += ' (覆核者未填)';
@@ -1028,7 +1077,8 @@
         // postback 後若欄位被重繪清空，補回來
         const subjEl = document.getElementById('NTUHWeb1_ProgressNoteMainTab_txbSubject');
         if (subjEl && !subjEl.value.trim()) {
-            fillField('NTUHWeb1_ProgressNoteMainTab_txbSubject', 'stable');
+            fillField('NTUHWeb1_ProgressNoteMainTab_txbSubject', subjText || 'stable');
+            if (options.assess === 'clear') applyAssessOption(options);
             applyPlanOption(options);
             if (reviewerOk) applyReviewerOption(options);
             await new Promise(r => setTimeout(r, 300));
@@ -1219,7 +1269,7 @@
         }
     }
 
-    // ── 當日確認：選取今日草稿 → 清 Subjective/填 stable → TPR → 導管 → 送出 ──
+    // ── 當日確認：選取今日草稿 → Subjective 空的補 stable → TPR 進 Objective、Assessment＝Objective → 導管 → 送出 ──
 
     function waitHasData(id, timeout) {
         return new Promise(resolve => {
@@ -1236,18 +1286,18 @@
     // 生命徵象 accordion 的「選取」連結：T/P/R/BP/…（沿用同學版的 ctrl 0-3,5）
     const TPR_ITEMS = [0, 1, 2, 3, 5].map(n => `ctl00_VitalSignList_ctrl${n}_lkbSelectData`);
 
-    async function pullVitals() {
+    // fields：要帶入 TPR 的欄位 id（各自清空後點一次欄位再帶入，與同學版一致）
+    async function pullVitals(fields) {
         const header = $id('ui-accordion-accordion-header-0');
         if (!header) return '生命徵象區塊不存在';
         header.click();
         const has = await waitHasData('divVitalSignData', 5000);
 
         const clickItems = () => TPR_ITEMS.map($id).filter(Boolean).forEach(b => b.click());
-        const obj = $id(P + 'txbObject');
-        const assess = $id(P + 'ucPAP_txbAssessment1');
-        // 與同學版一致：Objective、Assessment 各清空後點一次欄位再帶入 TPR
-        if (obj) { obj.value = ''; obj.click(); clickItems(); }
-        if (assess) { assess.value = ''; assess.click(); clickItems(); }
+        for (const id of fields) {
+            const el = $id(id);
+            if (el) { el.value = ''; el.click(); clickItems(); }
+        }
         return has ? '' : '無生命徵象';
     }
 
@@ -1290,8 +1340,13 @@
             if (!subj) { notifyOpener('Subjective 欄位不存在'); return; }
             if (!subj.value.trim()) fillField(P + 'txbSubject', 'stable');
 
-            const vErr = await pullVitals();
+            // TPR 只進 Objective；Assessment 放當下 Objective 的內容（等 TPR 寫進去，最多 2 秒）
+            const vErr = await pullVitals([P + 'txbObject']);
             if (vErr) notes.push(vErr);
+            const obj = $id(P + 'txbObject');
+            for (let t = 0; obj && !obj.value.trim() && t < 20; t++) await sleep(100);
+            if (obj?.value.trim()) fillField(P + 'ucPAP_txbAssessment1', obj.value);
+            else notes.push('Objective 空白，Assessment 未帶入');
             await pullCatheters();
 
             // 覆核者（預設維持草稿上週五指定的 VS）
