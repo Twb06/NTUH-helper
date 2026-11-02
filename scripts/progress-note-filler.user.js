@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.67
+// @version      1.69
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -452,8 +452,8 @@ After the admission, the patient was in stable condition, the physical examinati
             #ntuh-filler-panel {
                 position: fixed;
                 bottom: 24px;
-                right: 24px;
-                width: 380px;
+                right: 44px;
+                width: 470px;
                 background: #ffffff;
                 border: 1px solid #9db98a;
                 border-radius: 12px;
@@ -494,7 +494,8 @@ After the admission, the patient was in stable condition, the physical examinati
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
-                max-height: 82vh;
+                /* 降高：頂端讓出右上角 HIS 的功能鈕（生命徵象/留置導管…） */
+                max-height: calc(100vh - 180px);
                 overflow-y: auto;
             }
             #ntuh-filler-notestatus {
@@ -789,13 +790,14 @@ After the admission, the patient was in stable condition, the physical examinati
             }
             .ntuh-linkable { cursor: pointer; }
             .ntuh-linkable:hover { text-decoration: underline; }
-            /* 左側面板（交班筆記，之後再塞護理紀錄）：寬 160px，高度貼滿與右側 UI 對齊，同開同關 */
+            /* 左側面板（交班筆記＋今日護理紀錄）：寬 300px 蓋住左欄但不壓到筆記內容；
+               靠下、高度隨內容，頂端讓出筆記清單；護理紀錄預設收合，同開同關 */
             #ntuh-handover-left {
                 position: fixed;
-                top: 44px;
                 bottom: 24px;
                 left: 24px;
-                width: 160px;
+                width: 300px;
+                max-height: calc((100vh - 160px) * 0.75);
                 background: #ffffff;
                 border: 1px solid #9db98a;
                 border-radius: 12px;
@@ -824,6 +826,8 @@ After the admission, the patient was in stable condition, the physical examinati
                 border-top: 1px solid #9db98a;
                 color: #f0a860;
             }
+            #ntuh-hl-nursing-toggle { cursor: pointer; user-select: none; padding-left: 8px; color: #dfe8d4; }
+            #ntuh-handover-left.hl-nursing-collapsed #ntuh-hl-nursing { display: none; }
             #ntuh-handover-left .hl-body {
                 margin: 0;
                 padding: 10px 12px;
@@ -831,7 +835,7 @@ After the admission, the patient was in stable condition, the physical examinati
                 word-break: break-word;
                 font-size: 12px;
                 line-height: 1.55;
-                flex: 1;
+                flex: 0 1 auto;
                 min-height: 0;
                 overflow-y: auto;
             }
@@ -880,12 +884,20 @@ After the admission, the patient was in stable condition, the physical examinati
         // 左側「交班筆記」面板（與右側 UI 同開同關）
         const hLeft = document.createElement('div');
         hLeft.id = 'ntuh-handover-left';
+        hLeft.className = 'hl-nursing-collapsed'; // 護理紀錄常是空的 → 預設收合，只留交班
         hLeft.innerHTML = `
             <div class="hl-head"><span id="ntuh-hl-handover-title">🗒 交班筆記</span></div>
             <pre class="hl-body" id="ntuh-hl-handover">尚未抓取（按右側「抓取全部data」）</pre>
-            <div class="hl-head hl-head2"><span id="ntuh-hl-nursing-title">📋 今日護理紀錄</span></div>
+            <div class="hl-head hl-head2"><span id="ntuh-hl-nursing-title">📋 今日護理紀錄</span><span id="ntuh-hl-nursing-toggle" title="展開／收合">▸</span></div>
             <pre class="hl-body" id="ntuh-hl-nursing">尚未抓取</pre>`;
         document.body.appendChild(hLeft);
+        const nursingToggle = document.getElementById('ntuh-hl-nursing-toggle');
+        const syncNursingToggle = () => {
+            const collapsed = hLeft.classList.contains('hl-nursing-collapsed');
+            nursingToggle.textContent = (collapsed && hLeft.dataset.nursingHas === '1' ? '有紀錄 ' : '') + (collapsed ? '▸' : '▾');
+        };
+        nursingToggle.onclick = () => { hLeft.classList.toggle('hl-nursing-collapsed'); syncNursingToggle(); };
+        hLeft.syncNursingToggle = syncNursingToggle;
 
         fab.onclick = () => {
             fab.style.display = 'none';
@@ -1492,6 +1504,12 @@ After the admission, the patient was in stable condition, the physical examinati
         };
         setLeft('ntuh-hl-handover', byKey['handover'], '（無交班筆記）');
         setLeft('ntuh-hl-nursing', byKey['nursing'], '（今日無護理紀錄）');
+        // 收合時在標題列提示「有紀錄」，免得漏看
+        const hLeftBox = document.getElementById('ntuh-handover-left');
+        if (hLeftBox && byKey['nursing']) {
+            hLeftBox.dataset.nursingHas = byKey['nursing'].ok && byKey['nursing'].text ? '1' : '';
+            if (hLeftBox.syncNursingToggle) hLeftBox.syncNursingToggle();
+        }
 
         // 左側標題點擊跳轉對應頁面（交班 / 護理紀錄）
         const wireLeftTitle = (titleId, baseText, r) => {
