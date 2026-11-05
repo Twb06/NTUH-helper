@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.9.2-standalone
-// @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更；依列表順序列出所有病人，一行並排兩人
+// @version      1.10.0-standalone
+// @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更（有就亮燈）；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @run-at       document-idle
@@ -1000,7 +1000,7 @@ function isOnOxygen(inside) {
         ]);
     }
 
-    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）。醫囑簽收頁改成點擊才載入（見 loadOrders），不在這裡
+    // 階段二（重）：抗生素（藥歷 GET/POST）、管路（頁面＋handler，必須一次一位）。醫囑簽收頁在階段三（見 run／loadOrders），不在這裡
     async function assessHeavy(res, now, onUpdate) {
         const p = res.p;
         const job = jobRunner(res, onUpdate);
@@ -1411,25 +1411,31 @@ ${dataTable(series)}</div>`;
         }
     }
 
-    // 醫囑：第一次展開才為該病人載入（醫囑簽收頁很重：頁面＋切「全部」postback，且要與管路共用 pageGate 一次一位，
-    // 所以不放進簡報載入流程）；失敗可收合再展開重試。簡報還在載入時點開，會排在管路後面。
+    // 醫囑：醫囑簽收頁很重（頁面＋切「全部」postback，且要與管路共用 pageGate 一次一位），不放進階段一、二；
+    // 等抗生素與管路都抓完，階段三才在背景依病人順序逐位載入，有昨夜醫囑就在摘要旁亮「新醫囑」（樣式同「新報告」）。
+    // 階段三之前先點開也可以，會排在管路後面；載入過不重抓，失敗可收合再展開重試。
     async function loadOrders(w, i, r, win) {
         const body = w.document.getElementById(`c${i}-ordbody`);
         const sum = body && body.parentNode.querySelector('summary');
+        const lbs = sum && sum.querySelector('.lbs');
+        const hint = sum && sum.querySelector('.ordhint');
         r.ordState = 'loading';
         if (body) body.innerHTML = '<span class="muted">載入中…</span>';
+        if (lbs) lbs.textContent = '昨夜醫囑變更（載入中…）';
         try {
             const d = await fetchOrders(r.p, win, nowMs());
             if (w.closed) return;
             r.orders = d;
             body.innerHTML = renderOrdersBody(d);
-            const lbs = sum && sum.querySelector('.lbs');
             const del = d.items.filter((x) => x.action === '刪除').length;
-            if (lbs) lbs.textContent = d.items.length ? `昨夜醫囑變更（${d.items.length} 筆${del ? `，刪除 ${del}` : ''}）` : '昨夜醫囑變更（沒有）';
+            if (lbs) lbs.textContent = d.items.length ? '昨夜醫囑變更' : '昨夜醫囑變更（沒有）';
+            if (hint) hint.innerHTML = d.items.length ? ` <span class="tag new">新醫囑 ${d.items.length} 筆${del ? `（刪除 ${del}）` : ''}</span>` : '';
             r.ordState = 'done';
         } catch (e) {
             r.ordState = 'error';
-            if (!w.closed && body) body.innerHTML = `<div class="err">⚠ 醫囑抓取失敗：${esc(e.name === 'AbortError' ? '逾時' : e.message)}（收合再展開可重試）</div>`;
+            if (w.closed) return;
+            if (body) body.innerHTML = `<div class="err">⚠ 醫囑抓取失敗：${esc(e.name === 'AbortError' ? '逾時' : e.message)}（收合再展開可重試）</div>`;
+            if (lbs) lbs.textContent = '昨夜醫囑變更（載入失敗，點擊重試）';
         }
     }
 
@@ -1445,7 +1451,7 @@ ${dataTable(series)}</div>`;
 <div id="c${i}-err">${renderErr(r)}</div>
 <div class="kv"><span class="k">${titleLink('抗生素', u.rx)}</span><div id="c${i}-abx">${renderAbx(r)}</div></div>
 <div class="kv"><span class="k"><a href="${esc(u.cath)}" target="ntuh-catheter" data-cath="1" title="開啟管路頁（固定開在同一個分頁；簡報載入完成後才能開）">管路 ↗</a></span><div id="c${i}-tubes">${renderTubes(r)}</div></div>
-<div class="kv"><span class="k"><a href="#" data-ord="${i}" title="開啟醫囑簽收頁（新分頁）">醫囑 ↗</a></span><div><details class="lb" data-ord-load="${i}"><summary><span class="lbs">昨夜醫囑變更（點擊載入）</span></summary><div id="c${i}-ordbody"></div></details></div></div>
+<div class="kv"><span class="k"><a href="#" data-ord="${i}" title="開啟醫囑簽收頁（新分頁）">醫囑 ↗</a></span><div><details class="lb" data-ord-load="${i}"><summary><span class="lbs">昨夜醫囑變更（等待載入，可先點開）</span><span class="ordhint"></span></summary><div id="c${i}-ordbody"></div></details></div></div>
 <div class="kv"><span class="k">${titleLink('檢驗', u.lab)}</span><div><details class="lb" data-lab="${i}"><summary><span class="lbs">檢驗數值（點擊載入）</span>${labHint(r)}</summary><div id="c${i}-labbody"></div></details></div></div>
 <div class="kv"><span class="k"><a href="#" data-pacs="${i}" title="開啟影像列表">影像 ↗</a></span><div id="c${i}-pacs">${renderPacs(r)}</div></div>
 <div class="mt ct">${titleLink('生命徵象', u.vitals)}</div>
@@ -1535,11 +1541,11 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
                 if (r && r.ordState !== 'loading' && r.ordState !== 'done') loadOrders(w, i, r, win);
             }
         }, true);
-        let loading = true;   // 簡報載入中（finally 之後才會變 false）
+        let loading = true;   // 簡報載入中，含階段三的醫囑（finally 之後才會變 false）
         // 影像：點擊時為該病人開啟來源頁（邏輯在原頁）。管路：載入中先擋下，避免互相干擾。
         w.document.addEventListener('click', (ev) => {
             const c = ev.target.closest && ev.target.closest('a[data-cath]');
-            if (c && loading) { ev.preventDefault(); alert('簡報還在載入管路，請等頁首顯示「完成」後再開管路頁（避免兩邊互相干擾）。'); return; }
+            if (c && loading) { ev.preventDefault(); alert('簡報還在載入管路／醫囑，請等頁首顯示「完成」後再開管路頁（避免兩邊互相干擾）。'); return; }
             const o = ev.target.closest && ev.target.closest('a[data-ord]');
             if (o) { ev.preventDefault(); const ro = states[+o.getAttribute('data-ord')]; if (ro) openOrderCheck(w, ro.p); return; }
             const g = ev.target.closest && ev.target.closest('a[data-prog]');
@@ -1578,7 +1584,7 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
                 setProg('生命徵象與影像', ++d1);
             }));
 
-            // 階段二（重）：抗生素＋管路＋醫囑，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
+            // 階段二（重）：抗生素＋管路，依病人順序、一次 HEAVY_POOL 位；卡片會由上而下依序補完
             let d2 = 0, next = 0;
             setProg('抗生素與管路', 0);
             const worker = async () => {
@@ -1590,6 +1596,16 @@ svg.hsvg .hit{fill:transparent;stroke:none}svg.hsvg .hitl{stroke:transparent;str
                 }
             };
             await Promise.all(Array.from({ length: Math.min(HEAVY_POOL, states.length) }, worker));
+
+            // 階段三（背景）：醫囑，依病人順序一次一位（pageGate 本來就串行）；使用者已點開過的不重抓。
+            // 管路連結維持擋下到這段結束：醫囑簽收頁也可能改到伺服器端的「目前病人」（見 pageGate 註解）
+            setProg('醫囑', 0);
+            for (let i = 0; i < states.length; i++) {
+                if (w.closed) break;
+                const r = states[i];
+                if (r.ordState !== 'loading' && r.ordState !== 'done') await loadOrders(w, i, r, win);
+                setProg('醫囑', i + 1);
+            }
         } finally {
             loading = false;
             btn.disabled = false;
