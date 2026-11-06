@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.74
-// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。
+// @version      1.78
+// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。「📥 Ditto admission note」按鈕不需 primary note：直接以 GetNoteTableContent 取回入院紀錄，臆斷→Problem、O:/Objective:→Assessment、最底下的 P:/Plan:→Plan，新增 progress 貼入 PAP 後按確認。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -326,6 +326,332 @@ After the admission, the patient was in stable condition, the physical examinati
     }
 
     // ─────────────────────────────────────────────
+    // Ditto admission note：把入院紀錄的內容帶進新 progress 的 PAP
+    //   資料來源＝在 progress 頁「選 admission note」時的同一個呼叫
+    //   POST .../ProgressNoteControl/Service/Notes.asmx/GetNoteTableContent
+    //   Problem    ← 臆斷(Tentative Diagnosis) 區塊
+    //   Assessment ← 醫療需求與治療計畫區塊內的 O: / Objective:
+    //   Plan       ← 同區塊最底下的 P: / Plan:
+    // ─────────────────────────────────────────────
+    const NOTE_TABLE_URL = '/WebApplication/InPatient/Ward/ProgressNoteControl/Service/Notes.asmx/GetNoteTableContent';
+    const ADMISSION_NOTE_TYPE = 'admission';
+    const ADMISSION_EMR_DOC_CODE = 'A00014'; // 入院紀錄的 EMR 文件代碼
+    const PAP_FIELD_IDS = {
+        problem: 'NTUHWeb1_ProgressNoteMainTab_ucPAP_txbProblem1',
+        assessment: 'NTUHWeb1_ProgressNoteMainTab_ucPAP_txbAssessment1',
+        plan: 'NTUHWeb1_ProgressNoteMainTab_ucPAP_txbPlan1'
+    };
+
+    const DIAGNOSIS_HEADER_RE = /(?:臆\s*斷\s*[（(]\s*Tentative\s*Diagnosis\s*[)）]|Tentative\s*Diagnosis)/i;
+    const CAREPLAN_HEADER_RE = /(?:醫療需求\s*(?:與|和)?\s*治療計畫\s*[（(]\s*Medical\s*Needs\s*(?:and|＆|&)\s*Care\s*Plan\s*[)）]|Medical\s*Needs\s*(?:and|＆|&)\s*Care\s*Plan)/i;
+    // 入院紀錄的固定段標：出現就代表前一個區塊結束
+    const SECTION_BOUNDARIES = [
+        /^臆\s*斷/, /^Tentative\s*Diagnosis/i,
+        /^醫療需求/, /^Medical\s*Needs/i,
+        /^出院規劃/, /^Discharge\s*Planning/i,
+        /^主治醫師評論/, /^VS\s*Comment/i,
+        /^醫師姓名/, /^病理報告/, /^影像報告/, /^檢查紀錄/, /^檢驗紀錄/,
+        /^身體診察/, /^病史/, /^主訴/, /^系統性回顧/, /^社會心理相關評估/
+    ];
+
+    // note 表格 HTML → 純文字（<br> 與 </tr>/</div> 轉成換行，避免整段黏成一行）
+    function noteHtmlToText(html) {
+        const CR = new RegExp(String.fromCharCode(13), 'g');
+        const decoded = String(html || '')
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<\s*br\s*\/?>/gi, '\n')
+            .replace(/<\/(?:td|th)>/gi, ' ')
+            .replace(/<\/(?:tr|div|p|li|table|h1|h2|h3)>/gi, '\n')
+            .replace(/<[^>]*>/g, '')
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#0*39;|&apos;/gi, "'")
+            .replace(/&#(\d+);/g, (m, d) => String.fromCharCode(Number(d)))
+            .replace(/&#x([0-9a-f]+);/gi, (m, h2) => String.fromCharCode(parseInt(h2, 16)))
+            .replace(/&amp;/gi, '&')
+            .replace(CR, '')
+            .replace(/\u00a0/g, ' ');
+        return decoded
+            .split('\n').map((line) => line.replace(/[ \t]+$/, '')).join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    // 取「標題行之後、下一個段標之前」的內容（標題行自身帶的殘餘也算）
+    function sliceNoteSection(text, headerRe) {
+        const lines = String(text || '').split('\n');
+        const start = lines.findIndex((line) => headerRe.test(line.trim()));
+        if (start < 0) return '';
+        const out = [];
+        const rest = lines[start].trim().replace(headerRe, '').replace(/^[\s:：]+/, '');
+        if (rest) out.push(rest);
+        for (let i = start + 1; i < lines.length; i++) {
+            const trimmed = lines[i].trim();
+            if (trimmed && SECTION_BOUNDARIES.some((re) => re.test(trimmed))) break;
+            out.push(lines[i]);
+        }
+        return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
+    const SOAP_LABEL_WORDS = {
+        o: ['o', 'objective', 'objectives'],
+        a: ['a', 'assessment'],
+        p: ['p', 'plan', 'plans']
+    };
+
+    // 認標籤行：「O:」「o：」「[O]」「<O>」「Objective:」「單獨一行的 O」
+    function matchSoapLabel(line, words) {
+        const src = String(line || '').trim();
+        let m = /^[\s\-*•‧·]*[\[<（(]\s*([A-Za-z]{1,12})\s*[\]>）)]\s*[：:]?\s*(.*)$/.exec(src);
+        if (!m) m = /^[\s\-*•‧·]*([A-Za-z]{1,12})\s*[：:]\s*(.*)$/.exec(src);
+        if (!m) {
+            const bare = src.replace(/^[\s\-*•‧·]+/, '').replace(/[：:]+$/, '').trim().toLowerCase();
+            return words.includes(bare) ? { inline: '' } : null;
+        }
+        return words.includes(m[1].toLowerCase()) ? { inline: (m[2] || '').trim() } : null;
+    }
+
+    function findSoapLabel(lines, words, from) {
+        for (let i = from; i < lines.length; i++) {
+            const hit = matchSoapLabel(lines[i], words);
+            if (hit) return { index: i, inline: hit.inline };
+        }
+        return null;
+    }
+
+    // Plan 區塊的收尾：Treatment Goal 這類附註不帶進 plan
+    const PLAN_STOP_RE = /^(?:treat(?:ment)?\s*goals?|治療目標|照護目標)\s*[:：]?/i;
+    function findPlanEnd(lines, from) {
+        for (let i = from + 1; i < lines.length; i++) {
+            if (PLAN_STOP_RE.test(String(lines[i]).trim())) return i;
+        }
+        return lines.length;
+    }
+
+    function joinSoapBody(lines, start, endExclusive, inline) {
+        const body = lines.slice(start + 1, endExclusive);
+        const out = inline ? [inline].concat(body) : body;
+        return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
+    // 入院紀錄純文字 → { problem, assessment, plan }
+    function parseAdmissionSoap(text) {
+        const problem = sliceNoteSection(text, DIAGNOSIS_HEADER_RE);
+        const careplan = sliceNoteSection(text, CAREPLAN_HEADER_RE);
+        const lines = careplan ? careplan.split('\n') : [];
+
+        const o = findSoapLabel(lines, SOAP_LABEL_WORDS.o, 0);
+        const a = o ? findSoapLabel(lines, SOAP_LABEL_WORDS.a, o.index + 1) : null;
+        // P 從 A 之後開始找（沒有 A 就從 O 之後）；一律取「最底下」那個，
+        // 才不會吃到 O 區塊裡自己寫的 Plan: 行
+        const pFrom = a ? a.index + 1 : (o ? o.index + 1 : 0);
+        let p = null;
+        let cursor = pFrom;
+        let hit = findSoapLabel(lines, SOAP_LABEL_WORDS.p, cursor);
+        while (hit) {
+            p = hit;
+            cursor = hit.index + 1;
+            hit = findSoapLabel(lines, SOAP_LABEL_WORDS.p, cursor);
+        }
+        const assessEnd = a ? a.index : (p ? p.index : lines.length);
+
+        return {
+            problem: problem,
+            assessment: o ? joinSoapBody(lines, o.index, assessEnd, o.inline) : '',
+            plan: p ? joinSoapBody(lines, p.index, findPlanEnd(lines, p.index), p.inline) : ''
+        };
+    }
+
+    function pageHiddenValue(ids) {
+        for (let i = 0; i < ids.length; i++) {
+            const el = document.getElementById(ids[i]);
+            if (el && String(el.value || '').trim()) return String(el.value).trim();
+        }
+        return '';
+    }
+
+    function pageQueryValue(name) {
+        try {
+            const search = (window.location && window.location.search) || '';
+            return new URLSearchParams(search).get(name) || '';
+        } catch (e) { return ''; }
+    }
+
+    // 入院紀錄的 CaseSeqNo / Version：優先找頁面上的 Type=admission;…;Version=…
+    function findAdmissionDescriptor() {
+        let html = '';
+        try { html = document.documentElement ? document.documentElement.innerHTML : ''; } catch (e) { return null; }
+        const m = /Type=admission;CaseSeqNo=(\d+);[^'"<]*?Version=(\d+)/i.exec(html);
+        return m ? { caseSeqNo: m[1], version: m[2] } : null;
+    }
+
+    // 候選請求：頁面描述子優先，其次 hidden field，最後由最新版往回試（上限 12 次）
+    function buildAdmissionRequests() {
+        const accountIdse = pageHiddenValue(['hidAccountNo']) || pageQueryValue('AccountIDSE');
+        const empNo = pageHiddenValue(['hiddenSkEmpNO', 'hidLoginEmpNo', 'hidEmpNo']);
+        if (!accountIdse || !empNo) return [];
+        const completeFlag = pageHiddenValue(['hiddenCompleteFlag']) || 'V';
+        let emrDocCode = ADMISSION_EMR_DOC_CODE;
+        try {
+            const m = /EmrDocCode=([A-Z0-9]{4,12})/i.exec(document.documentElement.innerHTML);
+            if (m) emrDocCode = m[1];
+        } catch (e) { /* noop */ }
+
+        const descriptor = findAdmissionDescriptor();
+        const caseSeqs = [];
+        if (descriptor) caseSeqs.push(descriptor.caseSeqNo);
+        const fromPage = pageHiddenValue(['NTUHWeb1_hidCaseSeqNoRunatServer']);
+        if (fromPage) caseSeqs.push(fromPage);
+        caseSeqs.push('1'); // 第一次入院
+
+        const versions = [];
+        if (descriptor) versions.push(descriptor.version);
+        ['9', '8', '7', '6', '5', '4', '3', '2', '1'].forEach((v) => versions.push(v));
+
+        const requests = [];
+        const seen = {};
+        caseSeqs.forEach((cs) => {
+            versions.forEach((v) => {
+                const key = cs + '/' + v;
+                if (seen[key]) return;
+                seen[key] = true;
+                requests.push({ accountIdse, empNo, completeFlag, emrDocCode, caseSeqNo: cs, version: v });
+            });
+        });
+        return requests.slice(0, 12);
+    }
+
+    function buildNoteTableBody(req) {
+        return JSON.stringify({
+            jsonstring: JSON.stringify({
+                AccountIdse: req.accountIdse,
+                CaseSeqNo: req.caseSeqNo,
+                Version: req.version,
+                EmpNo: req.empNo,
+                EmrDocCode: req.emrDocCode,
+                CompleteFlag: req.completeFlag
+            }),
+            notetype: ADMISSION_NOTE_TYPE
+        });
+    }
+
+    async function requestNoteTable(req) {
+        const res = await fetch(NOTE_TABLE_URL, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json; charset=UTF-8',
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: buildNoteTableBody(req)
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const outer = await res.json();
+        const inner = typeof outer.d === 'string' ? JSON.parse(outer.d) : outer.d;
+        if (!inner) return { text: '', meta: null };
+        const text = inner.HTMLTable ? noteHtmlToText(inner.HTMLTable) : String(inner.Content || '').trim();
+        return { text: text, meta: inner };
+    }
+
+    // 入院日期比對：避免候選 CaseSeqNo 抓到「別次住院」的入院紀錄
+    function admissionDateMatches(text, inDate) {
+        const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})/.exec(String(inDate || '').trim());
+        if (!m) return true;
+        const re = new RegExp('(^|\\D)' + m[1] + '\\/0?' + Number(m[2]) + '\\/0?' + Number(m[3]) + '(\\D|$)');
+        return re.test(String(text || ''));
+    }
+
+    // 取回入院紀錄並解析；找不到就換下一組候選，全部失敗才丟錯
+    async function fetchAdmissionNote(onAttempt) {
+        const requests = buildAdmissionRequests();
+        if (!requests.length) throw new Error('找不到病人參數（hidAccountNo／hiddenSkEmpNO）');
+        const inDate = pageHiddenValue(['hiddenInDate']);
+        for (let i = 0; i < requests.length; i++) {
+            const req = requests[i];
+            if (onAttempt) onAttempt(req, i + 1, requests.length);
+            let got;
+            try { got = await requestNoteTable(req); } catch (e) { continue; }
+            if (!got || !got.text) continue;
+            const meta = got.meta || {};
+            // 回應會回帶 CaseSeqNo：不一致代表抓到別次住院，寧可換下一組也不要貼錯
+            if (meta.CaseSeqNo && String(meta.CaseSeqNo) !== String(req.caseSeqNo)) continue;
+            if (!DIAGNOSIS_HEADER_RE.test(got.text) || !CAREPLAN_HEADER_RE.test(got.text)) continue;
+            if (!admissionDateMatches(got.text, inDate)) continue;
+            const version = meta.Version ? String(meta.Version) : req.version;
+            return Object.assign({ caseSeqNo: req.caseSeqNo, version: version, text: got.text }, parseAdmissionSoap(got.text));
+        }
+        throw new Error('取不到入院紀錄（臆斷／醫療需求與治療計畫）');
+    }
+
+    // 主流程：抓入院紀錄 → 新增 progress → 貼入 PAP → 確認
+    async function runDittoAdmissionNote(btn) {
+        if (btn) btn.disabled = true;
+        try {
+            setStatus('🔍 抓取 admission note…', 'warn');
+            const note = await fetchAdmissionNote((req, n, total) => {
+                setStatus('🔍 抓取 admission note…（CaseSeqNo ' + req.caseSeqNo + '／Version ' + req.version + '，' + n + '/' + total + '）', 'warn');
+            });
+            const keys = ['problem', 'assessment', 'plan'].filter((k) => note[k]);
+            if (!keys.length) {
+                setStatus('✗ 入院紀錄解析不到臆斷／O／P，未新增 progress', 'err');
+                return;
+            }
+            const missing = ['problem', 'assessment', 'plan'].filter((k) => !note[k]);
+
+            setStatus('📝 新增 progress 並貼入 PAP…', 'warn');
+            await clickAndWaitPostback('NTUHWeb1_btnInsertProgressNote');
+            if (!await waitForEl('NTUHWeb1_ProgressNoteMainTab_txbSubject')) {
+                setStatus('✗ Progress 表單未出現，未填入', 'err');
+                return;
+            }
+            await waitPostbacksSettle();
+            const pap = await ensurePapRow(() => {
+                setStatus('⏳ 自動開 PAP 失敗：請點畫面上的「新增PAP」，會自動接續（等 20 秒）', 'warn');
+            });
+            const firstProgressPap = papRowCandidates().filter((el) => String(el.id).indexOf('ProgressNoteMainTab') >= 0)[0] || null;
+            const fallbackIds = firstProgressPap ? papIdsFromId(firstProgressPap.id) : null;
+            const fieldIds = pap.row || fallbackIds || PAP_FIELD_IDS;
+            if (!pap.ok) {
+                const papIds = papRowCandidates().map((el) => el.id + (isElementVisible(el) ? '(visible)' : '(hidden)'));
+                console.warn('[NTUH filler] PAP 未展開：' + describePapState(pap.state) + '\n' + papIds.join(', '));
+                if (!firstProgressPap) {
+                    setStatus('✗ 找不到任何 PAP 欄位，未填入。' + describePapState(pap.state), 'err');
+                    return;
+                }
+            }
+
+            const doFill = () => {
+                keys.forEach((k) => fillField(fieldIds[k], note[k]));
+                return [];
+            };
+            const result = await fillStable(doFill, fieldIds[keys[0]]);
+            if (!result.ok) {
+                setStatus('⚠ PAP 填入後被系統清空，未自動確認，請檢查後手動確認', 'warn');
+                return;
+            }
+            if (!pap.ok) {
+                setStatus('⚠ PAP 未展開：內容已貼進 PAP 第 ' + (fieldIds.index || '?') + ' 列，請目視確認後自行按「確認」（未自動確認）。' + describePapState(pap.state), 'warn');
+                return;
+            }
+            document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote')?.click();
+            setStatus('✓ 已新增 progress：Problem←臆斷、Assessment←O、Plan←P'
+                + (pap.row && pap.row.index !== '1' ? '（PAP 第 ' + pap.row.index + ' 列）' : '')
+                + (pap.manual ? '（手動開 PAP）' : '')
+                + '（CaseSeqNo ' + note.caseSeqNo + '／Version ' + note.version + '）'
+                + (missing.length ? '；缺 ' + missing.join('/') + ' 未填' : ''),
+                missing.length ? 'warn' : 'ok');
+        } catch (e) {
+            setStatus('✗ ' + (e && e.message ? e.message : 'Ditto admission note 失敗'), 'err');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // 填入 Weekly Summary
     // ─────────────────────────────────────────────
     function fillWeeklySummary(noteText, autoConfirm = true) {
@@ -555,6 +881,12 @@ After the admission, the patient was in stable condition, the physical examinati
                 color: #7adba0;
             }
             #ntuh-filler-today:hover { opacity: 0.85; }
+            #ntuh-filler-ditto {
+                background: #22404f;
+                color: #86d3e8;
+            }
+            #ntuh-filler-ditto:hover { opacity: 0.85; }
+            #ntuh-filler-ditto:disabled { opacity: 0.4; cursor: not-allowed; }
             #ntuh-filler-fillrow .ntuh-tplrow { display: flex; gap: 6px; margin-top: 7px; align-items: stretch; }
             #ntuh-filler-fillrow .ntuh-tplrow select {
                 flex: 1;
@@ -871,6 +1203,8 @@ After the admission, the patient was in stable condition, the physical examinati
                         <button type="button" id="ntuh-tpl-manage" title="管理自訂模板">⚙</button>
                     </div>
                     <div class="ntuh-hint">選模板後按「填入」：自動貼上模板後暫存<br>按「⚙」 可編輯自訂模板</div>
+                    <button id="ntuh-filler-ditto">📥 Ditto admission note</button>
+                    <div class="ntuh-hint">取入院紀錄：臆斷→Problem、O:→Assessment、最底下的 P:→Plan，自動新增 progress 貼入 PAP 後確認</div>
                 </div>
                 <hr class="ntuh-divider">
                 <div id="ntuh-filler-grabrow">
@@ -988,6 +1322,10 @@ After the admission, the patient was in stable condition, the physical examinati
             btn.disabled = true;
             try { await grabAll(); } finally { btn.disabled = false; }
         };
+
+        // Ditto admission note：抓入院紀錄的臆斷/O/P → 新 progress 的 PAP → 確認
+        const dittoBtn = document.getElementById('ntuh-filler-ditto');
+        if (dittoBtn) dittoBtn.onclick = () => runDittoAdmissionNote(dittoBtn);
 
         wireCustomTemplates();
 
@@ -1820,6 +2158,163 @@ After the admission, the patient was in stable condition, the physical examinati
         document.getElementById('Button1')?.click(); // InsertPAPTab('progress') → 展開成可見的真 PAP
         for (let i = 0; i < 40 && !visible(); i++) await sleep(150); // 等變可見（最多 ~6s）
         return visible();
+    }
+
+    // ─────────────────────────────────────────────
+    // PAP 展開／定位（ditto 專用）：PAP 可能被插成第 N 列，也可能自動點不動
+    // （要使用者手動按「新增PAP」）→ 兩條路都要走得通
+    // ─────────────────────────────────────────────
+    function isElementVisible(el) {
+        if (!el) return false;
+        if (el.offsetParent !== null) return true;
+        try {
+            if (el.getClientRects && el.getClientRects().length > 0) return true;
+            const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+            return !!(style && style.display !== 'none' && style.visibility !== 'hidden' && (el.offsetWidth || el.offsetHeight));
+        } catch (e) { return false; }
+    }
+
+    function papRowCandidates() {
+        let list = [];
+        try { list = Array.prototype.slice.call(document.querySelectorAll('[id*="ucPAP_txbProblem"]')); } catch (e) { return []; }
+        return list.filter((el) => el && /ucPAP_txbProblem\d+$/.test(String(el.id || '')));
+    }
+
+    // 由 PAP 欄位 id 推出同一列的 Problem/Assessment/Plan id（不寫死第 1 列）
+    function papIdsFromId(id) {
+        const src = String(id || '');
+        const cut = src.lastIndexOf('txbProblem');
+        const hit = /(\d+)$/.exec(src);
+        if (cut < 0 || !hit) return null;
+        const prefix = src.slice(0, cut);
+        const index = hit[1];
+        return {
+            index: index,
+            problem: prefix + 'txbProblem' + index,
+            assessment: prefix + 'txbAssessment' + index,
+            plan: prefix + 'txbPlan' + index
+        };
+    }
+
+    // 不寫死 txbProblem1：取「第一個可見的 PAP 列」，回傳該列的 3 個欄位 id
+    function resolvePapRow() {
+        let visible = papRowCandidates().filter(isElementVisible);
+        // 同頁還有 Weekly/OnService 的 PAP：優先只認 Progress 那一組，避免填錯 tab
+        const progressOnly = visible.filter((el) => String(el.id).indexOf('ProgressNoteMainTab') >= 0);
+        if (progressOnly.length) visible = progressOnly;
+        if (!visible.length) return null;
+        return papIdsFromId(visible[0].id);
+    }
+
+    function describePapState(state) {
+        const progress = papRowCandidates().filter((el) => String(el.id).indexOf('ProgressNoteMainTab') >= 0);
+        const visible = progress.filter(isElementVisible).length;
+        return '按鈕=' + (findInsertPapButton() ? '有' : '無')
+            + '；Progress PAP=' + progress.length + ' 欄位'
+            + (visible ? '（' + visible + ' 可見）' : '（全隱藏）')
+            + (state ? '；postback=' + (state.postback ? '有' : '無')
+                + (state.button ? '／onclick=' + state.button.slice(0, 70) : '') : '');
+    }
+
+    function allPageButtons() {
+        try { return Array.prototype.slice.call(document.querySelectorAll('input[type="button"], input[type="submit"], button')); }
+        catch (e) { return []; }
+    }
+
+    function onclickOf(el) {
+        try { return String((el && el.getAttribute && el.getAttribute('onclick')) || ''); }
+        catch (e) { return ''; }
+    }
+
+    // 這一頁把「每個 tab 的表單」都畫進 DOM（Progress / OnService / OffService / Weekly
+    // 各有 10 個 PAP 欄位，全部 hidden），所以 #Button1 不保證是 Progress 那顆；
+    // 一定要認 onclick 裡的 tab 名稱。
+    function findInsertPapButton() {
+        const buttons = allPageButtons();
+        const forProgress = buttons.filter((el) => /InsertPAPTab\s*\(\s*['"]progress['"]\s*\)/i.test(onclickOf(el)));
+        if (forProgress.length) {
+            const inside = forProgress.filter((el) => {
+                try { return !!(el.closest && el.closest('[id*="ProgressNoteMainTab"]')); } catch (e) { return false; }
+            });
+            return inside[0] || forProgress[0];
+        }
+        const legacy = document.getElementById('Button1');
+        if (legacy && /InsertPAPTab/i.test(onclickOf(legacy))) return legacy;
+        const byLabel = buttons.filter((el) => String(el.value || el.textContent || '').indexOf('新增PAP') >= 0);
+        return byLabel[0] || null;
+    }
+
+    // 有沒有看到 UpdatePanel 非同步 postback（判斷點擊是否真的生效）
+    function postbackWatcher() {
+        const prm = window.Sys && window.Sys.WebForms && window.Sys.WebForms.PageRequestManager
+            && window.Sys.WebForms.PageRequestManager.getInstance();
+        let seen = false;
+        const bump = () => { seen = true; };
+        if (prm) { try { prm.add_beginRequest(bump); } catch (e) { /* noop */ } }
+        return {
+            saw: () => seen,
+            stop: () => { if (prm) { try { prm.remove_beginRequest(bump); } catch (e) { /* noop */ } } }
+        };
+    }
+
+    // 先自動點「新增PAP」（最多 2 次；已插入就不再點，避免多出空白 PAP），
+    // 仍不成才請使用者手動按，並等 20 秒自動接續
+    async function ensurePapRow(onWait) {
+        let row = resolvePapRow();
+        const state = { postback: false, button: '', found: false };
+        if (row) return { ok: true, row: row, manual: false, state: state };
+
+        for (let round = 0; round < 2 && !row; round++) {
+            const before = papRowCandidates().length;
+            const btn = findInsertPapButton();
+            if (!btn) break;
+            state.found = true;
+            state.button = onclickOf(btn) || String(btn.value || btn.textContent || '');
+            const watch = postbackWatcher();
+            try { btn.click(); } catch (e) { /* noop */ }
+            const t0 = nowMs();
+            let retried = false;
+            while (nowMs() - t0 < 3500 && !row) {
+                await sleep(150);
+                row = resolvePapRow();
+                if (watch.saw()) state.postback = true;
+                // 1.2s 內完全沒有 postback → 這次 click 沒生效，改用真的 MouseEvent 再試一次
+                if (!row && !retried && !watch.saw() && nowMs() - t0 >= 1200) {
+                    retried = true;
+                    try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch (e) { /* noop */ }
+                    const t1 = nowMs();
+                    while (nowMs() - t1 < 2500 && !row) {
+                        await sleep(150);
+                        row = resolvePapRow();
+                        if (watch.saw()) state.postback = true;
+                    }
+                }
+            }
+            if (watch.saw()) state.postback = true;
+            watch.stop();
+            // 欄位數變多＝已插進去但還不可見 → 只等，不再點（避免多出空白 PAP 列）
+            if (!row && papRowCandidates().length > before) {
+                const t2 = nowMs();
+                while (nowMs() - t2 < 6000 && !row) {
+                    await sleep(150);
+                    row = resolvePapRow();
+                }
+            }
+        }
+
+        if (row) return { ok: true, row: row, manual: false, state: state };
+        // 手動接手期間也監看 postback：有 postback 卻仍看不到欄位＝可見性判斷問題，不是點擊問題
+        const watchManual = postbackWatcher();
+        if (onWait) onWait();
+        const t3 = nowMs();
+        while (nowMs() - t3 < 20000 && !row) {
+            await sleep(200);
+            row = resolvePapRow();
+            if (watchManual.saw()) state.postback = true;
+        }
+        if (watchManual.saw()) state.postback = true;
+        watchManual.stop();
+        return { ok: !!row, row: row, manual: true, state: state };
     }
 
     // 狀態一律顯示在上方的 primary note 狀態框（class 控制左邊框顏色）
