@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.78
-// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。「📥 Ditto admission note」按鈕不需 primary note：直接以 GetNoteTableContent 取回入院紀錄，臆斷→Problem、O:/Objective:→Assessment、最底下的 P:/Plan:→Plan，新增 progress 貼入 PAP 後按確認。
+// @version      1.79
+// @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。「📥 Ditto admission note」按鈕不需 primary note：直接以 GetNoteTableContent 取回入院紀錄，臆斷→Problem、O:/Objective:→Assessment、最底下的 P:/Plan:→Plan，新增 progress 貼入 PAP 後按確認。「匯出到交班單」把 primary note 整理成交班單欄位並暫存，收集完可下載橫向 A4 的 Excel，每位病人一頁。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
 // @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/news2.js
+// @require      https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/lib/handover-sheet.js
 // @updateURL    https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
 // @downloadURL  https://github.com/Twb06/NTUH-helper/raw/refs/heads/main/scripts/progress-note-filler.user.js
 // @grant        none
@@ -14,6 +15,8 @@
 
 (function () {
     'use strict';
+
+    /* global NTUHHandover */
 
     // HIS 頁面的 date.js 覆寫了 Date.now（回傳 Date 物件而非數字）與 Date.prototype.toString（吃 format 參數），
     // 所以 `Date.now().toString(36)` 之類的寫法會直接丟 TypeError。全 script 一律走這個安全版取毫秒。
@@ -911,6 +914,22 @@ After the admission, the patient was in stable condition, the physical examinati
             }
             #ntuh-filler-fillrow .ntuh-tplrow button:hover { opacity: 0.85; }
             #ntuh-filler-fillrow .ntuh-tplrow button:disabled { opacity: 0.4; cursor: not-allowed; }
+            #ntuh-filler-handover, #ntuh-handover-download { background: #2c5f54; color: #fff; }
+            #ntuh-filler-handover:hover, #ntuh-handover-download:hover { opacity: 0.85; }
+            #ntuh-handover-download:disabled { opacity: 0.4; cursor: not-allowed; }
+            #ntuh-handover-form { display: none; margin-top: 4px; }
+            #ntuh-handover-form .ntuh-tplrow button { padding: 6px 10px; }
+            #ntuh-handover-who { font-size: 11px; font-weight: bold; margin: 0 2px 3px; }
+            #ntuh-handover-event {
+                width: 100%; height: 90px; box-sizing: border-box; resize: vertical;
+                border: 1px solid #9db98a; border-radius: 6px; padding: 5px 7px; font-size: 12px; font-family: inherit;
+            }
+            #ntuh-handover-list { font-size: 11px; margin-top: 3px; }
+            #ntuh-handover-list .ho-row { display: flex; align-items: center; gap: 6px; padding: 1px 2px; }
+            #ntuh-handover-list .ho-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            #ntuh-handover-list .ho-remove, #ntuh-handover-list #ntuh-handover-clear {
+                width: auto !important; margin: 0 !important; padding: 0 5px; font-size: 11px; background: transparent; color: #8a4a3a; border: none; cursor: pointer;
+            }
             /* 自訂模板管理視窗 */
             #ntuh-tpl-modal {
                 position: fixed; inset: 0; z-index: 100000;
@@ -1205,6 +1224,19 @@ After the admission, the patient was in stable condition, the physical examinati
                     <div class="ntuh-hint">選模板後按「填入」：自動貼上模板後暫存<br>按「⚙」 可編輯自訂模板</div>
                     <button id="ntuh-filler-ditto">📥 Ditto admission note</button>
                     <div class="ntuh-hint">取入院紀錄：臆斷→Problem、O:→Assessment、最底下的 P:→Plan，自動新增 progress 貼入 PAP 後確認</div>
+                    <button id="ntuh-filler-handover">📤 匯出到交班單</button>
+                    <div class="ntuh-hint">整理這位病人的 primary note 與處方；同一人再按會更新</div>
+                    <div id="ntuh-handover-form">
+                        <div id="ntuh-handover-who"></div>
+                        <textarea id="ntuh-handover-event" placeholder="Event"></textarea>
+                        <div class="ntuh-hint">Event：可自行整理後再確定（預帶今日 event）</div>
+                        <div class="ntuh-tplrow">
+                            <button type="button" id="ntuh-handover-ok">確定</button>
+                            <button type="button" id="ntuh-handover-cancel">取消</button>
+                        </div>
+                    </div>
+                    <button id="ntuh-handover-download" disabled>⬇ 下載交班單（0 人）</button>
+                    <div id="ntuh-handover-list"></div>
                 </div>
                 <hr class="ntuh-divider">
                 <div id="ntuh-filler-grabrow">
@@ -1328,9 +1360,203 @@ After the admission, the patient was in stable condition, the physical examinati
         if (dittoBtn) dittoBtn.onclick = () => runDittoAdmissionNote(dittoBtn);
 
         wireCustomTemplates();
+        wireHandover();
 
         // 先畫出資料區骨架（群組＋分項標題，收合、顯示「尚未抓取」），不用等 data
         renderBlocks();
+    }
+
+    // ─────────────────────────────────────────────
+    // 交班單：每位病人的 progress 頁各匯出一次，暫存在 localStorage（同院區各頁共用），收集完下載成一份 Excel
+    // ─────────────────────────────────────────────
+    const HANDOVER_KEY = 'ntuh_handover_sheet_v1';
+
+    function loadHandover() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(HANDOVER_KEY) || '[]');
+            return Array.isArray(saved) ? saved : [];
+        } catch (e) { return []; }
+    }
+
+    function saveHandover(entries) {
+        try {
+            if (entries.length) localStorage.setItem(HANDOVER_KEY, JSON.stringify(entries));
+            else localStorage.removeItem(HANDOVER_KEY);
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // ⚠️ 除病歷號外，橫幅／入院日的實際格式未經實機確認，所以先原樣帶入，不做切割
+    function readHandoverPatient() {
+        const bySuffix = (suffix) => {
+            const el = document.querySelector(`[id$="${suffix}"]`);
+            return el ? String(el.value || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+        };
+        const account = [...new URLSearchParams(window.location.search)].find(([k]) => k.toLowerCase() === 'accountidse')?.[1] || '';
+        const chartNo = bySuffix('lblChartNo') || bySuffix('hidChartNo');
+        return {
+            key: chartNo || account,
+            chartNo,
+            banner: bySuffix('LabelAbstractInfo'),
+            bed: bySuffix('HiddenFieldBedIDSE').split('-').slice(1).map((x) => x.trim()).join('-'),
+            admit: bySuffix('hiddenInDate'),
+        };
+    }
+
+    // 只記抓成功的處方，並綁定病人：這頁可切換病人，別把上一位的藥帶到下一位
+    let lastRx = null;
+    function rememberRx(results) {
+        const r = (results || []).find((x) => x.key === 'rx');
+        lastRx = r && r.ok ? { patient: readHandoverPatient().key, text: r.text || '（無處方）' } : null;
+    }
+
+    let rxInFlight = null;   // 取消後馬上重按時沿用同一輪抓取，不重開背景頁
+    function handoverRx(patientKey) {
+        if (lastRx && lastRx.patient === patientKey) return Promise.resolve(lastRx.text);
+        if (rxInFlight && rxInFlight.patient === patientKey) return rxInFlight.promise;
+        const promise = grabAll().then((results) => {
+            rxInFlight = null;
+            if (lastRx && lastRx.patient === patientKey) return lastRx.text;
+            const r = (results || []).find((x) => x.key === 'rx');
+            return r && r.error ? `（處方抓取失敗：${r.error}）` : '（處方未抓到）';
+        });
+        rxInFlight = { patient: patientKey, promise };
+        return promise;
+    }
+
+    function refreshHandoverList() {
+        const entries = NTUHHandover.sortEntries(loadHandover());
+        const download = document.getElementById('ntuh-handover-download');
+        const list = document.getElementById('ntuh-handover-list');
+        if (!download || !list) return;
+        download.textContent = `⬇ 下載交班單（${entries.length} 人）`;
+        download.disabled = !entries.length;
+        list.textContent = '';
+        const pad = (n) => String(n).padStart(2, '0');
+        entries.forEach((e) => {
+            const row = document.createElement('div');
+            row.className = 'ho-row';
+            const name = document.createElement('span');
+            name.className = 'ho-name';
+            const at = new Date(e.savedAt);
+            // 不會自動清除，所以直接顯示匯出日期，舊資料才看得出來
+            name.textContent = `${at.getMonth() + 1}/${at.getDate()} ${e.bed || e.chartNo} ${(e.banner || '').split(/[\s(（]/)[0]}`;
+            name.title = `${e.banner || ''}　匯出於 ${at.getMonth() + 1}/${at.getDate()} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'ho-remove';
+            remove.textContent = '✕';
+            remove.title = '從交班單移除';
+            remove.onclick = () => {
+                saveHandover(loadHandover().filter((x) => x.key !== e.key));
+                refreshHandoverList();
+            };
+            row.append(name, remove);
+            list.appendChild(row);
+        });
+        if (entries.length) {
+            const clear = document.createElement('button');
+            clear.type = 'button';
+            clear.id = 'ntuh-handover-clear';
+            clear.textContent = '全部清空';
+            clear.onclick = () => {
+                if (!confirm('要清空交班單裡收集的所有病人嗎？')) return;
+                saveHandover([]);
+                refreshHandoverList();
+            };
+            list.appendChild(clear);
+        }
+    }
+
+    function wireHandover() {
+        // lib 沒載到（網路或尚未推上 GitHub）時只停用交班單，不能拖垮整個面板
+        if (!window.NTUHHandover) {
+            document.getElementById('ntuh-filler-handover').disabled = true;
+            document.getElementById('ntuh-handover-list').textContent = '交班單模組未載入，請重新整理或更新腳本';
+            return;
+        }
+        const form = document.getElementById('ntuh-handover-form');
+        const eventBox = document.getElementById('ntuh-handover-event');
+        const okBtn = document.getElementById('ntuh-handover-ok');
+        let session = null;   // 這次匯出的病人與處方；取消或重開就換一個，舊的抓取結果不再生效
+
+        document.getElementById('ntuh-filler-handover').onclick = () => {
+            const text = grabPrimaryNote();
+            if (!text) { setStatus('⚠ 找不到 primary note，請先開啟筆記', 'err'); return; }
+            const fields = NTUHHandover.parseNoteFields(text);
+            if (!fields.diagnosis && !fields.plans && !fields.ne) {
+                setStatus('⚠ 這篇筆記不是 primary note 格式（找不到 Diagnosis／Plans／Assessment）', 'err');
+                return;
+            }
+            const patient = readHandoverPatient();
+            if (!patient.key) { setStatus('⚠ 抓不到病歷號，無法匯出', 'err'); return; }
+            const existing = loadHandover().find((x) => x.key === patient.key);
+            // 當天重按保留已整理的 event；隔天就換成新的今日 event，免得交出昨天的內容
+            const dayOf = (d) => [d.getFullYear(), d.getMonth(), d.getDate()].join('-');
+            const sameDay = existing && dayOf(new Date(existing.savedAt)) === dayOf(new Date());
+            eventBox.value = sameDay ? existing.event : fields.events;
+            document.getElementById('ntuh-handover-who').textContent = patient.banner || patient.key;
+            form.style.display = 'block';
+            okBtn.disabled = false;
+            session = { patient, rx: handoverRx(patient.key) };
+        };
+
+        document.getElementById('ntuh-handover-cancel').onclick = () => {
+            session = null;
+            form.style.display = 'none';
+        };
+
+        okBtn.onclick = async () => {
+            const current = session;
+            if (!current) return;
+            okBtn.disabled = true;
+            setStatus('🔄 整理交班單中（抓處方約需數秒）…', 'warn');
+            const rx = await current.rx;
+            if (session !== current) return;
+            session = null;
+            form.style.display = 'none';
+            okBtn.disabled = false;
+            const text = grabPrimaryNote();
+            if (readHandoverPatient().key !== current.patient.key || !text) {
+                setStatus('✗ 病人或筆記已變更，未匯出，請重新按一次', 'err');
+                return;
+            }
+            const { diagnosis, labImage, ne, plans } = NTUHHandover.parseNoteFields(text);
+            const entry = {
+                ...current.patient,
+                diagnosis, labImage, ne, plans, rx,
+                event: eventBox.value.trim(),
+                savedAt: nowMs(),
+            };
+            const others = loadHandover().filter((x) => x.key !== entry.key);
+            if (!saveHandover([...others, entry])) {
+                setStatus('✗ 瀏覽器儲存空間不足，未匯出', 'err');
+                return;
+            }
+            refreshHandoverList();
+            setStatus(rx.startsWith('（處方') ? `⚠ 已匯出，但 ${rx}` : '✓ 已匯出到交班單', rx.startsWith('（處方') ? 'warn' : 'ok');
+        };
+
+        document.getElementById('ntuh-handover-download').onclick = () => {
+            const entries = loadHandover();
+            if (!entries.length) { refreshHandoverList(); return; }
+            const { bytes, warnings } = NTUHHandover.buildXlsx(entries);
+            const now = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `交班單_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            setStatus(warnings.length ? `⚠ 已下載，${warnings.join('；')}` : `✓ 已下載交班單（${entries.length} 人）`, warnings.length ? 'warn' : 'ok');
+        };
+
+        // 別的病人分頁匯出時，這頁的人數跟著更新
+        window.addEventListener('storage', (e) => { if (e.key === HANDOVER_KEY) refreshHandoverList(); });
+        refreshHandoverList();
     }
 
     // 共用：開新 note（free note 或筆記本）→ 貼模板 → 驗證沒被洗掉 → 暫存
@@ -1891,9 +2117,9 @@ After the admission, the patient was in stable condition, the physical examinati
                 const head = document.createElement('div');
                 head.className = 'ntuh-blk-head';
                 const title = document.createElement('span');
-                title.textContent = '[生命徵象圖 48h]' + (tp.url ? ' ↗' : '');
+                title.textContent = '[生命徵象圖 48h]' + (tp && tp.url ? ' ↗' : '');
                 title.style.color = g.color;
-                if (tp.url) {
+                if (tp && tp.url) {
                     title.classList.add('ntuh-linkable');
                     title.title = '開啟對應頁面';
                     title.onclick = (ev) => { ev.stopPropagation(); window.open(tp.url, '_blank'); };
@@ -2056,6 +2282,7 @@ After the admission, the patient was in stable condition, the physical examinati
                 let results = [];
                 try { results = JSON.parse(localStorage.getItem('ntuh_datahelper_result') || '[]'); } catch (e) { results = []; }
                 try { localStorage.removeItem('ntuh_datahelper_result'); } catch (e) { /* noop */ }
+                rememberRx(results);
                 renderBlocks(results);
                 const ok = results.filter((r) => r.ok).length;
                 setStatus(ok === results.length ? '✓ 抓取完成' : `部分成功（${ok}/${results.length}）`,
