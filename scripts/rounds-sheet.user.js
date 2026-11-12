@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.3
+// @version      1.5.4
 // @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -21,7 +21,7 @@
 
     /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
 
-    const VERSION = '1.5.3';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
+    const VERSION = '1.5.4';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
     const PER_PAGE = 11;                          // 一頁病人數（預設；沒有人加行時的分頁，與紙本模板一致）
     const PAGE_LINES = 44;                        // 一頁可放幾「行」（資訊行＋每行文字，6mm 一行；11 位×4 行＝44，所以預設仍是每頁 11 位）
     const DEFAULT_ROWS = [0, 1, 2];               // 每位病人預設的行 id；最後一行右側的＋／−增減
@@ -591,6 +591,7 @@ ${pages.map((pp, i) => `<div class="page"><div class="gen">生成 ${esc(stamp)}<
 </main>
 ${sideHtml(patients)}
 </div>
+<script type="application/json" id="rs-data">${JSON.stringify({ patients, today, stamp }).replace(/</g, '\\u003c')}</script>
 <script>(${pageScript.toString()})(${JSON.stringify({ key: STORE_KEY, keep: KEEP_DAYS, labels: LABELS, options: LABEL_OPTIONS,templates: LABEL_TEMPLATES, ratio: RATIO, defaultRows: DEFAULT_ROWS, maxRows: MAX_ROWS, minRows: MIN_ROWS })}, ${applyStaffHeaders.toString()}, ${installStaffHeaders.toString()}, ${staffHash.toString()}, ${nk.toString()});<\/script></body></html>`;
     }
 
@@ -604,6 +605,9 @@ ${sideHtml(patients)}
         // 世代：整張重新排版後，上一輪遺留的計時器（延遲更新、延遲排版）還會在新文件上跑；它們手上的 store 是舊的，
         // 若讓它們存檔就會把新的列數／內容蓋回舊值——所以只有最新一輪的腳本可以寫 localStorage。
         const gen = window.__rsGen = (window.__rsGen || 0) + 1;
+        // 舊一輪的 setTimeout 不會被清掉，回呼時若已不是最新一輪就什麼都不做（否則會在新頁面上誤報「病房列表失效」）
+        const live = () => window.__rsGen === gen;
+        const later = (f, ms) => setTimeout(() => { if (live()) f(); }, ms);
         const now = new Date().getTime();
         let store = {};
         try { store = JSON.parse(localStorage.getItem(cfg.key) || '{}') || {}; } catch (e) { store = {}; }
@@ -818,7 +822,7 @@ ${sideHtml(patients)}
             window.opener.postMessage({ rs: 'repaginate', token: tokenOf() }, location.origin);
             ackSeq = 'repag';
             clearTimeout(ackTimer);
-            ackTimer = setTimeout(() => { if (ackSeq === 'repag') fail(); }, 2500);
+            ackTimer = later(() => { if (ackSeq === 'repag') fail(); }, 2500);
         };
         const addRow = (pt, ord) => {
             const id = pt.getAttribute('data-id'), prev = [...rowIdsOf(id)];
@@ -1060,6 +1064,7 @@ ${sideHtml(patients)}
         //   放進其他填寫欄（cc／#. 內容、待辦）→ 照一般文字放進去，不動標籤。
         let drag = null;
         const toast = (msg, good) => {
+            if (!live()) return;
             let t = document.getElementById('rs-toast');
             if (!t) { t = document.createElement('div'); t.id = 'rs-toast'; document.body.appendChild(t); }
             t.textContent = msg; t.style.background = good ? '#0f766e' : '#b91c1c'; t.className = 'show';
@@ -1171,9 +1176,9 @@ ${sideHtml(patients)}
             if (!openerOk()) { if (warnEl) warnEl.hidden = false; return; }
             const n = ++pingN;
             window.opener.postMessage({ rs: 'ping', token: tokenOf(), n }, location.origin);
-            setTimeout(() => { if (pongN < n && warnEl) warnEl.hidden = false; }, 3000);
+            later(() => { if (pongN < n && warnEl) warnEl.hidden = false; }, 3000);
         };
-        setTimeout(ping, 3000);
+        later(ping, 3000);
         window.__rsIV.push(setInterval(ping, 30000));
         const request = () => {
             if (!cur) return;
@@ -1181,16 +1186,16 @@ ${sideHtml(patients)}
             seq += 1;
             dlg.setAttribute('data-seq', String(seq));
             document.getElementById('dlg-body').innerHTML = '<span class="mu">載入中…</span>';
-            window.opener.postMessage({ rs: 'detail', token: tokenOf(), kind: cur.kind, idx: cur.idx, seq }, location.origin);
+            window.opener.postMessage({ rs: 'detail', token: tokenOf(), kind: cur.kind, idx: cur.idx, pid: cur.pid, seq }, location.origin);
             ackSeq = seq;
             clearTimeout(ackTimer);
-            ackTimer = setTimeout(() => { if (ackSeq === seq) document.getElementById('dlg-body').innerHTML = `<div class="er">${DEAD}</div>`; }, 2500);
+            ackTimer = later(() => { if (ackSeq === seq) document.getElementById('dlg-body').innerHTML = `<div class="er">${DEAD}</div>`; }, 2500);
         };
         document.addEventListener('click', (ev) => {
             const b = ev.target.closest && ev.target.closest('.bt');
             if (!b) return;
             const kind = b.getAttribute('data-kind');
-            cur = { kind, idx: +b.getAttribute('data-i') };
+            cur = { kind, idx: +b.getAttribute('data-i'), pid: b.closest('.sp').getAttribute('data-id') };
             markViewing(b.closest('.sp').getAttribute('data-id'));
             const name = b.parentElement.querySelector('.shn').textContent;
             document.getElementById('dlg-t').textContent = name + (kind === 'lab' ? '　Lab' : kind === 'pn' ? '　最近病程 PAP' : '　影像報告');
@@ -1210,7 +1215,7 @@ ${sideHtml(patients)}
             window.opener.postMessage({ rs: 'refresh', token: tokenOf() }, location.origin);
             ackSeq = 'refresh';
             clearTimeout(ackTimer);
-            ackTimer = setTimeout(() => { if (ackSeq === 'refresh' && warnEl) warnEl.hidden = false; }, 2500);
+            ackTimer = later(() => { if (ackSeq === 'refresh' && warnEl) warnEl.hidden = false; }, 2500);
         };
         document.getElementById('pr').onclick = () => window.print();
         // 分區清除：標籤區＝標籤（回預設）＋同行填寫欄；勾選區＝勾選格＋待辦文字
@@ -1554,18 +1559,12 @@ ${sideHtml(patients)}
     // ═══════════════════════════════════════════════════════════
     // 進入點
     // ═══════════════════════════════════════════════════════════
-    function run() {
-        const patients = readPatients();
-        if (!patients.length) { alert('找不到病人清單'); return; }
-        const w = window.open('', '_blank');
-        if (!w) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
-        const d = new Date();
-        const two = (n) => String(n).padStart(2, '0');
-        const today = `${d.getMonth() + 1}/${d.getDate()}`;
-        const stamp = `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
-        // 抓取在這個分頁（病房列表）跑；面板的「重新抓取」按鈕用 postMessage 通知這裡（比對 token，不依賴 source 物件）
+    // 每張查房單＝一個 session（token → 狀態）。病房列表 postback 後這支腳本會整個重跑、原本的 session 就不見了，
+    // 所以查房單送來不認得的 token 時，從那個分頁裡嵌的 #rs-data 接手（病人清單以查房單為準，不重讀病房列表：
+    // postback 可能換了排序、病房或出院名單，用索引對病人會對錯人）。
+    const sessions = new Map();
+    function attach(w, patients, today, stamp, token) {
         const state = { running: false, cache: {} };   // cache：右側面板各格的內容（整張重新排版後原樣放回，不重抓）
-        const token = String(nowMs()) + Math.random().toString(36).slice(2);
         const reply = (m) => { try { if (!w.closed) w.postMessage(m, location.origin); } catch (e) { /* 對方視窗已關 */ } };
         // 整張排版：依「每位病人的行數」分頁（沒人加行＝每頁 11 位）。第一次開啟與每次加／刪行都走這裡；
         // 文件被重寫後頁面腳本會重新初始化，使用者填的內容都在 localStorage（輸入當下就存），所以不會掉。
@@ -1582,7 +1581,6 @@ ${sideHtml(patients)}
             w.scrollTo(0, y);
             buildStaffHeaders(patients, groups).then((fields) => reply({ rs: 'staff', token, fields }));
         };
-        render();
         const cache = {};   // `${idx}|${kind}` → { at, data }：3 分鐘內重複點不再抓；空結果不快取（可能是登入逾時造成的假空）
         const CACHE_MS = 3 * 60000;
         const isEmpty = (kind, d) => (kind === 'lab' ? (d.empty || d.noTable || !d.items.length) : kind === 'pn' ? d.none : !d.length);
@@ -1590,7 +1588,8 @@ ${sideHtml(patients)}
             const dlg = w.closed ? null : w.document.getElementById('dlg');
             const body = dlg && w.document.getElementById('dlg-body');
             const p = patients[d.idx];
-            if (!body || !p) return;
+            if (!body) return;
+            if (!p || (d.pid && d.pid !== (p.chartNo || p.caseno))) { body.innerHTML = '<div class="er">病人對不上，請回病房列表重新按「查房單」。</div>'; return; }
             const stale = () => String(dlg.getAttribute('data-seq')) !== String(d.seq);
             const key = d.idx + '|' + d.kind;
             const now = nowMs();
@@ -1612,15 +1611,55 @@ ${sideHtml(patients)}
                 if ((await sessionAlive()) === false && !stale()) body.insertAdjacentHTML('afterbegin', `<div class="er">${SESSION_MSG}</div>`);
             }
         };
-        window.addEventListener('message', (ev) => {
-            if (ev.origin !== location.origin || !ev.data || ev.data.token !== token) return;
-            if (ev.data.rs === 'ping') reply({ rs: 'pong', n: ev.data.n });
-            else if (ev.data.rs === 'repaginate') { reply({ rs: 'ack', seq: 'repag' }); render(); }
-            else if (ev.data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
-            else if (ev.data.rs === 'detail') { reply({ rs: 'ack', seq: ev.data.seq }); showDetail(ev.data); }
-        });
-        fetchPanel(w, patients, state);
+        const handle = (data) => {
+            if (data.rs === 'ping') reply({ rs: 'pong', n: data.n });
+            else if (data.rs === 'repaginate') { reply({ rs: 'ack', seq: 'repag' }); render(); }
+            else if (data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
+            else if (data.rs === 'detail') { reply({ rs: 'ack', seq: data.seq }); showDetail(data); }
+        };
+        const s = { w, patients, state, render, handle };
+        sessions.set(token, s);
+        return s;
     }
+
+    function run() {
+        const patients = readPatients();
+        if (!patients.length) { alert('找不到病人清單'); return; }
+        const w = window.open('', '_blank');
+        if (!w) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
+        const d = new Date();
+        const two = (n) => String(n).padStart(2, '0');
+        const today = `${d.getMonth() + 1}/${d.getDate()}`;
+        const stamp = `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+        const token = String(nowMs()) + Math.random().toString(36).slice(2);
+        const s = attach(w, patients, today, stamp, token);
+        s.render();
+        fetchPanel(w, patients, s.state);
+    }
+
+    // 接手 postback 前開的查房單：確認對方分頁真的帶著這個 token，再讀它嵌的病人清單；面板現有內容放回 cache，
+    // 面板沒抓完（postback 打斷了抓取）就重抓。
+    function adopt(w, token) {
+        let doc, data;
+        try {
+            doc = w.document;
+            if (doc.documentElement.getAttribute('data-rs-token') !== token) return null;
+            data = JSON.parse(doc.getElementById('rs-data').textContent);
+        } catch (e) { return null; }
+        if (!data || !Array.isArray(data.patients) || !data.patients.length) return null;
+        const s = attach(w, data.patients, data.today, data.stamp, token);
+        doc.querySelectorAll('.sc[id], #sd-prog').forEach((el) => { s.state.cache[el.id] = el.innerHTML; });
+        const prog = doc.getElementById('sd-prog');
+        if (!prog || !/^完成/.test(prog.textContent)) fetchPanel(w, data.patients, s.state);
+        return s;
+    }
+
+    window.addEventListener('message', (ev) => {
+        if (ev.origin !== location.origin || !ev.data || !ev.data.rs || !ev.data.token) return;
+        if (!['ping', 'repaginate', 'refresh', 'detail'].includes(ev.data.rs)) return;
+        const s = sessions.get(ev.data.token) || (ev.source && adopt(ev.source, ev.data.token));
+        if (s) s.handle(ev.data);
+    });
 
     function getDock() {
         let d = document.getElementById('ntuh-dock');
