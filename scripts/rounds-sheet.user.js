@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.4
+// @version      1.5.6
 // @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -21,7 +21,7 @@
 
     /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
 
-    const VERSION = '1.5.4';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
+    const VERSION = '1.5.6';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
     const PER_PAGE = 11;                          // 一頁病人數（預設；沒有人加行時的分頁，與紙本模板一致）
     const PAGE_LINES = 44;                        // 一頁可放幾「行」（資訊行＋每行文字，6mm 一行；11 位×4 行＝44，所以預設仍是每頁 11 位）
     const DEFAULT_ROWS = [0, 1, 2];               // 每位病人預設的行 id；最後一行右側的＋／−增減
@@ -419,7 +419,7 @@
             `<b>${esc(patientName(p.name))}</b>`,
             sexAge(p) && `（${esc(sexAge(p))}）`,
             esc(p.chartNo),
-            p.adm && `入 ${esc(p.adm)}${dayOf(p) ? ` (D${esc(dayOf(p))})` : ''}`,
+            p.adm && `入 ${esc(p.adm)} (轉入${input(k('ti'), 'u w6')})`,   // 轉入日手填（住院天數只用在 NEW 圖示）
         ].filter(Boolean).join('<span class="sep"></span>');
         const discharge = `<div class="discharge">${p.discharged ? '已出院' : '預出院'}${input(k('dc'), 'u w6', ` data-def="${esc(shortDate(p.dischargeDate))}"`)}</div>`;
         const doctors = `<div class="staff-vr"><span title="${esc(p.attending)}">${p.attending ? `VS ${esc(p.attending)}` : ''}</span><span title="${esc(p.resident)}">${p.resident ? `R ${esc(p.resident)}` : ''}</span></div>`;
@@ -488,7 +488,7 @@ body{margin:0;background:#e5e7eb;color:#111;font:10.5pt/1 system-ui,"Noto Sans T
 input,textarea{font:inherit;color:inherit;background:transparent;border:0;outline:0;padding:0;margin:0}
 textarea{display:block;resize:none;overflow:hidden;line-height:1.05;overflow-wrap:anywhere;align-self:center}
 input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
-.w6{width:11mm}.w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
+.w6{width:16mm}.w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
 .pt{position:relative;height:calc(var(--lh,6mm) * (1 + var(--rows,3)));break-inside:avoid;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
 .ics{position:absolute;left:-8.2mm;top:.4mm;width:7.4mm;display:flex;flex-direction:column;gap:.7mm;align-items:center}
 .ic{width:4.8mm;height:4.8mm;display:flex;align-items:center;justify-content:center;visibility:hidden;color:#111}
@@ -496,8 +496,8 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 .ic .nw{font:700 5.4pt/1 system-ui,sans-serif;border:.25mm solid #111;border-radius:1mm;padding:.35mm .5mm;letter-spacing:-.02em}
 .ln{position:relative;display:flex;align-items:center;height:var(--lh,6mm);padding-right:1mm}
-.info .il{flex:1;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
-.discharge{flex:none;margin-left:3.5mm;white-space:nowrap}
+.info .il{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
+.discharge{flex:none;margin-left:2mm;white-space:nowrap}
 .staff-vr{flex:none;margin-left:auto;padding-left:2mm;display:grid;grid-template-columns:auto auto;gap:3mm;text-align:right;white-space:nowrap}
 .staff-vr span{max-width:25mm;overflow:hidden;text-overflow:ellipsis}
 .il b{font-weight:700}.sep{display:inline-block;width:2.5mm}
