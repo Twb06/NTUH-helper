@@ -130,7 +130,7 @@ async function main() {
     assert.equal(extracted.ward, '06A'); assert.equal(extracted.staffBed, '01-01');
     assert.equal(extracted.dischargeDate, '2026/10/07');
     assert.equal(extracted.discharged, false);
-    assert.match(A.blockHtml(extracted), /預出院<input[^>]*data-def="2026\/10\/07"/);
+    assert.match(A.blockHtml(extracted), />出<input[^>]*data-def="2026\/10\/07"/);
     permitTitle = '2026/10/08 已出院';
     const discharged = A.readPatients()[0];
     assert.equal(discharged.discharged, true);
