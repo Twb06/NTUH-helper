@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.6
+// @version      1.6.0
 // @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -21,7 +21,7 @@
 
     /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
 
-    const VERSION = '1.5.6';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
+    const VERSION = '1.6.0';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
     const PER_PAGE = 11;                          // 一頁病人數（預設；沒有人加行時的分頁，與紙本模板一致）
     const PAGE_LINES = 44;                        // 一頁可放幾「行」（資訊行＋每行文字，6mm 一行；11 位×4 行＝44，所以預設仍是每頁 11 位）
     const DEFAULT_ROWS = [0, 1, 2];               // 每位病人預設的行 id；最後一行右側的＋／−增減
@@ -31,7 +31,6 @@
     const RATIO = [2, 1, 1];                      // 三欄寬度比例預設（筆記｜標籤＋填寫｜勾選＋待辦），尺規可調
     // 選到（或輸入）這些標籤時，同一行的填寫欄若是空的就自動帶入範本
     const LABEL_TEMPLATES = { GCS: 'E.  V.  M.  ', MP: 'RU/LU/RL/LL:   /   /   /   ' };
-    const NEW_MAX_DAY = 2;   // 住院第幾天以內算「新入院」（入院當天＝Day 1）
     const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'Image', 'MP'];  // 點標籤彈出的選項（兩排各 5 個），也可自行輸入
     const STORE_KEY = 'ntuh-rounds-sheet:v1';
     const KEEP_DAYS = 30;                         // 超過幾天沒再出現在列表的病人，暫存內容自動清掉
@@ -377,17 +376,6 @@
         return `<div class="hdr" data-page="${pg}" data-scope="${scope}" data-names="${esc(JSON.stringify(docs))}">${['CR', 'VS'].map((role) => `<div class="hr" data-role="${role}"><b>${role}</b><div class="staff-slots"></div><button class="staff-add" type="button" title="新增 ${role} 人員">＋</button></div>`).join('')}</div>`;
     }
 
-    // 住院第幾天：優先用列表上的「住院總天數」，沒有就由入院日算（入院當天算 Day 1；民國年自動換算）
-    function dayOf(p) {
-        if (p.hospDay) return p.hospDay;
-        const m = p.adm.match(/(\d{2,4})\s*[\/.-]\s*(\d{1,2})\s*[\/.-]\s*(\d{1,2})/);
-        if (!m) return '';
-        const y = +m[1] < 1911 ? +m[1] + 1911 : +m[1];
-        const a = new Date(y, +m[2] - 1, +m[3]), t = new Date();
-        const diff = Math.round((new Date(t.getFullYear(), t.getMonth(), t.getDate()) - a) / 86400000) + 1;
-        return diff > 0 ? String(diff) : '';
-    }
-
     // 性別年齡：「F, 63y0m」「M, 41y3m」。性別男／女（或 M／F）→ M／F；年齡取「幾歲幾個月」，沒有月份就補 0m；認不得的格式原樣顯示
     function sexAge(p) {
         const sx = /^(男|m|male)/i.test(p.sex) ? 'M' : /^(女|f|female)/i.test(p.sex) ? 'F' : p.sex;
@@ -402,12 +390,12 @@
 
     // 病人資訊行左邊留白處的小圖示（NEW／抗生素藥瓶／管路／吹氣）：由資料自動亮起，也可以點一下手動開關；列印只印亮的
     const ICONS = {
-        new: ['NEW', '新入院（入院第 1–' + NEW_MAX_DAY + ' 天）', '<span class="nw">NEW</span>'],
+        uri: ['水滴', '有尿管', '<svg viewBox="0 0 24 24"><path d="M12 3c-3.6 4.6-6 8-6 11a6 6 0 0 0 12 0c0-3-2.4-6.4-6-11z"/></svg>'],
         abx: ['藥瓶', '使用中抗生素', '<svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M7 6h10v2l1 2v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V10l1-2z"/><path d="M9 13h6M9 16h6"/></svg>'],
-        tube: ['管路', '有留置管路', '<svg viewBox="0 0 24 24"><path d="M5 19c0-7 7-3 8-9s4-6 6-6"/><circle cx="5" cy="19" r="2"/><path d="M17 2l4 4"/></svg>'],
-        o2: ['吹氣', '給氧中（有給氧裝置）', '<svg viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 12h16a3 3 0 1 1-3 3"/><path d="M3 16h8"/></svg>'],
+        tube: ['管路', '有留置管路（鼻胃管等；不含尿管、氣切、人工血管）', '<svg viewBox="0 0 24 24"><path d="M5 19c0-7 7-3 8-9s4-6 6-6"/><circle cx="5" cy="19" r="2"/><path d="M17 2l4 4"/></svg>'],
+        o2: ['吹氣', '給氧中（有給氧裝置）或有氣切', '<svg viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 12h16a3 3 0 1 1-3 3"/><path d="M3 16h8"/></svg>'],
     };
-    const iconsHtml = (isNew) => `<div class="ics">${Object.entries(ICONS).map(([k, [, tip, svg]]) => `<span class="ic" data-ic="${k}"${k === 'new' && isNew ? ' data-auto="1"' : ''} title="${esc(tip)}（點一下手動開關）">${svg}</span>`).join('')}</div>`;
+    const iconsHtml = () => `<div class="ics">${Object.entries(ICONS).map(([k, [, tip, svg]]) => `<span class="ic" data-ic="${k}" title="${esc(tip)}（點一下手動開關）">${svg}</span>`).join('')}</div>`;
 
     // 標籤區／勾選區的單元由頁面腳本產生（見 UNITS），這裡只留空的 .c2／.c3
     function blockHtml(p, rows = DEFAULT_ROWS) {
@@ -423,8 +411,7 @@
         ].filter(Boolean).join('<span class="sep"></span>');
         const discharge = `<div class="discharge">${p.discharged ? '已出院' : '預出院'}${input(k('dc'), 'u w6', ` data-def="${esc(shortDate(p.dischargeDate))}"`)}</div>`;
         const doctors = `<div class="staff-vr"><span title="${esc(p.attending)}">${p.attending ? `VS ${esc(p.attending)}` : ''}</span><span title="${esc(p.resident)}">${p.resident ? `R ${esc(p.resident)}` : ''}</span></div>`;
-        const dn = parseInt(dayOf(p), 10);
-        return `<section class="pt" data-id="${esc(id)}" style="--rows:${rows.length}">${iconsHtml(dn >= 1 && dn <= NEW_MAX_DAY)}
+        return `<section class="pt" data-id="${esc(id)}" style="--rows:${rows.length}">${iconsHtml()}
 <div class="ln info"><div class="il">${info}</div>${discharge}${doctors}</div>
 <div class="pbody"><div class="c1">${`<textarea class="nt" data-k="${esc(k('n'))}" data-def="${esc(NOTE_DEFAULT).replace(/\n/g, '&#10;')}" rows="1" autocomplete="off" spellcheck="false"></textarea>`}</div><div class="prows">
 ${rows.map((r, ord) => row(r, ord === rows.length - 1)).join('\n')}
@@ -494,7 +481,6 @@ input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
 .ic{width:4.8mm;height:4.8mm;display:flex;align-items:center;justify-content:center;visibility:hidden;color:#111}
 .ic.on{visibility:visible}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.ic .nw{font:700 5.4pt/1 system-ui,sans-serif;border:.25mm solid #111;border-radius:1mm;padding:.35mm .5mm;letter-spacing:-.02em}
 .ln{position:relative;display:flex;align-items:center;height:var(--lh,6mm);padding-right:1mm}
 .info .il{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
 .discharge{flex:none;margin-left:2mm;white-space:nowrap}
@@ -936,12 +922,18 @@ ${sideHtml(patients)}
             const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
             return !!(sp && sp.querySelector('.sc[id$="-' + key + '"] ' + sel));
         };
+        // 管路依名稱分類：尿管 → 水滴；氣切 → 吹氣；人工血管不算；其餘（鼻胃管、CVC、引流…）→ 管路
+        const URI_RE = /foley|導尿|(?<!輸)尿管|urinary/i, TRACH_RE = /氣切|trache/i, PORT_RE = /port-?a|人工血管/i;
+        const tubeNames = (pid) => {
+            const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
+            return sp ? [...sp.querySelectorAll('.sc[id$="-tubes"] .chip:not(.all)')].map((c) => c.getAttribute('data-t') || '') : [];
+        };
         const autoIcon = (pt, name) => {
-            const pid = pt.getAttribute('data-id');
-            if (name === 'new') return !!pt.querySelector('.ic[data-ic="new"][data-auto]');
+            const pid = pt.getAttribute('data-id'), tubes = tubeNames(pid);
             if (name === 'abx') return panelHas(pid, 'abx', '.chip');
-            if (name === 'tube') return panelHas(pid, 'tubes', '.chip');
-            return panelHas(pid, 'o2', '.chip[data-on="1"]');
+            if (name === 'uri') return tubes.some((t) => URI_RE.test(t));
+            if (name === 'tube') return tubes.some((t) => !URI_RE.test(t) && !TRACH_RE.test(t) && !PORT_RE.test(t));
+            return panelHas(pid, 'o2', '.chip[data-on="1"]') || tubes.some((t) => TRACH_RE.test(t));
         };
         const updateIcons = () => {
             document.querySelectorAll('.pt').forEach((pt) => {
