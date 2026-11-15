@@ -111,6 +111,8 @@
         return body;
     }
 
+    // 院方「抗生素」分類裡臨床上不當抗生素看的藥（比對整個藥名欄，含商品名與括號內學名）
+    const NON_ABX_RE = /hydroxychloroquine|plaquenil|tenofovir|viread|vemlidy|entecavir|baraclude/i;
     function parseMedicationHistory(doc, now) {
         const table = doc.querySelector('[id$="_grvData"]');
         if (!table) {
@@ -138,6 +140,7 @@
             if (startMs > today || (stopText && dateMs(stopText) < today)) continue;
             const rawName = txt(tr.cells[nameCol]);
             if (!rawName) throw new Error('藥歷藥名缺漏');
+            if (NON_ABX_RE.test(rawName)) continue;
             const prescription = txt(tr.cells[content]);
             const route = (prescription.match(/\b(IV|IF|PO|IM|SC|SQ|TOPIC|INHL)\b/i) || [])[1] || '';
             out.push({ name: rawName.split('(')[0].trim().slice(0, 40), route, prescription, startMs, day: dayNo(startMs, now) });

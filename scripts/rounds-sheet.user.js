@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 查房單
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.5.3
+// @version      1.6.2
 // @description  病房列表一鍵產生可編輯、可列印的 A4 查房單（一頁 11 位）：帶入病人資料及預出院／已出院日期，CR／VS 分列自動配對姓名、員編與簡碼，可新增或選擇僅此頁／所有頁面移除；右側資料塊可拖入同一病人欄位，手動填寫與人員增刪選擇自動暫存
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -21,7 +21,7 @@
 
     /* global NTUHAsmx, NTUHNews2, NTUHFetch, NTUHLab */
 
-    const VERSION = '1.5.3';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
+    const VERSION = '1.6.2';                      // 與上方 @version 同步；顯示在查房單工具列，方便確認跑的是哪一版
     const PER_PAGE = 11;                          // 一頁病人數（預設；沒有人加行時的分頁，與紙本模板一致）
     const PAGE_LINES = 44;                        // 一頁可放幾「行」（資訊行＋每行文字，6mm 一行；11 位×4 行＝44，所以預設仍是每頁 11 位）
     const DEFAULT_ROWS = [0, 1, 2];               // 每位病人預設的行 id；最後一行右側的＋／−增減
@@ -31,7 +31,6 @@
     const RATIO = [2, 1, 1];                      // 三欄寬度比例預設（筆記｜標籤＋填寫｜勾選＋待辦），尺規可調
     // 選到（或輸入）這些標籤時，同一行的填寫欄若是空的就自動帶入範本
     const LABEL_TEMPLATES = { GCS: 'E.  V.  M.  ', MP: 'RU/LU/RL/LL:   /   /   /   ' };
-    const NEW_MAX_DAY = 2;   // 住院第幾天以內算「新入院」（入院當天＝Day 1）
     const LABEL_OPTIONS = ['TPR', 'O2', 'IO', 'BW', 'GCS', 'Abx', 'Lab', 'Tubes', 'Image', 'MP'];  // 點標籤彈出的選項（兩排各 5 個），也可自行輸入
     const STORE_KEY = 'ntuh-rounds-sheet:v1';
     const KEEP_DAYS = 30;                         // 超過幾天沒再出現在列表的病人，暫存內容自動清掉
@@ -377,17 +376,6 @@
         return `<div class="hdr" data-page="${pg}" data-scope="${scope}" data-names="${esc(JSON.stringify(docs))}">${['CR', 'VS'].map((role) => `<div class="hr" data-role="${role}"><b>${role}</b><div class="staff-slots"></div><button class="staff-add" type="button" title="新增 ${role} 人員">＋</button></div>`).join('')}</div>`;
     }
 
-    // 住院第幾天：優先用列表上的「住院總天數」，沒有就由入院日算（入院當天算 Day 1；民國年自動換算）
-    function dayOf(p) {
-        if (p.hospDay) return p.hospDay;
-        const m = p.adm.match(/(\d{2,4})\s*[\/.-]\s*(\d{1,2})\s*[\/.-]\s*(\d{1,2})/);
-        if (!m) return '';
-        const y = +m[1] < 1911 ? +m[1] + 1911 : +m[1];
-        const a = new Date(y, +m[2] - 1, +m[3]), t = new Date();
-        const diff = Math.round((new Date(t.getFullYear(), t.getMonth(), t.getDate()) - a) / 86400000) + 1;
-        return diff > 0 ? String(diff) : '';
-    }
-
     // 性別年齡：「F, 63y0m」「M, 41y3m」。性別男／女（或 M／F）→ M／F；年齡取「幾歲幾個月」，沒有月份就補 0m；認不得的格式原樣顯示
     function sexAge(p) {
         const sx = /^(男|m|male)/i.test(p.sex) ? 'M' : /^(女|f|female)/i.test(p.sex) ? 'F' : p.sex;
@@ -402,12 +390,12 @@
 
     // 病人資訊行左邊留白處的小圖示（NEW／抗生素藥瓶／管路／吹氣）：由資料自動亮起，也可以點一下手動開關；列印只印亮的
     const ICONS = {
-        new: ['NEW', '新入院（入院第 1–' + NEW_MAX_DAY + ' 天）', '<span class="nw">NEW</span>'],
+        uri: ['水滴', '有尿管', '<svg viewBox="0 0 24 24"><path d="M12 3c-3.6 4.6-6 8-6 11a6 6 0 0 0 12 0c0-3-2.4-6.4-6-11z"/></svg>'],
         abx: ['藥瓶', '使用中抗生素', '<svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M7 6h10v2l1 2v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V10l1-2z"/><path d="M9 13h6M9 16h6"/></svg>'],
-        tube: ['管路', '有留置管路', '<svg viewBox="0 0 24 24"><path d="M5 19c0-7 7-3 8-9s4-6 6-6"/><circle cx="5" cy="19" r="2"/><path d="M17 2l4 4"/></svg>'],
-        o2: ['吹氣', '給氧中（有給氧裝置）', '<svg viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 12h16a3 3 0 1 1-3 3"/><path d="M3 16h8"/></svg>'],
+        tube: ['管路', '有留置管路（鼻胃管等；不含尿管、氣切、人工血管）', '<svg viewBox="0 0 24 24"><path d="M5 19c0-7 7-3 8-9s4-6 6-6"/><circle cx="5" cy="19" r="2"/><path d="M17 2l4 4"/></svg>'],
+        o2: ['吹氣', '給氧中（有給氧裝置）或有氣切', '<svg viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 12h16a3 3 0 1 1-3 3"/><path d="M3 16h8"/></svg>'],
     };
-    const iconsHtml = (isNew) => `<div class="ics">${Object.entries(ICONS).map(([k, [, tip, svg]]) => `<span class="ic" data-ic="${k}"${k === 'new' && isNew ? ' data-auto="1"' : ''} title="${esc(tip)}（點一下手動開關）">${svg}</span>`).join('')}</div>`;
+    const iconsHtml = () => `<div class="ics">${Object.entries(ICONS).map(([k, [, tip, svg]]) => `<span class="ic" data-ic="${k}" title="${esc(tip)}（點一下手動開關）">${svg}</span>`).join('')}</div>`;
 
     // 標籤區／勾選區的單元由頁面腳本產生（見 UNITS），這裡只留空的 .c2／.c3
     function blockHtml(p, rows = DEFAULT_ROWS) {
@@ -419,12 +407,11 @@
             `<b>${esc(patientName(p.name))}</b>`,
             sexAge(p) && `（${esc(sexAge(p))}）`,
             esc(p.chartNo),
-            p.adm && `入 ${esc(p.adm)}${dayOf(p) ? ` (D${esc(dayOf(p))})` : ''}`,
+            p.adm && `入 ${esc(p.adm)} (轉入${input(k('ti'), 'u wt')})`,   // 轉入日手填
         ].filter(Boolean).join('<span class="sep"></span>');
-        const discharge = `<div class="discharge">${p.discharged ? '已出院' : '預出院'}${input(k('dc'), 'u w6', ` data-def="${esc(shortDate(p.dischargeDate))}"`)}</div>`;
+        const discharge = `<div class="discharge">${p.discharged ? '已出院' : '出'}${input(k('dc'), 'u wd', ` data-def="${esc(shortDate(p.dischargeDate))}"`)}</div>`;
         const doctors = `<div class="staff-vr"><span title="${esc(p.attending)}">${p.attending ? `VS ${esc(p.attending)}` : ''}</span><span title="${esc(p.resident)}">${p.resident ? `R ${esc(p.resident)}` : ''}</span></div>`;
-        const dn = parseInt(dayOf(p), 10);
-        return `<section class="pt" data-id="${esc(id)}" style="--rows:${rows.length}">${iconsHtml(dn >= 1 && dn <= NEW_MAX_DAY)}
+        return `<section class="pt" data-id="${esc(id)}" style="--rows:${rows.length}">${iconsHtml()}
 <div class="ln info"><div class="il">${info}</div>${discharge}${doctors}</div>
 <div class="pbody"><div class="c1">${`<textarea class="nt" data-k="${esc(k('n'))}" data-def="${esc(NOTE_DEFAULT).replace(/\n/g, '&#10;')}" rows="1" autocomplete="off" spellcheck="false"></textarea>`}</div><div class="prows">
 ${rows.map((r, ord) => row(r, ord === rows.length - 1)).join('\n')}
@@ -488,16 +475,15 @@ body{margin:0;background:#e5e7eb;color:#111;font:10.5pt/1 system-ui,"Noto Sans T
 input,textarea{font:inherit;color:inherit;background:transparent;border:0;outline:0;padding:0;margin:0}
 textarea{display:block;resize:none;overflow:hidden;line-height:1.05;overflow-wrap:anywhere;align-self:center}
 input.u{border-bottom:.3mm solid #111;text-align:center;height:5.5mm}
-.w6{width:11mm}.w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
+.wt{width:11mm}.wd{width:23mm}.w9{width:17mm}.w8{width:14mm}.w7{width:12mm}
 .pt{position:relative;height:calc(var(--lh,6mm) * (1 + var(--rows,3)));break-inside:avoid;border-bottom:.2mm solid #9ca3af;display:flex;flex-direction:column}
 .ics{position:absolute;left:-8.2mm;top:.4mm;width:7.4mm;display:flex;flex-direction:column;gap:.7mm;align-items:center}
 .ic{width:4.8mm;height:4.8mm;display:flex;align-items:center;justify-content:center;visibility:hidden;color:#111}
 .ic.on{visibility:visible}
 .ic svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.ic .nw{font:700 5.4pt/1 system-ui,sans-serif;border:.25mm solid #111;border-radius:1mm;padding:.35mm .5mm;letter-spacing:-.02em}
 .ln{position:relative;display:flex;align-items:center;height:var(--lh,6mm);padding-right:1mm}
-.info .il{flex:1;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
-.discharge{flex:none;margin-left:3.5mm;white-space:nowrap}
+.info .il{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;font-size:10.5pt}
+.discharge{flex:none;margin-left:2mm;white-space:nowrap}
 .staff-vr{flex:none;margin-left:auto;padding-left:2mm;display:grid;grid-template-columns:auto auto;gap:3mm;text-align:right;white-space:nowrap}
 .staff-vr span{max-width:25mm;overflow:hidden;text-overflow:ellipsis}
 .il b{font-weight:700}.sep{display:inline-block;width:2.5mm}
@@ -591,6 +577,7 @@ ${pages.map((pp, i) => `<div class="page"><div class="gen">生成 ${esc(stamp)}<
 </main>
 ${sideHtml(patients)}
 </div>
+<script type="application/json" id="rs-data">${JSON.stringify({ patients, today, stamp }).replace(/</g, '\\u003c')}</script>
 <script>(${pageScript.toString()})(${JSON.stringify({ key: STORE_KEY, keep: KEEP_DAYS, labels: LABELS, options: LABEL_OPTIONS,templates: LABEL_TEMPLATES, ratio: RATIO, defaultRows: DEFAULT_ROWS, maxRows: MAX_ROWS, minRows: MIN_ROWS })}, ${applyStaffHeaders.toString()}, ${installStaffHeaders.toString()}, ${staffHash.toString()}, ${nk.toString()});<\/script></body></html>`;
     }
 
@@ -604,6 +591,9 @@ ${sideHtml(patients)}
         // 世代：整張重新排版後，上一輪遺留的計時器（延遲更新、延遲排版）還會在新文件上跑；它們手上的 store 是舊的，
         // 若讓它們存檔就會把新的列數／內容蓋回舊值——所以只有最新一輪的腳本可以寫 localStorage。
         const gen = window.__rsGen = (window.__rsGen || 0) + 1;
+        // 舊一輪的 setTimeout 不會被清掉，回呼時若已不是最新一輪就什麼都不做（否則會在新頁面上誤報「病房列表失效」）
+        const live = () => window.__rsGen === gen;
+        const later = (f, ms) => setTimeout(() => { if (live()) f(); }, ms);
         const now = new Date().getTime();
         let store = {};
         try { store = JSON.parse(localStorage.getItem(cfg.key) || '{}') || {}; } catch (e) { store = {}; }
@@ -818,7 +808,7 @@ ${sideHtml(patients)}
             window.opener.postMessage({ rs: 'repaginate', token: tokenOf() }, location.origin);
             ackSeq = 'repag';
             clearTimeout(ackTimer);
-            ackTimer = setTimeout(() => { if (ackSeq === 'repag') fail(); }, 2500);
+            ackTimer = later(() => { if (ackSeq === 'repag') fail(); }, 2500);
         };
         const addRow = (pt, ord) => {
             const id = pt.getAttribute('data-id'), prev = [...rowIdsOf(id)];
@@ -932,12 +922,18 @@ ${sideHtml(patients)}
             const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
             return !!(sp && sp.querySelector('.sc[id$="-' + key + '"] ' + sel));
         };
+        // 管路依名稱分類：尿管 → 水滴；氣切 → 吹氣；人工血管不算；其餘（鼻胃管、CVC、引流…）→ 管路
+        const URI_RE = /foley|導尿|尿路|(?<!輸)尿管|urinary/i, TRACH_RE = /氣切|trache/i, PORT_RE = /port-?a|人工血管/i;
+        const tubeNames = (pid) => {
+            const sp = [...document.querySelectorAll('.sp')].find((e) => e.getAttribute('data-id') === pid);
+            return sp ? [...sp.querySelectorAll('.sc[id$="-tubes"] .chip:not(.all)')].map((c) => c.getAttribute('data-t') || '') : [];
+        };
         const autoIcon = (pt, name) => {
-            const pid = pt.getAttribute('data-id');
-            if (name === 'new') return !!pt.querySelector('.ic[data-ic="new"][data-auto]');
+            const pid = pt.getAttribute('data-id'), tubes = tubeNames(pid);
             if (name === 'abx') return panelHas(pid, 'abx', '.chip');
-            if (name === 'tube') return panelHas(pid, 'tubes', '.chip');
-            return panelHas(pid, 'o2', '.chip[data-on="1"]');
+            if (name === 'uri') return tubes.some((t) => URI_RE.test(t));
+            if (name === 'tube') return tubes.some((t) => !URI_RE.test(t) && !TRACH_RE.test(t) && !PORT_RE.test(t));
+            return panelHas(pid, 'o2', '.chip[data-on="1"]') || tubes.some((t) => TRACH_RE.test(t));
         };
         const updateIcons = () => {
             document.querySelectorAll('.pt').forEach((pt) => {
@@ -1060,6 +1056,7 @@ ${sideHtml(patients)}
         //   放進其他填寫欄（cc／#. 內容、待辦）→ 照一般文字放進去，不動標籤。
         let drag = null;
         const toast = (msg, good) => {
+            if (!live()) return;
             let t = document.getElementById('rs-toast');
             if (!t) { t = document.createElement('div'); t.id = 'rs-toast'; document.body.appendChild(t); }
             t.textContent = msg; t.style.background = good ? '#0f766e' : '#b91c1c'; t.className = 'show';
@@ -1171,9 +1168,9 @@ ${sideHtml(patients)}
             if (!openerOk()) { if (warnEl) warnEl.hidden = false; return; }
             const n = ++pingN;
             window.opener.postMessage({ rs: 'ping', token: tokenOf(), n }, location.origin);
-            setTimeout(() => { if (pongN < n && warnEl) warnEl.hidden = false; }, 3000);
+            later(() => { if (pongN < n && warnEl) warnEl.hidden = false; }, 3000);
         };
-        setTimeout(ping, 3000);
+        later(ping, 3000);
         window.__rsIV.push(setInterval(ping, 30000));
         const request = () => {
             if (!cur) return;
@@ -1181,16 +1178,16 @@ ${sideHtml(patients)}
             seq += 1;
             dlg.setAttribute('data-seq', String(seq));
             document.getElementById('dlg-body').innerHTML = '<span class="mu">載入中…</span>';
-            window.opener.postMessage({ rs: 'detail', token: tokenOf(), kind: cur.kind, idx: cur.idx, seq }, location.origin);
+            window.opener.postMessage({ rs: 'detail', token: tokenOf(), kind: cur.kind, idx: cur.idx, pid: cur.pid, seq }, location.origin);
             ackSeq = seq;
             clearTimeout(ackTimer);
-            ackTimer = setTimeout(() => { if (ackSeq === seq) document.getElementById('dlg-body').innerHTML = `<div class="er">${DEAD}</div>`; }, 2500);
+            ackTimer = later(() => { if (ackSeq === seq) document.getElementById('dlg-body').innerHTML = `<div class="er">${DEAD}</div>`; }, 2500);
         };
         document.addEventListener('click', (ev) => {
             const b = ev.target.closest && ev.target.closest('.bt');
             if (!b) return;
             const kind = b.getAttribute('data-kind');
-            cur = { kind, idx: +b.getAttribute('data-i') };
+            cur = { kind, idx: +b.getAttribute('data-i'), pid: b.closest('.sp').getAttribute('data-id') };
             markViewing(b.closest('.sp').getAttribute('data-id'));
             const name = b.parentElement.querySelector('.shn').textContent;
             document.getElementById('dlg-t').textContent = name + (kind === 'lab' ? '　Lab' : kind === 'pn' ? '　最近病程 PAP' : '　影像報告');
@@ -1210,7 +1207,7 @@ ${sideHtml(patients)}
             window.opener.postMessage({ rs: 'refresh', token: tokenOf() }, location.origin);
             ackSeq = 'refresh';
             clearTimeout(ackTimer);
-            ackTimer = setTimeout(() => { if (ackSeq === 'refresh' && warnEl) warnEl.hidden = false; }, 2500);
+            ackTimer = later(() => { if (ackSeq === 'refresh' && warnEl) warnEl.hidden = false; }, 2500);
         };
         document.getElementById('pr').onclick = () => window.print();
         // 分區清除：標籤區＝標籤（回預設）＋同行填寫欄；勾選區＝勾選格＋待辦文字
@@ -1554,18 +1551,12 @@ ${sideHtml(patients)}
     // ═══════════════════════════════════════════════════════════
     // 進入點
     // ═══════════════════════════════════════════════════════════
-    function run() {
-        const patients = readPatients();
-        if (!patients.length) { alert('找不到病人清單'); return; }
-        const w = window.open('', '_blank');
-        if (!w) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
-        const d = new Date();
-        const two = (n) => String(n).padStart(2, '0');
-        const today = `${d.getMonth() + 1}/${d.getDate()}`;
-        const stamp = `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
-        // 抓取在這個分頁（病房列表）跑；面板的「重新抓取」按鈕用 postMessage 通知這裡（比對 token，不依賴 source 物件）
+    // 每張查房單＝一個 session（token → 狀態）。病房列表 postback 後這支腳本會整個重跑、原本的 session 就不見了，
+    // 所以查房單送來不認得的 token 時，從那個分頁裡嵌的 #rs-data 接手（病人清單以查房單為準，不重讀病房列表：
+    // postback 可能換了排序、病房或出院名單，用索引對病人會對錯人）。
+    const sessions = new Map();
+    function attach(w, patients, today, stamp, token) {
         const state = { running: false, cache: {} };   // cache：右側面板各格的內容（整張重新排版後原樣放回，不重抓）
-        const token = String(nowMs()) + Math.random().toString(36).slice(2);
         const reply = (m) => { try { if (!w.closed) w.postMessage(m, location.origin); } catch (e) { /* 對方視窗已關 */ } };
         // 整張排版：依「每位病人的行數」分頁（沒人加行＝每頁 11 位）。第一次開啟與每次加／刪行都走這裡；
         // 文件被重寫後頁面腳本會重新初始化，使用者填的內容都在 localStorage（輸入當下就存），所以不會掉。
@@ -1582,7 +1573,6 @@ ${sideHtml(patients)}
             w.scrollTo(0, y);
             buildStaffHeaders(patients, groups).then((fields) => reply({ rs: 'staff', token, fields }));
         };
-        render();
         const cache = {};   // `${idx}|${kind}` → { at, data }：3 分鐘內重複點不再抓；空結果不快取（可能是登入逾時造成的假空）
         const CACHE_MS = 3 * 60000;
         const isEmpty = (kind, d) => (kind === 'lab' ? (d.empty || d.noTable || !d.items.length) : kind === 'pn' ? d.none : !d.length);
@@ -1590,7 +1580,8 @@ ${sideHtml(patients)}
             const dlg = w.closed ? null : w.document.getElementById('dlg');
             const body = dlg && w.document.getElementById('dlg-body');
             const p = patients[d.idx];
-            if (!body || !p) return;
+            if (!body) return;
+            if (!p || (d.pid && d.pid !== (p.chartNo || p.caseno))) { body.innerHTML = '<div class="er">病人對不上，請回病房列表重新按「查房單」。</div>'; return; }
             const stale = () => String(dlg.getAttribute('data-seq')) !== String(d.seq);
             const key = d.idx + '|' + d.kind;
             const now = nowMs();
@@ -1612,15 +1603,55 @@ ${sideHtml(patients)}
                 if ((await sessionAlive()) === false && !stale()) body.insertAdjacentHTML('afterbegin', `<div class="er">${SESSION_MSG}</div>`);
             }
         };
-        window.addEventListener('message', (ev) => {
-            if (ev.origin !== location.origin || !ev.data || ev.data.token !== token) return;
-            if (ev.data.rs === 'ping') reply({ rs: 'pong', n: ev.data.n });
-            else if (ev.data.rs === 'repaginate') { reply({ rs: 'ack', seq: 'repag' }); render(); }
-            else if (ev.data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
-            else if (ev.data.rs === 'detail') { reply({ rs: 'ack', seq: ev.data.seq }); showDetail(ev.data); }
-        });
-        fetchPanel(w, patients, state);
+        const handle = (data) => {
+            if (data.rs === 'ping') reply({ rs: 'pong', n: data.n });
+            else if (data.rs === 'repaginate') { reply({ rs: 'ack', seq: 'repag' }); render(); }
+            else if (data.rs === 'refresh') { reply({ rs: 'ack', seq: 'refresh' }); fetchPanel(w, patients, state); }
+            else if (data.rs === 'detail') { reply({ rs: 'ack', seq: data.seq }); showDetail(data); }
+        };
+        const s = { w, patients, state, render, handle };
+        sessions.set(token, s);
+        return s;
     }
+
+    function run() {
+        const patients = readPatients();
+        if (!patients.length) { alert('找不到病人清單'); return; }
+        const w = window.open('', '_blank');
+        if (!w) { alert('瀏覽器擋住了新分頁，請允許此網站的彈出視窗後再按一次。'); return; }
+        const d = new Date();
+        const two = (n) => String(n).padStart(2, '0');
+        const today = `${d.getMonth() + 1}/${d.getDate()}`;
+        const stamp = `${d.getFullYear()}/${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+        const token = String(nowMs()) + Math.random().toString(36).slice(2);
+        const s = attach(w, patients, today, stamp, token);
+        s.render();
+        fetchPanel(w, patients, s.state);
+    }
+
+    // 接手 postback 前開的查房單：確認對方分頁真的帶著這個 token，再讀它嵌的病人清單；面板現有內容放回 cache，
+    // 面板沒抓完（postback 打斷了抓取）就重抓。
+    function adopt(w, token) {
+        let doc, data;
+        try {
+            doc = w.document;
+            if (doc.documentElement.getAttribute('data-rs-token') !== token) return null;
+            data = JSON.parse(doc.getElementById('rs-data').textContent);
+        } catch (e) { return null; }
+        if (!data || !Array.isArray(data.patients) || !data.patients.length) return null;
+        const s = attach(w, data.patients, data.today, data.stamp, token);
+        doc.querySelectorAll('.sc[id], #sd-prog').forEach((el) => { s.state.cache[el.id] = el.innerHTML; });
+        const prog = doc.getElementById('sd-prog');
+        if (!prog || !/^完成/.test(prog.textContent)) fetchPanel(w, data.patients, s.state);
+        return s;
+    }
+
+    window.addEventListener('message', (ev) => {
+        if (ev.origin !== location.origin || !ev.data || !ev.data.rs || !ev.data.token) return;
+        if (!['ping', 'repaginate', 'refresh', 'detail'].includes(ev.data.rs)) return;
+        const s = sessions.get(ev.data.token) || (ev.source && adopt(ev.source, ev.data.token));
+        if (s) s.handle(ev.data);
+    });
 
     function getDock() {
         let d = document.getElementById('ntuh-dock');

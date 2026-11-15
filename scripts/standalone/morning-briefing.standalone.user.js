@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH 晨間簡報
 // @namespace    https://github.com/Twb06/NTUH-helper
-// @version      1.10.0-standalone
+// @version      1.10.1-standalone
 // @description  病房列表一鍵產生「昨夜狀態」簡報（新分頁）：生命徵象圖、給氧／尿量變化、新檢驗報告、新影像報告、昨夜醫囑變更（有就亮燈）；依列表順序列出所有病人，一行並排兩人
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
 // @match        https://hchihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/OpenWard.aspx*
@@ -350,6 +350,8 @@ function isOnOxygen(inside) {
         return body;
     }
 
+    // 院方「抗生素」分類裡臨床上不當抗生素看的藥（比對整個藥名欄，含商品名與括號內學名）
+    const NON_ABX_RE = /hydroxychloroquine|plaquenil|tenofovir|viread|vemlidy|entecavir|baraclude/i;
     function parseMedicationHistory(doc, now) {
         const table = doc.querySelector('[id$="_grvData"]');
         if (!table) {
@@ -377,6 +379,7 @@ function isOnOxygen(inside) {
             if (startMs > today || (stopText && dateMs(stopText) < today)) continue;
             const rawName = txt(tr.cells[nameCol]);
             if (!rawName) throw new Error('藥歷藥名缺漏');
+            if (NON_ABX_RE.test(rawName)) continue;
             const prescription = txt(tr.cells[content]);
             const route = (prescription.match(/\b(IV|IF|PO|IM|SC|SQ|TOPIC|INHL)\b/i) || [])[1] || '';
             out.push({ name: rawName.split('(')[0].trim().slice(0, 40), route, prescription, startMs, day: dayNo(startMs, now) });
