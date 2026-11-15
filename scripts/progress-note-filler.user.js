@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NTUH Progress Note Filler
 // @namespace    http://tampermonkey.net/
-// @version      1.78
+// @version      1.81
 // @description  從筆記區自動解析病程筆記並填入 Progress Note / Weekly Summary 欄位，模板改為下拉選單統一管理：Duty note / Primary note 於首次使用時種入 localStorage，與使用者自訂模板一視同仁（皆可新增/編輯/刪除/匯出匯入，並可「加回預設」取回原始版本），管理視窗左側清單可拖曳調整上下順序、同步到下拉選單，選好按「填入」即自動新增 note、貼上並暫存。今日更新／填入progress／填入weekly 三鍵按下時自動抓取 primary note（免先手動抓）；填入progress/weekly 並自動點「新增Progress/Weekly」開表單、確認 PAP 展開後填入。「抓取全部data」按鈕手動觸發 data-helper 引擎，取回十一來源（生命徵象/導管/照會/飲食/護理交班筆記/今日護理紀錄/影像/藥歷/處方/檢驗），以右側區塊＋左側兩區塊（交班筆記/今日護理紀錄）呈現。筆記須符合 primary note 格式（含 [Today's Events] / [Course] / [Assessment] / [Diagnosis] / [Plans] 區塊）。需搭配 progress-note-data-helper 使用。「📥 Ditto admission note」按鈕不需 primary note：直接以 GetNoteTableContent 取回入院紀錄，臆斷→Problem、O:/Objective:→Assessment、最底下的 P:/Plan:→Plan，新增 progress 貼入 PAP 後按確認。
 // @author       潘岳彤
 // @match        https://ihisaw.ntuh.gov.tw/WebApplication/InPatient/Ward/InsertProgressNoteContent.aspx*
@@ -267,6 +267,33 @@ After the admission, the patient was in stable condition, the physical examinati
     }
 
     // ─────────────────────────────────────────────
+    // 確認／暫存：所有入口共用同一段（填入 progress、Ditto admission note、舊的 autoConfirm）
+    //   以前這個 .click() 在三個地方各寫一次（同一個 id 抄三次），改一處會漏另外兩處。
+    // ─────────────────────────────────────────────
+    function clickById(id) {
+        const btn = document.getElementById(id);
+        if (!btn) return false;
+        try { btn.click(); return true; } catch (e) { return false; }
+    }
+
+    // Progress 的「確認」；delayMs > 0 時延後按（沿用舊 autoConfirm 的行為）
+    function confirmProgressNote(delayMs = 0) {
+        if (delayMs > 0) {
+            setTimeout(() => { clickById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote'); }, delayMs);
+            return true;
+        }
+        return clickById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote');
+    }
+
+    // Weekly 的「暫存」
+    function saveWeeklySummary(delayMs = 0) {
+        if (delayMs > 0) {
+            setTimeout(() => { clickById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary'); }, delayMs);
+            return true;
+        }
+        return clickById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary');
+    }
+    // ─────────────────────────────────────────────
     // 填入 Progress Note
     // ─────────────────────────────────────────────
     function fillProgressNote(noteText, autoConfirm = true) {
@@ -315,12 +342,7 @@ After the admission, the patient was in stable condition, the physical examinati
             });
         }
 
-        if (autoConfirm) {
-            setTimeout(() => {
-                const saveBtn = document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote');
-                if (saveBtn) saveBtn.click();
-            }, 500);
-        }
+        if (autoConfirm) confirmProgressNote(500);
 
         return results;
     }
@@ -437,8 +459,69 @@ After the admission, the patient was in stable condition, the physical examinati
         return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
     }
 
+    // ─────────────────────────────────────────────
+    // 第二種 SOAP 樣式：橫幅分段
+    //   =========Subjective=========
+    //   =========Assessment=========
+    //   =========Diagnosis==========
+    //   ==========Plan=============
+    //   ===ITEMS TO VERIFY===
+    //   → Problem ← Diagnosis、Assessment ← Assessment、Plan ← Plan（不含 ITEMS TO VERIFY）
+    // ─────────────────────────────────────────────
+    const BANNER_RE = new RegExp('^\s*={3,}\s*([^=]{1,40}?)\s*={3,}\s*$');
+
+    function normalizeBannerName(raw) {
+        const name = String(raw || '').trim().toLowerCase();
+        if (name === 's' || /subjective|主觀/.test(name)) return 'subjective';
+        if (name === 'a' || /assessment|評估/.test(name)) return 'assessment';
+        if (name === 'd' || /diagnos|臆斷|診斷/.test(name)) return 'diagnosis';
+        if (name === 'p' || /plan|計畫|計劃/.test(name)) return 'plan';
+        if (/items?\s*to\s*verify|待確認|待驗證/.test(name)) return 'verify';
+        return 'other';
+    }
+
+    function splitBannerSections(text) {
+        const lines = String(text || '').split('\n');
+        const out = [];
+        let current = null;
+        lines.forEach((line) => {
+            const m = BANNER_RE.exec(line.trim());
+            if (m) {
+                current = { name: normalizeBannerName(m[1]), lines: [] };
+                out.push(current);
+                return;
+            }
+            if (current) current.lines.push(line);
+        });
+        return out;
+    }
+
+    // 橫幅樣式 → { problem, assessment, plan }；不是這種樣式就回 null
+    function parseBannerSoap(text) {
+        const sections = splitBannerSections(text);
+        if (!sections.length) return null;
+        const pick = (key) => {
+            const hit = sections.filter((sec) => sec.name === key)[0];
+            return hit ? hit.lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() : '';
+        };
+        const diagnosis = pick('diagnosis');
+        const assessment = pick('assessment');
+        const plan = pick('plan');
+        // 至少要兩段有內容才當成橫幅樣式，避免 HIS 模板裡一條分隔線就誤判
+        if ([diagnosis, assessment, plan].filter(Boolean).length < 2) return null;
+        return { problem: diagnosis, assessment: assessment, plan: plan };
+    }
+
+    // 判斷這份紀錄是哪一種樣式；兩者都不是就回 null（呼叫端據此放棄這組候選）
+    function detectNoteFormat(text) {
+        if (parseBannerSoap(text)) return 'banner';
+        if (DIAGNOSIS_HEADER_RE.test(text) && CAREPLAN_HEADER_RE.test(text)) return 'his';
+        return null;
+    }
     // 入院紀錄純文字 → { problem, assessment, plan }
     function parseAdmissionSoap(text) {
+        const banner = parseBannerSoap(text);
+        if (banner && (banner.problem || banner.plan)) return banner;
         const problem = sliceNoteSection(text, DIAGNOSIS_HEADER_RE);
         const careplan = sliceNoteSection(text, CAREPLAN_HEADER_RE);
         const lines = careplan ? careplan.split('\n') : [];
@@ -579,7 +662,7 @@ After the admission, the patient was in stable condition, the physical examinati
             const meta = got.meta || {};
             // 回應會回帶 CaseSeqNo：不一致代表抓到別次住院，寧可換下一組也不要貼錯
             if (meta.CaseSeqNo && String(meta.CaseSeqNo) !== String(req.caseSeqNo)) continue;
-            if (!DIAGNOSIS_HEADER_RE.test(got.text) || !CAREPLAN_HEADER_RE.test(got.text)) continue;
+            if (!detectNoteFormat(got.text)) continue;
             if (!admissionDateMatches(got.text, inDate)) continue;
             const version = meta.Version ? String(meta.Version) : req.version;
             return Object.assign({ caseSeqNo: req.caseSeqNo, version: version, text: got.text }, parseAdmissionSoap(got.text));
@@ -637,7 +720,10 @@ After the admission, the patient was in stable condition, the physical examinati
                 setStatus('⚠ PAP 未展開：內容已貼進 PAP 第 ' + (fieldIds.index || '?') + ' 列，請目視確認後自行按「確認」（未自動確認）。' + describePapState(pap.state), 'warn');
                 return;
             }
-            document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote')?.click();
+            if (!confirmProgressNote()) {
+                setStatus('⚠ PAP 已貼好，但找不到「確認」按鈕，未自動確認；請自行按「確認」', 'warn');
+                return;
+            }
             setStatus('✓ 已新增 progress：Problem←臆斷、Assessment←O、Plan←P'
                 + (pap.row && pap.row.index !== '1' ? '（PAP 第 ' + pap.row.index + ' 列）' : '')
                 + (pap.manual ? '（手動開 PAP）' : '')
@@ -674,12 +760,7 @@ After the admission, the patient was in stable condition, the physical examinati
             ok: fillField('NTUHWeb1_WeeklySummaryMainTab_txbBriefSummary', briefContent)
         });
 
-        if (autoConfirm) {
-            setTimeout(() => {
-                const saveBtn = document.getElementById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary');
-                if (saveBtn) saveBtn.click();
-            }, 500);
-        }
+        if (autoConfirm) saveWeeklySummary(500);
 
         return results;
     }
@@ -746,6 +827,96 @@ After the admission, the patient was in stable condition, the physical examinati
     // ─────────────────────────────────────────────
     // UI
     // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // 與 procedure-note-filler 的面板協調（頁籤切換）
+    //   兩支腳本各自獨立安裝/更新，只用事件協議互通，不互相載入程式碼。
+    //   事件名稱是契約：兩支必須字串完全一致，tools/test-note-panel-bridge.js 會鎖住。
+    //   payload 一律不放 CustomEvent.detail（Tampermonkey 沙箱可能清掉），
+    //   這裡只需要「開／關」「是否已載入」這種狀態。
+    // ─────────────────────────────────────────────
+    const NOTE_PANEL_BRIDGE = {
+        openProgress: 'ntuh-open-progress-panel',
+        progressState: 'ntuh-progress-panel-state',
+        progressReady: 'ntuh-progress-ready',
+        openProcedure: 'ntuh-open-procedure-panel',
+        procedureState: 'ntuh-procedure-panel-state',
+        procedureReady: 'ntuh-procedure-ready'
+    };
+    let procedurePanelInstalled = false;
+
+    function dispatchBridge(eventName) {
+        if (!eventName) return false;
+        try { document.dispatchEvent(new CustomEvent(eventName)); return true; }
+        catch (e) { return false; }
+    }
+
+    // 請另一支開面板：重送 3 次、等 ack；沒人回應就回 false（未安裝／未載入／這頁沒有該表單）
+    function requestPeerPanel(openEvent, stateEvent, retryMs = 300, ackWaitMs = 400) {
+        return new Promise((resolve) => {
+            let settled = false;
+            let attempts = 0;
+            const finish = function (ok) {
+                if (settled) return;
+                settled = true;
+                try { document.removeEventListener(stateEvent, onAck); } catch (e) { /* noop */ }
+                resolve(ok);
+            };
+            const onAck = function () { finish(true); };
+            try { document.addEventListener(stateEvent, onAck); }
+            catch (e) { resolve(false); return; }
+            const ping = function () {
+                if (settled) return;
+                dispatchBridge(openEvent);
+                attempts += 1;
+                if (attempts < 3) setTimeout(ping, retryMs);
+                else setTimeout(function () { finish(false); }, ackWaitMs);
+            };
+            ping();
+        });
+    }
+
+    // 被 procedure 面板叫回來時，開自己的面板
+    function showProgressPanel() {
+        try {
+            if (!document.getElementById('ntuh-filler-panel')) createUI();
+            const panel = document.getElementById('ntuh-filler-panel');
+            if (!panel) return false;
+            const fab = document.getElementById('ntuh-filler-fab');
+            const left = document.getElementById('ntuh-handover-left');
+            if (fab) fab.style.display = 'none';
+            panel.style.display = 'flex';
+            if (left && left.dataset && left.dataset.grabbed === '1') left.style.display = 'flex';
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // 對方沒載入時，頁籤淡化＋tooltip 說明；ready 一到就恢復（純視覺，不影響可點性）
+    function syncProcedureTabState() {
+        try {
+            const tab = document.getElementById('ntuh-tab-procedure');
+            if (!tab || !tab.classList) return;
+            if (procedurePanelInstalled) {
+                tab.classList.remove('is-missing');
+                tab.title = '切換到 procedure-note-filler 面板';
+            } else {
+                tab.classList.add('is-missing');
+                tab.title = '未偵測到 procedure-note-filler（點擊會顯示提示）';
+            }
+        } catch (e) { /* noop */ }
+    }
+    try {
+        document.addEventListener(NOTE_PANEL_BRIDGE.openProgress, function () {
+            if (showProgressPanel()) dispatchBridge(NOTE_PANEL_BRIDGE.progressState);
+        });
+        document.addEventListener(NOTE_PANEL_BRIDGE.procedureReady, function () {
+            procedurePanelInstalled = true;
+            syncProcedureTabState();
+        });
+    } catch (e) { /* noop */ }
+    // 告訴 procedure 面板「我已經載入」
+    if ((window.location && window.location.href || '').indexOf('InsertProgressNoteContent.aspx') >= 0) {
+        dispatchBridge(NOTE_PANEL_BRIDGE.progressReady);
+    }
     function createUI() {
         if (!window.location.href.includes('InsertProgressNoteContent.aspx')) return;
         if (document.getElementById('ntuh-filler-fab')) return;
@@ -780,6 +951,10 @@ After the admission, the patient was in stable condition, the physical examinati
                 bottom: 24px;
                 right: 46px;
                 width: 265px;
+                height: calc(100vh - 105px);
+                max-height: calc(100vh - 105px);
+                min-height: 0;
+                box-sizing: border-box;
                 background: #ffffff;
                 border: 1px solid #9db98a;
                 border-radius: 12px;
@@ -790,38 +965,81 @@ After the admission, the patient was in stable condition, the physical examinati
                 color: #2b3a2b;
                 overflow: hidden;
                 display: none;
+                flex-direction: column;
             }
             #ntuh-filler-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 10px 14px;
-                background: #2c5f54;
-                color: #fff;
-                border-bottom: 1px solid #9db98a;
-                cursor: move;
-                user-select: none;
-                font-size: 13px;
-                font-weight: 600;
-                letter-spacing: 0.03em;
+                display:flex; height:42px; box-sizing:border-box;
+                align-items:flex-end; justify-content:space-between; gap:8px;
+                padding:0 8px;
+                background:#2c5f54; color:#ffffff;
+                border-bottom:1px solid #9db98a;
+                cursor:move; user-select:none; flex-shrink:0;
+            }
+            /* 頂部列：深綠單色（無漸層）；頁籤選中＝白底與內容區相連，未選中＝透明 */
+            #ntuh-filler-tabs {
+                display:flex; align-items:flex-end; gap:4px; height:42px;
+                min-width:0; flex:0 1 auto; margin:0; padding:6px 0 0; box-sizing:border-box; overflow:visible;
+            }
+            #ntuh-filler-tabs .ntuh-tab {
+                appearance:none !important;
+                display:flex !important; align-items:center !important; justify-content:center !important;
+                box-sizing:border-box !important;
+                flex:0 1 auto !important; width:auto !important; min-width:0 !important; max-width:none !important;
+                height:32px !important; min-height:32px !important; max-height:32px !important;
+                padding:0 10px !important; margin:0 !important;
+                line-height:1 !important; font-family:inherit !important; text-transform:none !important; letter-spacing:0 !important;
+                border:1px solid transparent; border-radius:8px 8px 0 0;
+                background:transparent; color:#cfe0d8; font-size:13px; font-weight:600;
+                white-space:nowrap; cursor:pointer;
+                transition:background .15s ease, color .15s ease, border-color .15s ease;
+            }
+            #ntuh-filler-tabs .ntuh-tab-icon { display:block; flex:none; line-height:1; margin-right:4px; font-size:12px; }
+            #ntuh-filler-tabs .ntuh-tab-label { display:inline; min-width:0; max-width:78px; overflow:hidden; text-overflow:ellipsis; }
+            #ntuh-filler-tabs .ntuh-tab:hover { background:rgba(255,255,255,.12); color:#ffffff; }
+            #ntuh-filler-tabs .ntuh-tab.is-active {
+                position:relative; z-index:1;
+                height:36px !important; min-height:36px !important; max-height:36px !important;
+                margin:0 0 -1px !important;
+                background:#ffffff; color:#15332b; font-weight:700;
+                border-color:#9db98a; border-bottom-color:#ffffff;
+            }
+            #ntuh-filler-tabs .ntuh-tab.is-active:hover { background:#ffffff; color:#15332b; border-bottom-color:#ffffff; }
+            #ntuh-filler-tabs .ntuh-tab:focus-visible { outline:2px solid #8fe0b0; outline-offset:-2px; }
+            #ntuh-filler-tabs .ntuh-tab:disabled { opacity:.4; cursor:not-allowed; background:transparent; }
+            #ntuh-filler-tabs .ntuh-tab.is-missing:not(.is-active) {
+                color:#8ea79b; border-style:dashed; border-color:rgba(255,255,255,.3); background:transparent;
             }
             #ntuh-filler-close {
                 background: none;
                 border: none;
                 color: #dfe8d4;
                 cursor: pointer;
-                font-size: 16px;
-                padding: 0 4px;
-                line-height: 1;
+                font-size: 15px;
+                font-weight: 600;
+                appearance: none !important;
+                box-sizing: border-box !important;
+                flex: none !important;
+                width: 24px !important;
+                min-width: 24px !important;
+                max-width: 24px !important;
+                height: 24px !important;
+                min-height: 24px !important;
+                max-height: 24px !important;
+                padding: 0 !important;
+                line-height: 1 !important;
+                align-self: center;
+                border-radius: 6px;
+                transition: color .15s ease, background .15s ease;
             }
-            #ntuh-filler-close:hover { color: #e05c5c; }
+            #ntuh-filler-close:hover { color: #ffd9d9; background: rgba(255,255,255,.14); }
             #ntuh-filler-body {
+                box-sizing: border-box;
                 padding: 16px;
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
-                /* 降高：頂端讓出右上角 HIS 的功能鈕（生命徵象/留置導管…） */
-                max-height: calc(100vh - 180px);
+                min-height: 0;
+                flex: 1 1 auto;
                 overflow-y: auto;
             }
             #ntuh-filler-notestatus {
@@ -1184,8 +1402,11 @@ After the admission, the patient was in stable condition, the physical examinati
         panel.id = 'ntuh-filler-panel';
         panel.innerHTML = `
             <div id="ntuh-filler-header">
-                <span>📋 筆記→Progress</span>
-                <button id="ntuh-filler-close">✕</button>
+                <div id="ntuh-filler-tabs">
+                        <button type="button" class="ntuh-tab is-active" data-tab="progress" aria-label="Progress" aria-pressed="true"><span class="ntuh-tab-icon">📋</span><span class="ntuh-tab-label">Progress</span></button>
+                        <button type="button" class="ntuh-tab" data-tab="procedure" id="ntuh-tab-procedure" aria-label="Procedure" aria-pressed="false" title="切換到 Procedure 面板"><span class="ntuh-tab-icon">✂️</span><span class="ntuh-tab-label">Procedure</span></button>
+                </div>
+                <button id="ntuh-filler-close" type="button" aria-label="關閉面板" title="關閉面板">✕</button>
             </div>
             <div id="ntuh-filler-body">
                 <div class="ntuh-hint ntuh-hint-top">＊需先在左上方筆記區新增 primary note 才能自動填寫</div>
@@ -1235,7 +1456,7 @@ After the admission, the patient was in stable condition, the physical examinati
 
         fab.onclick = () => {
             fab.style.display = 'none';
-            panel.style.display = 'block';
+            panel.style.display = 'flex';
             // 左側面板只在抓過 data 後才顯示（重開面板時沿用已抓的內容）
             if (hLeft.dataset.grabbed === '1') hLeft.style.display = 'flex';
         };
@@ -1244,6 +1465,31 @@ After the admission, the patient was in stable condition, the physical examinati
             panel.style.display = 'none';
             hLeft.style.display = 'none';
             fab.style.display = 'flex';
+        };
+
+        // 頁籤：切到 procedure-note-filler 的面板（未安裝只提示，不報錯）
+        const procedureTab = document.getElementById('ntuh-tab-procedure');
+        if (procedureTab) {
+            syncProcedureTabState();
+            setTimeout(syncProcedureTabState, 2500);   // DevTools manager 約 1.2s 後才跑各腳本
+        }
+        if (procedureTab) procedureTab.onclick = async () => {
+            procedureTab.disabled = true;
+            try {
+                // 還沒收到 ready 也照樣試一次（可能比我們晚載入）
+                const opened = await requestPeerPanel(NOTE_PANEL_BRIDGE.openProcedure, NOTE_PANEL_BRIDGE.procedureState);
+                procedurePanelInstalled = procedurePanelInstalled || opened;
+                syncProcedureTabState();
+                if (opened) {
+                    panel.style.display = 'none';
+                    hLeft.style.display = 'none';
+                    fab.style.display = 'flex';
+                } else {
+                    setStatus('⚠ 沒收到 procedure-note-filler 回應：請確認已安裝／manager 有勾選，且這一頁開得到處置紀錄', 'warn');
+                }
+            } finally {
+                procedureTab.disabled = false;
+            }
         };
 
         makeDraggable(panel, document.getElementById('ntuh-filler-header'));
@@ -1279,7 +1525,7 @@ After the admission, the patient was in stable condition, the physical examinati
                     const r = await fillStable(() => fillProgressNote(text, false),
                         'NTUHWeb1_ProgressNoteMainTab_txbBSIBundle');
                     if (r.ok) {
-                        document.getElementById('NTUHWeb1_ProgressNoteMainTab_btnConfirmProgressNote')?.click();
+                        confirmProgressNote();
                         setStatus('✓ 成功填入 progress', 'ok');
                     } else {
                         setStatus('⚠ 填入後被系統清空，未自動確認，請檢查後手動確認', 'warn');
@@ -1307,7 +1553,7 @@ After the admission, the patient was in stable condition, the physical examinati
                     const r = await fillStable(() => fillWeeklySummary(text, false),
                         'NTUHWeb1_WeeklySummaryMainTab_txbBriefSummary');
                     if (r.ok) {
-                        document.getElementById('NTUHWeb1_WeeklySummaryMainTab_btnSaveWeeklySummary')?.click();
+                        saveWeeklySummary();
                         setStatus('✓ 成功填入 weekly', 'ok');
                     } else {
                         setStatus('⚠ 填入後被系統清空，未自動確認，請檢查後手動確認', 'warn');
@@ -2328,6 +2574,7 @@ After the admission, the patient was in stable condition, the physical examinati
     function makeDraggable(panel, handle) {
         let startX, startY, startLeft, startTop;
         handle.onmousedown = (e) => {
+            if (e.target.closest('button')) return;
             const rect = panel.getBoundingClientRect();
             startX = e.clientX; startY = e.clientY;
             startLeft = rect.left; startTop = rect.top;

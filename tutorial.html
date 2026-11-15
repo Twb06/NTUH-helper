@@ -447,6 +447,16 @@ body {
       <span class="rail-num">4</span> 安裝書籤工具
     </button>
   </div>
+  <div class="rail-item">
+    <button class="rail-btn" id="nav5" onclick="go(5)">
+      <span class="rail-num">5</span> 方法二：Snippet（免擴充）
+    </button>
+  </div>
+  <div class="rail-item">
+    <button class="rail-btn" id="nav6" onclick="go(6)">
+      <span class="rail-num">6</span> 方法三：Local Overrides
+    </button>
+  </div>
 </div>
 
 <div class="card">
@@ -506,7 +516,7 @@ body {
     </div>
     <div class="pf">
       <div class="dots">
-        <div class="dot active"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        <div class="dot active"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
       </div>
       <div class="nav-btns">
         <button class="btn btn-prev" disabled>← 上一步</button>
@@ -652,7 +662,7 @@ body {
     </div>
     <div class="pf">
       <div class="dots">
-        <div class="dot done"></div><div class="dot active"></div><div class="dot"></div><div class="dot"></div>
+        <div class="dot done"></div><div class="dot active"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
       </div>
       <div class="nav-btns">
         <button class="btn btn-prev" onclick="go(1)">← 上一步</button>
@@ -762,7 +772,7 @@ body {
     </div>
     <div class="pf">
       <div class="dots">
-        <div class="dot done"></div><div class="dot done"></div><div class="dot active"></div><div class="dot"></div>
+        <div class="dot done"></div><div class="dot done"></div><div class="dot active"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
       </div>
       <div class="nav-btns">
         <button class="btn btn-prev" onclick="go(2)">← 上一步</button>
@@ -880,10 +890,124 @@ body {
     </div>
     <div class="pf">
       <div class="dots">
-        <div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot active"></div>
+        <div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot active"></div><div class="dot"></div><div class="dot"></div>
       </div>
       <div class="nav-btns">
         <button class="btn btn-prev" onclick="go(3)">← 上一步</button>
+        <button class="btn btn-next" onclick="go(5)">下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STEP 5: DevTools snippet mode ══ -->
+  <div class="panel" id="p5">
+    <div class="ph">
+      <div class="ph-icon purple">🧩</div>
+      <div>
+        <div class="ph-label">步驟 5 / 6（選用・方法二）</div>
+        <h2>DevTools Snippet 模式（不安裝任何擴充）</h2>
+        <p><strong>適合：醫院／受管理環境</strong>（無法安裝擴充功能）。個人電腦建議用方法一 Tampermonkey。</p>
+      </div>
+    </div>
+    <div class="pb">
+
+      <div style="display:flex;gap:6px;margin-bottom:14px;font-size:12px;color:#94a3b8;align-items:center;flex-wrap:wrap">
+        <span class="chip">✓ 個人電腦 → Tampermonkey</span>
+        <span class="chip">✓ 醫院環境 → 本頁 Snippet</span>
+        <span class="chip">✓ 不想每次手動 → 步驟 6</span>
+      </div>
+
+      <div class="browser">
+        <div class="browser-bar">
+          <div class="dots3"><div class="d r"></div><div class="d y"></div><div class="d g"></div></div>
+          <div class="url-pill"><span class="lock">🔒</span>hisaw.ntuh.gov.tw / WebApplication / Clinics / DiagCertificate…</div>
+        </div>
+        <div style="padding:14px;background:#0b1020;color:#c8d3e8;font-family:Consolas,monospace;font-size:12px;line-height:1.7">
+          <div style="color:#7a8aaa">── DevTools（F12）→ Sources → Snippets ──</div>
+          <div><span style="color:#9a7cdc">＋ New snippet</span> → 命名 <strong>diag</strong> → 貼上單檔內容 → <strong>Ctrl + Enter</strong></div>
+          <div style="color:#48bb78">[DevTools shim] GM_* 相容層已載入</div>
+          <div style="color:#48bb78">[DiagFiller] injected via Snippets</div>
+        </div>
+      </div>
+
+      <div class="callout" style="margin-top:14px">
+        <span class="ci">📁</span>
+        <span>單檔位於 repo 的 <strong>scripts/devtools-snippets/</strong>：<code>{script-name}.devtools.js</code>，貼上即可執行，內容已含 GM_* 相容層。要一次跑多支請用 <code>_manager.devtools.js</code>。</span>
+      </div>
+
+      <div class="callout orange" style="margin-top:10px">
+        <span class="ci">🔁</span>
+        <span><strong>每次開新分頁／重新載入都要再執行一次：</strong>Snippet <strong>不會自動執行</strong>——開新分頁、重新整理、換病人、換頁籤，都要再按一次 <strong>Ctrl + Enter</strong>。是「再執行一次」而非「重新貼一次」：內容存在瀏覽器設定裡，重開通常仍在，但無痕／公用電腦／設定被清除時會消失需重貼。<br>想<strong>完全免手動</strong> → 見下一步的 <strong>Local Overrides</strong>。</span>
+      </div>
+
+      <div class="callout orange" style="margin-top:10px">
+        <span class="ci">⚠️</span>
+        <span><strong>跨來源功能會失效：</strong>DevTools 模式以 <code>fetch</code> 取代 <code>GM_xmlhttpRequest</code>，跨網域請求會被 CORS 阻擋（例如診斷書的手術同意書查詢、PACS 下載）。腳本應自行跳過該功能並在畫面提示，不要期待它自動繞過限制。</span>
+      </div>
+
+      <div class="callout blue" style="margin-top:10px">
+        <span class="ci">🧑‍💻</span>
+        <span><strong>開發者注意：</strong>snippets 由 CI 全自動產生，<strong>請勿手動編輯</strong>。只要修改 <code>scripts/*.user.js</code> 並 push，Actions 會執行測試、重建全部 snippets，並自動提交回 <code>scripts/devtools-snippets/</code>。</span>
+      </div>
+
+    </div>
+    <div class="pf">
+      <div class="dots">
+        <div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot active"></div><div class="dot"></div>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-prev" onclick="go(4)">← 上一步</button>
+        <button class="btn btn-next" onclick="go(6)">下一步 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STEP 6: Local Overrides (one-time, auto-run) ══ -->
+  <div class="panel" id="p6">
+    <div class="ph">
+      <div class="ph-icon purple">🔁</div>
+      <div>
+        <div class="ph-label">步驟 6 / 6（選用・方法三）</div>
+        <h2>Local Overrides：設定一次，開頁自動執行</h2>
+        <p>把 <code>_manager.devtools.js</code> 掛進瀏覽器對該網域的回應覆寫 → 之後開啟頁面就自動載入並執行，不必再按任何鍵</p>
+      </div>
+    </div>
+    <div class="pb">
+
+      <div style="display:flex;gap:6px;margin-bottom:14px;font-size:12px;color:#94a3b8;align-items:center;flex-wrap:wrap">
+        <span class="chip">✓ 一次性設定</span>
+        <span class="chip">✓ 開頁自動執行</span>
+        <span class="chip">⚠ DevTools 需保持開啟</span>
+        <span class="chip">⚠ 每個網域各設定一次</span>
+      </div>
+
+      <div class="callout blue">
+        <span class="ci">🧩</span>
+        <span><strong>推薦組合：</strong>Local Overrides ＋ <code>_manager.devtools.js</code>（面板勾選「開頁自動執行」）＝ 免擴充、免手動的一次性方案。管理器會在頁面載入完成後約 1.2 秒自動跑完所有「啟用中」的腳本。</span>
+      </div>
+
+      <div style="margin-top:14px;counter-reset:step">
+        <div class="callout" style="margin-bottom:8px"><span class="ci">1</span><span>建立本機資料夾（例：<code>C:\ntuh-overrides</code>），避免放在會被同步或清理的位置。</span></div>
+        <div class="callout" style="margin-bottom:8px"><span class="ci">2</span><span><strong>F12</strong> → <strong>Sources</strong> → 左側 <strong>Overrides</strong> → <strong>Select folder for overrides</strong> → 選擇該資料夾並按 <strong>允許</strong>。</span></div>
+        <div class="callout" style="margin-bottom:8px"><span class="ci">3</span><span><strong>選一個要覆寫的檔案</strong>：做法 A－在 Sources → Page 找該站<strong>每頁都會載入</strong>的共用 JS → 右鍵 <strong>Save for overrides</strong>；做法 B－找不到共用 JS 時，覆寫<strong>頁面 HTML</strong> 並在 <code>&lt;/body&gt;</code> 前插入 <code>&lt;script src="https://&lt;站台&gt;/ntuh-manager.js"&gt;&lt;/script&gt;</code>，再於 Overrides 分頁建立同路徑檔案。</span></div>
+        <div class="callout" style="margin-bottom:8px"><span class="ci">4</span><span>把 <code>scripts/devtools-snippets/_manager.devtools.js</code> 的內容<strong>貼到該覆寫檔案最後面</strong>（原本程式碼保留）並存檔。</span></div>
+        <div class="callout" style="margin-bottom:8px"><span class="ci">5</span><span>確認 Overrides 分頁的 <strong>Enable Local Overrides</strong> 已勾選，重新載入頁面。</span></div>
+        <div class="callout" style="margin-bottom:8px"><span class="ci">6</span><span>右下角出現管理器面板 → 勾選 <strong>「開頁自動執行」</strong>，並用各列 checkbox 決定哪些腳本要啟用。</span></div>
+        <div class="callout" style="margin-bottom:8px"><span class="ci">7</span><span>完成：之後每次開啟該網域頁面（含換頁、新分頁）都會<strong>自動執行</strong>。</span></div>
+      </div>
+
+      <div class="callout orange" style="margin-top:12px">
+        <span class="ci">⚠️</span>
+        <span><strong>注意事項：</strong>DevTools 需保持開啟（可獨立視窗並縮到最小，關閉即失效）；<strong>每個網域、每台電腦、每個瀏覽器 profile 都要各自設定</strong>；院方更新網站若改檔名／路徑，覆寫會失效需重設；跨來源功能同前一步受 CORS 限制；<strong>覆寫頁面內容較具侵入性，請先確認院內資安／端點管理政策允許</strong>。</span>
+      </div>
+
+    </div>
+    <div class="pf">
+      <div class="dots">
+        <div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot done"></div><div class="dot active"></div>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-prev" onclick="go(5)">← 上一步</button>
         <button class="btn btn-finish" onclick="finish()">🎉 完成設定！</button>
       </div>
     </div>
@@ -899,6 +1023,8 @@ body {
       <span class="chip">✓ 使用者指令碼已開啟</span>
       <span class="chip">✓ Userscripts 已安裝</span>
       <span class="chip">✓ 書籤工具已設定</span>
+      <span class="chip">✓ 方法二 Snippet 已了解（每次開頁需手動執行）</span>
+      <span class="chip">✓ 方法三 Local Overrides 已了解（一次性、自動執行）</span>
     </div>
   </div>
 
@@ -906,7 +1032,7 @@ body {
 
 <script>
 let cur = 1;
-const TOTAL = 4;
+const TOTAL = 6;
 
 function go(n) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
