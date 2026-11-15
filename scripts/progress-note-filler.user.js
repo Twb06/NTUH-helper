@@ -840,9 +840,30 @@ After the admission, the patient was in stable condition, the physical examinati
         progressReady: 'ntuh-progress-ready',
         openProcedure: 'ntuh-open-procedure-panel',
         procedureState: 'ntuh-procedure-panel-state',
-        procedureReady: 'ntuh-procedure-ready'
+        procedureReady: 'ntuh-procedure-ready',
+        showPanelFab: 'ntuh-show-panel-fab'
     };
     let procedurePanelInstalled = false;
+    let progressReadyReannounced = false;
+
+    // ── FAB ──────────────────────────────────────────────────────────────
+    // 兩支都裝時只留「一顆」入口：progress 的 FAB（右下角同一個位置），
+    // procedure 的 FAB 一律讓位；面板打開時全部隱藏，關閉時再由 progress 收回入口。
+    function ownFabElement() { return document.getElementById('ntuh-filler-fab'); }
+    function peerFabElement() { return document.getElementById('ntuh-procedure-fab'); }
+    function hideOwnFab() {
+        const fab = ownFabElement();
+        if (fab && fab.style) fab.style.display = 'none';
+    }
+    function hidePeerFab() {
+        const fab = peerFabElement();
+        if (fab && fab.style) fab.style.display = 'none';
+    }
+    function showOwnFab() {
+        const fab = ownFabElement();
+        if (fab && fab.style) fab.style.display = 'flex';
+        hidePeerFab();
+    }
 
     function dispatchBridge(eventName) {
         if (!eventName) return false;
@@ -881,9 +902,9 @@ After the admission, the patient was in stable condition, the physical examinati
             if (!document.getElementById('ntuh-filler-panel')) createUI();
             const panel = document.getElementById('ntuh-filler-panel');
             if (!panel) return false;
-            const fab = document.getElementById('ntuh-filler-fab');
             const left = document.getElementById('ntuh-handover-left');
-            if (fab) fab.style.display = 'none';
+            hideOwnFab();
+            hidePeerFab();
             panel.style.display = 'flex';
             if (left && left.dataset && left.dataset.grabbed === '1') left.style.display = 'flex';
             return true;
@@ -911,6 +932,17 @@ After the admission, the patient was in stable condition, the physical examinati
         document.addEventListener(NOTE_PANEL_BRIDGE.procedureReady, function () {
             procedurePanelInstalled = true;
             syncProcedureTabState();
+            hidePeerFab();
+            // 對方比我們晚載入時，它沒聽到我們的 ready → 這裡補一次握手（只補一次），
+            // 它才知道入口 FAB 要讓給 progress（否則兩顆 FAB 會疊在同一格）
+            if (!progressReadyReannounced) {
+                progressReadyReannounced = true;
+                dispatchBridge(NOTE_PANEL_BRIDGE.progressReady);
+            }
+        });
+        // procedure 面板關閉後把入口交回來
+        document.addEventListener(NOTE_PANEL_BRIDGE.showPanelFab, function () {
+            showOwnFab();
         });
     } catch (e) { /* noop */ }
     // 告訴 procedure 面板「我已經載入」
@@ -1397,6 +1429,10 @@ After the admission, the patient was in stable condition, the physical examinati
         fab.textContent = '📋';
         fab.title = 'Progress區工具';
         document.body.appendChild(fab);
+        // 入口只留這一顆：peer 的 FAB 收掉；若 peer 面板正開著，自己也不露臉
+        hidePeerFab();
+        const openPeerPanel = document.getElementById('ntuh-procedure-panel');
+        if (openPeerPanel && openPeerPanel.style && openPeerPanel.style.display === 'flex') hideOwnFab();
 
         const panel = document.createElement('div');
         panel.id = 'ntuh-filler-panel';
@@ -1455,7 +1491,8 @@ After the admission, the patient was in stable condition, the physical examinati
         hLeft.syncNursingToggle = syncNursingToggle;
 
         fab.onclick = () => {
-            fab.style.display = 'none';
+            hideOwnFab();
+            hidePeerFab();
             panel.style.display = 'flex';
             // 左側面板只在抓過 data 後才顯示（重開面板時沿用已抓的內容）
             if (hLeft.dataset.grabbed === '1') hLeft.style.display = 'flex';
@@ -1464,7 +1501,7 @@ After the admission, the patient was in stable condition, the physical examinati
         document.getElementById('ntuh-filler-close').onclick = () => {
             panel.style.display = 'none';
             hLeft.style.display = 'none';
-            fab.style.display = 'flex';
+            showOwnFab();
         };
 
         // 頁籤：切到 procedure-note-filler 的面板（未安裝只提示，不報錯）
@@ -1483,7 +1520,8 @@ After the admission, the patient was in stable condition, the physical examinati
                 if (opened) {
                     panel.style.display = 'none';
                     hLeft.style.display = 'none';
-                    fab.style.display = 'flex';
+                    hideOwnFab();
+                    hidePeerFab();
                 } else {
                     setStatus('⚠ 沒收到 procedure-note-filler 回應：請確認已安裝／manager 有勾選，且這一頁開得到處置紀錄', 'warn');
                 }

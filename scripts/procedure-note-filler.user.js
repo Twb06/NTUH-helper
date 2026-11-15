@@ -1248,7 +1248,7 @@
         const style = document.createElement('style');
         style.textContent = `
             #ntuh-procedure-fab {
-                position: fixed; bottom: 140px; right: 24px; width: 48px; height: 48px; border-radius: 50%;
+                position: fixed; bottom: 24px; right: 24px; width: 48px; height: 48px; border-radius: 50%;
                 background: #2c5f54; border: 2px solid #4a7cdc; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
                 z-index: 99999; cursor: pointer; display: flex; align-items: center; justify-content: center;
                 font-size: 20px; transition: transform 0.15s, box-shadow 0.15s; user-select: none; color: #fff;
@@ -1458,7 +1458,12 @@
 
         document.getElementById('ntuh-procedure-close').onclick = function () {
             panel.style.display = 'none';
-            fab.style.display = 'flex';
+            if (progressPanelInstalled) {
+                hideOwnFab();
+                dispatchBridge(NOTE_PANEL_BRIDGE.showPanelFab);   // 入口交回 progress
+            } else {
+                restoreOwnFab();
+            }
         };
 
         // 頁籤：切回 progress-note-filler 的面板（未安裝只提示，不報錯）
@@ -1475,7 +1480,7 @@
                 syncProgressTabState();
                 if (opened) {
                     panel.style.display = 'none';
-                    fab.style.display = 'flex';
+                    hideOwnFab();
                 } else {
                     setPanelStatus('warn', '⚠ 沒收到 progress-note-filler 回應：請確認已安裝／manager 有勾選');
                 }
@@ -1578,13 +1583,28 @@
     // ─────────────────────────────────────────────
     let progressPanelInstalled = false;
 
+    // ── FAB ──────────────────────────────────────────────────────────────
+    // 兩支都裝時入口只留 progress 那顆（同一個右下角位置），這顆讓位；
+    // 只裝 procedure 時它自己就是唯一入口。
+    function ownFabElement() { return document.getElementById('ntuh-procedure-fab'); }
+    function hideOwnFab() {
+        const fab = ownFabElement();
+        if (fab && fab.style) fab.style.display = 'none';
+    }
+    function restoreOwnFab() {
+        const fab = ownFabElement();
+        if (!fab || !fab.style) return;
+        fab.style.display = progressPanelInstalled ? 'none' : 'flex';
+    }
+
     const NOTE_PANEL_BRIDGE = {
         openProgress: 'ntuh-open-progress-panel',
         progressState: 'ntuh-progress-panel-state',
         progressReady: 'ntuh-progress-ready',
         openProcedure: 'ntuh-open-procedure-panel',
         procedureState: 'ntuh-procedure-panel-state',
-        procedureReady: 'ntuh-procedure-ready'
+        procedureReady: 'ntuh-procedure-ready',
+        showPanelFab: 'ntuh-show-panel-fab'
     };
 
     function dispatchBridge(eventName) {
@@ -1653,6 +1673,7 @@
         document.addEventListener(NOTE_PANEL_BRIDGE.progressReady, function () {
             progressPanelInstalled = true;
             syncProgressTabState();
+            hideOwnFab();   // 入口由 progress 的 FAB 代表
         });
     } catch (e) { /* noop */ }
     if ((window.location && window.location.href || '').indexOf('InsertProgressNoteContent.aspx') >= 0) {
@@ -1661,7 +1682,10 @@
     function setupUi() {
         if (!isProcedureNotePage()) return;
         if (document.getElementById('ntuh-procedure-fab')) return;
+        // progress 的 UI 已經在畫面上 → 入口是它那顆，這裡不另外露臉
+        if (document.getElementById('ntuh-filler-fab')) progressPanelInstalled = true;
         buildPanel();
+        restoreOwnFab();
     }
 
     // ─────────────────────────────────────────────
